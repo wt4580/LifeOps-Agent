@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="d9946caa-8b85-4043-9ced-0fa18314ffc0" name="更改" comment="">
+      <change afterPath="$PROJECT_DIR$/.idea/copilot.data.migration.ask2agent.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/lifeops.iml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/modules.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/.gitignore" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/README.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/db.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/ocr_png.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/pdf_text.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/scanner.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/txt_text.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/llm_qwen.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/main.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/memory_extractor.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/planner.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/retrieval.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/settings.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/static/app.js" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/static/style.css" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/templates/index.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/requirements.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/run.ps1" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="ProjectColorInfo"><![CDATA[{
+  "associatedIndex": 8
+}]]></component>
+  <component name="ProjectId" id="3AQQze0LaI8whCBW05OtXulO10s" />
+  <component name="ProjectLevelVcsManager">
+    <ConfirmationsSetting value="2" id="Add" />
+  </component>
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "git-widget-placeholder": "master"
+  }
+}]]></component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-python-sdk-1f1b7bcced7d-64d779b69b7a-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-251.29188.22" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="默认任务">
+      <changelist id="d9946caa-8b85-4043-9ced-0fa18314ffc0" name="更改" comment="" />
+      <created>1772522578078</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1772522578078</updated>
+    </task>
+    <servers />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="github-copilot-workspace">
+    <instructionFileLocations>
+      <option value=".github/instructions" />
+    </instructionFileLocations>
+    <promptFileLocations>
+      <option value=".github/prompts" />
+    </promptFileLocations>
+  </component>
+</project>

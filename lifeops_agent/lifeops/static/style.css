@@ -1,0 +1,48 @@
+body {
+  font-family: Arial, sans-serif;
+  background: #f7f7f7;
+  color: #333;
+}
+
+.container {
+  max-width: 900px;
+  margin: 24px auto;
+  padding: 16px;
+  background: white;
+  border-radius: 8px;
+}
+
+.panel {
+  background: #fafafa;
+  border: 1px solid #ddd;
+  padding: 10px;
+  min-height: 60px;
+  margin: 8px 0;
+  white-space: pre-wrap;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+}
+
+input {
+  flex: 1;
+  padding: 8px;
+}
+
+button {
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.chat-line {
+  margin: 4px 0;
+}
+
+.citation {
+  border-top: 1px solid #eee;
+  padding: 6px 0;
+  font-size: 12px;
+}
+
