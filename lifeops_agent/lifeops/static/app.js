@@ -17,6 +17,8 @@ const askSend = document.getElementById("ask-send");
 const askAnswer = document.getElementById("ask-answer");
 const askCitations = document.getElementById("ask-citations");
 
+const traceOutput = document.getElementById("trace-output");
+
 let sessionId = localStorage.getItem("lifeops_session_id");
 if (!sessionId) {
   sessionId = crypto.randomUUID();
@@ -31,6 +33,15 @@ function renderProposal(proposal, id) {
   proposalId = id;
   planOutput.textContent = JSON.stringify(proposal, null, 2);
   planConfirm.disabled = false;
+}
+
+function renderTrace(trace) {
+  if (!traceOutput) return;
+  if (!trace) {
+    traceOutput.textContent = "";
+    return;
+  }
+  traceOutput.textContent = JSON.stringify(trace, null, 2);
 }
 
 function appendChat(role, text) {
@@ -53,6 +64,7 @@ chatSend.addEventListener("click", async () => {
   });
   const data = await res.json();
   appendChat("assistant", data.answer);
+  renderTrace(data.trace);
   if (data.proposal_id && data.proposal) {
     appendChat("assistant", "检测到待办意图，已生成草案，请确认加入待办。\n" + JSON.stringify(data.proposal, null, 2));
     renderProposal(data.proposal, data.proposal_id);
@@ -103,7 +115,8 @@ askSend.addEventListener("click", async () => {
   data.citations.forEach((cite) => {
     const div = document.createElement("div");
     div.className = "citation";
-    div.textContent = `${cite.path} | page: ${cite.page ?? "-"} | score: ${cite.score} | ${cite.snippet}`;
+    const reason = cite.reason ? ` | reason: ${cite.reason}` : "";
+    div.textContent = `${cite.path} | page: ${cite.page ?? "-"} | score: ${cite.score}${reason} | ${cite.snippet}`;
     askCitations.appendChild(div);
   });
 });

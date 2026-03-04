@@ -6,48 +6,56 @@
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <div class="container">
-    <h1>LifeOps-Agent</h1>
+  <div class="layout">
+    <div class="container">
+      <h1>LifeOps-Agent</h1>
 
-    <section>
-      <h2>Chat</h2>
-      <div id="chat-log" class="panel"></div>
-      <div class="row">
-        <input id="chat-input" placeholder="Say something..." />
-        <button id="chat-send">Send</button>
-      </div>
-    </section>
+      <section>
+        <h2>Chat</h2>
+        <div id="chat-log" class="panel"></div>
+        <div class="row">
+          <input id="chat-input" placeholder="Say something..." />
+          <button id="chat-send">Send</button>
+        </div>
+      </section>
 
-    <section>
-      <h2>Plan (from chat intent)</h2>
-      <pre id="plan-output" class="panel"></pre>
-      <button id="plan-confirm">Confirm Add To Todos</button>
-    </section>
+      <section>
+        <h2>Plan (from chat intent)</h2>
+        <pre id="plan-output" class="panel"></pre>
+        <button id="plan-confirm">Confirm Add To Todos</button>
+      </section>
 
-    <section>
-      <h2>Todos</h2>
-      <div class="row">
-        <button id="todos-today">Today</button>
-        <button id="todos-upcoming">Upcoming 7 days</button>
-      </div>
-      <pre id="todos-output" class="panel"></pre>
-    </section>
+      <section>
+        <h2>Todos</h2>
+        <div class="row">
+          <button id="todos-today">Today</button>
+          <button id="todos-upcoming">Upcoming 7 days</button>
+        </div>
+        <pre id="todos-output" class="panel"></pre>
+      </section>
 
-    <section>
-      <h2>Knowledge Index</h2>
-      <button id="index-run">Run Index</button>
-      <pre id="index-output" class="panel"></pre>
-    </section>
+      <section>
+        <h2>Knowledge Index</h2>
+        <button id="index-run">Run Index</button>
+        <pre id="index-output" class="panel"></pre>
+      </section>
 
-    <section>
-      <h2>Ask Knowledge Base</h2>
-      <div class="row">
-        <input id="ask-input" placeholder="Ask about your docs..." />
-        <button id="ask-send">Ask</button>
-      </div>
-      <div id="ask-answer" class="panel"></div>
-      <div id="ask-citations" class="panel"></div>
-    </section>
+      <section>
+        <h2>Ask Knowledge Base</h2>
+        <div class="row">
+          <input id="ask-input" placeholder="Ask about your docs..." />
+          <button id="ask-send">Ask</button>
+        </div>
+        <div id="ask-answer" class="panel"></div>
+        <div id="ask-citations" class="panel"></div>
+      </section>
+    </div>
+
+    <aside class="trace">
+      <h2>Trace (可审计决策轨迹)</h2>
+      <div class="hint">每次 /api/chat 返回后自动刷新。用于展示 Router 决策 + 工具调用 + 关键输入输出。</div>
+      <pre id="trace-output" class="panel"></pre>
+    </aside>
   </div>
 
   <script src="/static/app.js"></script>

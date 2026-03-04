@@ -1,15 +1,44 @@
+html, body {
+  height: 100%;
+}
+
 body {
   font-family: Arial, sans-serif;
   background: #f7f7f7;
   color: #333;
 }
 
-.container {
-  max-width: 900px;
+.layout {
+  display: flex;
+  gap: 16px;
+  max-width: 1280px;
   margin: 24px auto;
+  padding: 0 12px;
+  align-items: flex-start;
+}
+
+.container {
+  flex: 1;
   padding: 16px;
   background: white;
   border-radius: 8px;
+}
+
+.trace {
+  width: 420px;
+  padding: 16px;
+  background: white;
+  border-radius: 8px;
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+}
+
+.hint {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 8px;
 }
 
 .panel {
@@ -45,4 +74,3 @@ button {
   padding: 6px 0;
   font-size: 12px;
 }
-
