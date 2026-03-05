@@ -10,6 +10,11 @@ from __future__ import annotations
 - 之前的实现大量依赖关键词 if/else，很像一个脚本，并不“像智能体”。
 - ReAct/工具调用智能体的关键是：先由 LLM 做决策（Reason），再执行工具（Act）。
 
+给初学者的关键理解：
+- Router 不是直接执行工具，它只做“决策输出”。
+- 真正执行在 graph_chat 的 tool 节点里。
+- 因此 Router 的输出必须结构化、可校验、可回退。
+
 注意：
 - 我们不会要求模型输出完整的内部思考链（Chain-of-Thought）。
   这是不可靠且可能违反平台/安全规范的。
@@ -17,6 +22,21 @@ from __future__ import annotations
   这对调试与写简历更有价值。
 
 Router 输出严格 JSON，会用 Pydantic 校验；解析失败时降级到 normal_chat。
+
+lifeops.agent_router 模块
+
+这个模块的主要功能是实现一个“工具路由器（Router）”，用于处理用户输入并决定是否调用工具、调用哪个工具以及工具的参数。
+通过引入 ReAct（Reason + Act）模式，模型可以先进行推理（Reason），再执行工具（Act），从而实现更智能的交互。
+
+模块主要包含以下内容：
+- Action 定义：列出所有可能的操作类型，例如普通聊天、查询待办、新增待办等。
+- RouterTrace：记录决策轨迹，便于审计和调试。
+- RouterDecision：封装路由决策的结果，包括操作类型、参数和给用户的回复。
+- RouteContext：封装路由上下文，包括用户输入、最近对话、摘要和信号。
+- _detect_signals：通过简单规则从用户输入中提取信号，例如关键词和时间表达。
+- build_route_context：构建路由上下文，供后续决策使用。
+
+模块的核心目标是让大模型参与决策，并输出可审计的决策轨迹。
 """
 
 import json
@@ -34,6 +54,7 @@ logger = logging.getLogger(__name__)
 Action = Literal[
     "normal_chat",
     "query_todos",
+    "query_knowledge",
     "propose_todo",
     "ask_user_confirm_proposal",
 ]
@@ -82,6 +103,14 @@ def _detect_signals(text: str) -> list[str]:
         "查询",
         "列出",
         "有没有",
+        # 知识库类
+        "知识库",
+        "文档",
+        "文件",
+        "论文",
+        ".pdf",
+        ".png",
+        ".txt",
         # 新增类
         "记住",
         "提醒",
@@ -142,6 +171,15 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
                 "description": "查询用户待办/日程（只读），当用户在问\"我今天/明天/这周/下周有什么安排\"等时使用。",
                 "args": {
                     "range_days": "int, default 7. 查询未来多少天",
+                    "target_date": "string|null, YYYY-MM-DD。若用户问某个明确日期（如明天/周三），优先给这个字段。",
+                },
+            },
+            {
+                "name": "query_knowledge",
+                "description": "查询本地知识库文档（RAG），当用户在问文档内容、文件内容、论文观点、某个PDF/PNG/TXT里有什么时使用。",
+                "args": {
+                    "question": "string. 原始用户问题",
+                    "top_k": "int, default 5. 检索返回块数量",
                 },
             },
             {
@@ -173,9 +211,11 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
         "2) 你不得虚构待办/日程。要查询已存在的安排，必须选择 query_todos。\n"
         "3) 新增待办必须 Human-in-the-loop：如果用户像是在描述一个未来事件（例如\"明天要去理发\"），优先选择 ask_user_confirm_proposal，先询问用户是否生成草案。\n"
         "4) 只有当用户明确在问\"我有什么安排\"这类问题，才选择 query_todos。\n"
-        "5) 你的输出 JSON schema：\n"
+        "5) 如果用户是在问某个明确日期（今天/明天/后天/周X/下周X）的安排，query_todos.args 优先填 target_date；不要返回宽泛 range_days。\n"
+        "6) 当用户明显在问知识库/文档内容（例如‘work.png里有什么’‘某篇论文提到什么’），应选择 query_knowledge。\n"
+        "7) 你的输出 JSON schema：\n"
         "{\n"
-        "  \"action\": \"normal_chat|query_todos|propose_todo|ask_user_confirm_proposal\",\n"
+        "  \"action\": \"normal_chat|query_todos|query_knowledge|propose_todo|ask_user_confirm_proposal\",\n"
         "  \"args\": { ... },\n"
         "  \"assistant_message\": \"给用户的第一句回应（中文）\",\n"
         "  \"trace\": {\"intent\": \"...\", \"signals\": [...], \"why\": \"...\"}\n"
@@ -212,4 +252,3 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
             assistant_message="",
             trace=RouterTrace(intent="fallback", signals=ctx.signals, why="Router 输出无法解析，降级为普通对话"),
         )
-

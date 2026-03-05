@@ -1,56 +1,77 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
+  <!-- 页面字符集：保证中文内容与 trace 正常显示 -->
   <meta charset="utf-8" />
   <title>LifeOps-Agent</title>
+  <!-- 引入静态样式文件（由 FastAPI /static 挂载） -->
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <!-- 总体双栏布局：左边主功能区，右边 trace 可审计轨迹 -->
   <div class="layout">
+    <!-- 主功能容器：承载聊天、计划、待办、索引、知识库问答 -->
     <div class="container">
       <h1>LifeOps-Agent</h1>
 
+      <!-- Chat 区域：核心对话入口 -->
       <section>
         <h2>Chat</h2>
+        <!-- 聊天消息显示区，app.js 会持续 append 新消息 -->
         <div id="chat-log" class="panel"></div>
         <div class="row">
-          <input id="chat-input" placeholder="Say something..." />
+          <!-- 用户输入框 -->
+          <input id="chat-input" placeholder="Say something..." aria-label="聊天输入" />
+          <!-- 发送按钮：触发 /api/chat -->
           <button id="chat-send">Send</button>
         </div>
       </section>
 
+      <!-- Plan 区域：展示从聊天意图生成的待办草案，并允许用户确认写入 -->
       <section>
         <h2>Plan (from chat intent)</h2>
+        <!-- 草案 JSON 输出区 -->
         <pre id="plan-output" class="panel"></pre>
+        <!-- 点击后调用 /api/plan/confirm -->
         <button id="plan-confirm">Confirm Add To Todos</button>
       </section>
 
+      <!-- Todos 区域：读取当天和未来 7 天待办 -->
       <section>
         <h2>Todos</h2>
         <div class="row">
           <button id="todos-today">Today</button>
           <button id="todos-upcoming">Upcoming 7 days</button>
         </div>
+        <!-- 待办查询结果展示区 -->
         <pre id="todos-output" class="panel"></pre>
       </section>
 
+      <!-- Knowledge Index 区域：触发本地文档扫描与索引 -->
       <section>
         <h2>Knowledge Index</h2>
         <button id="index-run">Run Index</button>
+        <!-- 索引执行结果（inserted/skipped/...） -->
         <pre id="index-output" class="panel"></pre>
       </section>
 
+      <!-- Ask 区域：独立知识库问答入口 -->
       <section>
         <h2>Ask Knowledge Base</h2>
         <div class="row">
-          <input id="ask-input" placeholder="Ask about your docs..." />
+          <!-- 知识库问题输入框 -->
+          <input id="ask-input" placeholder="Ask about your docs..." aria-label="知识库提问输入" />
+          <!-- 触发 /api/ask -->
           <button id="ask-send">Ask</button>
         </div>
+        <!-- 模型回答 -->
         <div id="ask-answer" class="panel"></div>
+        <!-- 引用列表（path/page/score/snippet） -->
         <div id="ask-citations" class="panel"></div>
       </section>
     </div>
 
+    <!-- 右侧 trace：显示每次 /api/chat 的决策轨迹（router -> tool -> llm） -->
     <aside class="trace">
       <h2>Trace (可审计决策轨迹)</h2>
       <div class="hint">每次 /api/chat 返回后自动刷新。用于展示 Router 决策 + 工具调用 + 关键输入输出。</div>
@@ -58,6 +79,7 @@
     </aside>
   </div>
 
+  <!-- 引入前端逻辑脚本：事件绑定、API 调用、结果渲染 -->
   <script src="/static/app.js"></script>
 </body>
 </html>

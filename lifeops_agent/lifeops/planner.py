@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+"""lifeops.planner
+
+这个模块负责“把自然语言转成待办草案（PlanProposal）”。
+
+它的角色在 HITL 流程里是：
+1) 用户输入可能是待办意图。
+2) 路由层先询问“是否生成草案”。
+3) 用户确认后，planner 负责生成结构化 JSON 草案。
+4) 真正写库由 `/api/plan/confirm` 完成（planner 不直接写数据库）。
+"""
+
 import json
 import logging
 from uuid import uuid4
@@ -12,7 +23,7 @@ from .time_parser import normalize_date_hint
 
 logger = logging.getLogger(__name__)
 
-# Minimal keyword intent check to avoid extra LLM calls.
+# 轻量意图关键词：用于便宜且可控的“候选检测”，避免每次都调用 LLM。
 _INTENT_KEYWORDS = [
     "todo",
     "task",
@@ -42,6 +53,7 @@ _INTENT_KEYWORDS = [
     "今天",
 ]
 
+# 用户“确认”常见表达。
 _AFFIRM_KEYWORDS = [
     "需要",
     "要",
@@ -53,24 +65,69 @@ _AFFIRM_KEYWORDS = [
     "可以的",
 ]
 
+# 用户“拒绝/取消”常见表达（优先级高于确认）。
+_REJECT_PATTERNS = [
+    "不好",
+    "不需要",
+    "不用",
+    "不要",
+    "不行",
+    "先不用",
+    "先不要",
+    "算了",
+    "取消",
+]
+
+# 精准确认词集合：用于严格匹配，降低误判。
+_AFFIRM_EXACT = {"需要", "要", "可以", "好的", "好", "行", "可以的", "没问题", "确认"}
+
 
 class PlanItem(BaseModel):
+    """单个待办草案项。"""
+
     title: str
     due_at: str | None = None
 
 
 class PlanProposal(BaseModel):
+    """草案容器：一个 proposal 可包含多条待办。"""
+
     items: list[PlanItem] = Field(default_factory=list)
 
 
 def detect_plan_intent(user_input: str) -> bool:
+    """轻量检测：判断输入是否“像”待办描述。"""
+
     text = user_input.lower()
     return any(keyword in text for keyword in _INTENT_KEYWORDS)
 
 
 def detect_affirmation(user_input: str) -> bool:
+    """确认识别：先排除否定，再匹配确认表达。
+
+    更严格的确认识别：先排除否定，再做短语确认。
+    """
+
     text = user_input.strip().lower()
-    return any(keyword == text or keyword in text for keyword in _AFFIRM_KEYWORDS)
+    if not text:
+        return False
+
+    if any(p in text for p in _REJECT_PATTERNS):
+        return False
+
+    if text in _AFFIRM_EXACT:
+        return True
+
+    return text.startswith(("需要", "可以", "好的", "行", "确认"))
+
+
+def detect_rejection(user_input: str) -> bool:
+    """拒绝识别：用于 HITL 中止分支。"""
+
+    text = user_input.strip().lower()
+    if not text:
+        return False
+    return any(p in text for p in _REJECT_PATTERNS)
 
 
 _WEEKDAY_MAP = {
@@ -139,6 +196,12 @@ def _resolve_relative_day_date(text: str) -> str | None:
 
 
 def _apply_fixed_date(fixed_date: str, due_at: str | None) -> str:
+    """将解析出的日期“强制合并”到 due_at。
+
+    - 若模型没给时间：直接返回 YYYY-MM-DD。
+    - 若模型给了时间：保留时间部分，只替换日期。
+    """
+
     if not due_at:
         return fixed_date
     if "T" in due_at:
@@ -148,6 +211,17 @@ def _apply_fixed_date(fixed_date: str, due_at: str | None) -> str:
 
 
 def propose_plan(user_input: str) -> tuple[str, PlanProposal]:
+    """根据用户输入生成结构化待办草案。
+
+    返回：
+    - proposal_id: 草案 ID（前端确认时会用到）
+    - proposal: 结构化草案对象
+
+    容错策略：
+    - 如果 LLM 返回非法 JSON，返回空草案而不是抛异常中断主流程。
+    - 若能确定日期（规则或 LLM），会把日期兜底写入 due_at。
+    """
+
     today = datetime.now().date().isoformat()
 
     # 让大模型解析“相对时间/自然语言日期”（大后天/下下周/这周三...）。

@@ -9,6 +9,12 @@ from __future__ import annotations
 - 负责决定什么时候调用大模型（LLM），什么时候调用“工具函数”（数据库查询/索引/检索）
 - 负责把结果序列化成前端需要的 JSON
 
+建议阅读顺序（初学者）：
+1) 先看 Pydantic 请求/响应模型（知道接口吃什么、吐什么）。
+2) 再看 `/api/chat`（理解主链路与状态机调用）。
+3) 再看 `/api/plan/confirm`（理解 HITL 最终写库点）。
+4) 最后看 `/api/index` + `/api/ask`（理解 RAG 外围链路）。
+
 当前架构的核心思想：
 1) 所有对话都落库（chat_messages），这是“短期记忆”的来源。
 2) 提供一个轻量的“会话摘要”机制（conversation_summaries），用于跨重启的“中期记忆”。
@@ -42,9 +48,9 @@ from .models import ChatMessage, TodoItem, MemoryCandidate, ConversationSummary
 from .settings import settings
 from .llm_qwen import chat_completion
 from .memory_extractor import extract_memory_from_dialogue
-from .planner import propose_plan, detect_affirmation
-from .agent_router import build_route_context, route_decision
-from .retrieval import index_documents, search_chunks, rag_answer
+from .planner import propose_plan
+from .graph_chat import build_chat_graph, run_chat_graph
+from .retrieval import index_documents
 
 
 # --------------------------------------------------------------------------------------
@@ -124,6 +130,13 @@ class ChatResponse(BaseModel):
 
     used_tool:
       - 便于调试：告诉你这次走了哪个分支（schedule/plan_gate/plan_proposal/None）。
+
+    citations:
+      - 当本轮触发知识库工具时，返回引用列表（path/page/snippet/score/reason）。
+      - 前端可直接展示“答案来自哪里”。
+
+    trace:
+      - 可审计决策轨迹，包含 router 决策、工具输入输出、关键中间结果。
     """
 
     answer: str
@@ -131,6 +144,7 @@ class ChatResponse(BaseModel):
     proposal_id: str | None = None
     proposal: dict | None = None
     used_tool: str | None = None
+    citations: list[dict] | None = None
     trace: dict | None = None
 
 
@@ -149,6 +163,9 @@ proposal_cache: dict[str, list[dict]] = {}
 # - 第二阶段：用户说“需要/好/可以”，我们才把 pending_text 拿出来生成草案
 pending_intents: dict[str, str] = {}
 
+# LangGraph 编排实例：启动时初始化。
+chat_graph = None
+
 # 每多少条消息刷新一次摘要（越小越频繁，也越费 token/cost）
 SUMMARY_REFRESH_TURNS = 10
 
@@ -159,9 +176,11 @@ SUMMARY_REFRESH_TURNS = 10
 
 @app.on_event("startup")
 def on_startup() -> None:
-    """FastAPI 启动时回调：创建 SQLite 表。"""
+    """FastAPI 启动时回调：创建 SQLite 表并初始化 LangGraph。"""
 
+    global chat_graph
     init_db()
+    chat_graph = build_chat_graph(pending_intents, proposal_cache)
 
 
 # --------------------------------------------------------------------------------------
@@ -398,157 +417,49 @@ def _answer_schedule(session_id: str) -> str:
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
-    """聊天入口（ReAct 版）。
+    """聊天入口（LangGraph 状态机版）。
 
-    新版核心：
-    1) LLM Router 先决定要不要调用工具（query_todos / ask_confirm / normal_chat）
-    2) 后端执行工具（DB 查询/生成草案）
-    3) 再把工具结果用于最终答复
+    主流程：
+    Chat -> LLM decide -> Tool -> Update state -> (maybe HITL) -> Final answer
 
-    仍然严格 Human-in-the-loop：
-    - 只要是“新增待办”，一定先 ask_user_confirm_proposal
-    - 用户回复肯定词后，才 propose_plan 生成草案；写入仍由 /api/plan/confirm 完成
+    关键顺序（为什么这样做）：
+    1) 先保存用户消息：保证即使后续调用失败，也能保留用户输入审计记录。
+    2) 再执行状态机：统一路由、工具调用与回复生成。
+    3) 再保存助手消息：形成完整对话对（user/assistant）。
+    4) 再做摘要与记忆抽取：这些属于增强能力，不阻塞主回复链路。
     """
 
     session_id = req.session_id or str(uuid4())
 
-    # A) 保存用户消息
+    # A) 保存用户消息（审计优先）。
     with SessionLocal() as db:
         db.add(ChatMessage(session_id=session_id, role="user", content=req.message))
         db.commit()
 
-    answer: str | None = None
-    proposal_id: str | None = None
-    proposal_payload: dict | None = None
-    used_tool: str | None = None
+    if chat_graph is None:
+        raise HTTPException(status_code=500, detail="chat graph not initialized")
 
-    # 初始化 trace
-    trace: dict | None = {
-        "steps": [
-            {"type": "input", "user_message": req.message, "session_id": session_id},
-        ]
-    }
+    # B) 交给状态机执行：内部会完成 Router 决策、工具调用、answer 生成。
+    state = run_chat_graph(compiled_graph=chat_graph, session_id=session_id, user_message=req.message)
+    answer = state.get("answer") or ""
+    proposal_id = state.get("proposal_id")
+    proposal_payload = state.get("proposal")
+    used_tool = state.get("used_tool")
+    citations = state.get("citations") or []
+    trace = state.get("trace")
 
-    # B) 两阶段确认：如果上一步我们在等待用户确认，此处优先处理
-    if detect_affirmation(req.message):
-        pending_text = pending_intents.pop(session_id, None)
-        if pending_text:
-            proposal_id, proposal = propose_plan(pending_text)
-            proposal_payload = proposal.model_dump()
-            proposal_cache[proposal_id] = [item.model_dump() for item in proposal.items]
-            answer = "已生成待办草案，请确认是否加入待办。"
-            used_tool = "plan_proposal"
-            trace["steps"].append({"type": "state", "name": "pending_intent_confirmed", "text": "用户确认生成待办草案"})
-            trace["steps"].append({"type": "tool", "name": "propose_plan", "input": pending_text})
-            trace["steps"].append({"type": "llm", "name": "plan_llm", "output": proposal_payload})
-
-    if answer is None:
-        summary = _get_summary(session_id)
-        recent = _load_recent_dialogue(session_id, limit=16)
-
-        ctx = build_route_context(
-            session_id=session_id,
-            user_message=req.message,
-            recent_dialogue=recent,
-            summary=summary,
-        )
-        decision = route_decision(ctx)
-        trace["steps"].append({
-            "type": "llm",
-            "name": "router",
-            "input": {
-                "user_message": req.message,
-                "signals": ctx.signals,
-                "summary": summary,
-                "recent_dialogue_len": len(recent),
-            },
-            "output": decision.model_dump(),
-        })
-
-        if decision.action == "query_todos":
-            # 1) Act：查询 DB
-            range_days = int(decision.args.get("range_days", 7) or 7)
-            now = datetime.now()
-            end = now + timedelta(days=range_days)
-            with SessionLocal() as db:
-                rows = (
-                    db.execute(
-                        select(TodoItem)
-                        .where(TodoItem.due_at != None)
-                        .where(TodoItem.due_at >= now)
-                        .where(TodoItem.due_at < end)
-                        .order_by(TodoItem.due_at.asc())
-                    )
-                    .scalars()
-                    .all()
-                )
-            items = [
-                {"title": r.title, "due_at": r.due_at.isoformat() if r.due_at else None}
-                for r in rows
-            ]
-
-            # 2) Reason：让 LLM 基于工具结果总结成自然语言
-            if not items:
-                answer = "我查了一下，未来一段时间没有已安排的待办。"
-            else:
-                prompt = (
-                    "你是生活助理。用户在询问他的安排。\n"
-                    "下面是从数据库查到的待办列表（真实数据），请用中文做简短总结。\n"
-                    "要求：不要编造列表中没有的事项；如果时间为空就不要猜。"
-                )
-                answer = chat_completion(
-                    [
-                        {"role": "system", "content": prompt},
-                        {"role": "user", "content": json.dumps(items, ensure_ascii=False)},
-                    ],
-                    temperature=0.2,
-                )
-            trace["steps"].append({"type": "tool", "name": "query_todos", "input": {"range_days": range_days}, "output": items})
-
-            if items:
-                trace["steps"].append({
-                    "type": "llm",
-                    "name": "schedule_summarize",
-                    "input": {"items": items[:10]},
-                    "output": answer,
-                })
-
-        elif decision.action in ("ask_user_confirm_proposal", "propose_todo"):
-            # 为了严格 Human-in-the-loop：哪怕模型选 propose_todo，我们也先走 ask_confirm
-            pending_intents[session_id] = decision.args.get("text") or req.message
-            answer = "我可以为你设置提醒。需要我为你生成待办草案吗？回复“需要/好/可以”即可。"
-            used_tool = "plan_gate"
-            trace["steps"].append({"type": "tool", "name": "ask_user_confirm_proposal", "input": {"text": pending_intents[session_id]}})
-
-        else:
-            # normal_chat
-            trace["steps"].append({"type": "tool", "name": "normal_chat"})
-            # 如果 decision.assistant_message 为空，则生成一个正常答复
-            if decision.assistant_message.strip():
-                answer = decision.assistant_message.strip()
-            else:
-                messages: list[dict] = [
-                    {"role": "system", "content": "你是一个中文生活助手。"},
-                ]
-                if summary:
-                    messages.append({"role": "system", "content": f"Conversation summary: {summary}"})
-                messages.extend(recent)
-                answer = chat_completion(messages)
-
-            trace["steps"].append({"type": "llm", "name": "normal_chat", "output": answer})
-
-    # D) 保存助手消息
+    # C) 保存助手消息，形成完整对话闭环。
     with SessionLocal() as db:
-        db.add(ChatMessage(session_id=session_id, role="assistant", content=answer or ""))
+        db.add(ChatMessage(session_id=session_id, role="assistant", content=answer))
         db.commit()
 
-    # E) 尝试刷新摘要
+    # D) 尝试刷新摘要（中期记忆）。
     _maybe_update_summary(session_id)
 
-    # F) 旁路：结构化记忆抽取（保留原逻辑）
+    # E) 旁路增强：结构化记忆抽取（失败不影响主流程）。
     dialogue = [
         {"role": "user", "content": req.message},
-        {"role": "assistant", "content": answer or ""},
+        {"role": "assistant", "content": answer},
     ]
     extraction = extract_memory_from_dialogue(dialogue)
     if extraction:
@@ -564,12 +475,14 @@ def chat(req: ChatRequest):
                 )
             db.commit()
 
+    # F) 统一返回给前端：答案 + 可选草案 + 可选引用 + trace。
     return {
         "answer": answer,
         "session_id": session_id,
         "proposal_id": proposal_id,
         "proposal": proposal_payload,
         "used_tool": used_tool,
+        "citations": citations,
         "trace": trace,
     }
 
@@ -701,6 +614,10 @@ def index_docs(rebuild: int = 0):
 
     参数：
     - rebuild=1：先清空 document_chunks 再重建索引（用于 OCR/分块策略改变后的刷新）
+
+    返回：
+    - 至少包含 inserted / skipped。
+    - 在 langchain/hybrid 后端下，可能额外返回 vector_chunks / vector_dir。
     """
 
     return index_documents(rebuild=bool(rebuild))
@@ -708,26 +625,26 @@ def index_docs(rebuild: int = 0):
 
 @app.post("/api/ask")
 def ask(req: AskRequest):
-    """RAG 问答：检索 TopK chunks -> LLM 基于 context 回答 -> 返回 citations。
+    """知识库问答入口。
 
-    citations 会展示在前端，用于可追溯。
+    这里复用同一套 LangGraph，而不是单独再写一套 RAG 流程：
+    - 通过 forced_action="query_knowledge" 强制走知识库工具节点；
+    - 保证 /api/chat 与 /api/ask 的可观测性和工具行为一致。
     """
 
-    citations = search_chunks(req.question, top_k=5)
-    if not citations:
-        return {"answer": "No relevant context found.", "citations": []}
+    if chat_graph is None:
+        raise HTTPException(status_code=500, detail="chat graph not initialized")
 
-    answer = rag_answer(req.question, citations)
+    state = run_chat_graph(
+        compiled_graph=chat_graph,
+        session_id=f"ask-{uuid4()}",
+        user_message=req.question,
+        forced_action="query_knowledge",
+        forced_args={"question": req.question, "top_k": 5},
+    )
+
     return {
-        "answer": answer,
-        "citations": [
-            {
-                "path": c.path,
-                "page": c.page,
-                "snippet": c.snippet,
-                "score": c.score,
-                "reason": c.reason,
-            }
-            for c in citations
-        ],
+        "answer": state.get("answer") or "No relevant context found.",
+        "citations": state.get("citations") or [],
+        "trace": state.get("trace"),
     }

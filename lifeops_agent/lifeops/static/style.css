@@ -1,13 +1,16 @@
+/* 让根节点与 body 占满视口高度，便于后续 sticky 与 max-height 计算。 */
 html, body {
   height: 100%;
 }
 
+/* 全局基础样式：字体、背景色、默认文字颜色。 */
 body {
   font-family: Arial, sans-serif;
   background: #f7f7f7;
   color: #333;
 }
 
+/* 页面主布局：左侧主功能区 + 右侧 trace 审计区。 */
 .layout {
   display: flex;
   gap: 16px;
@@ -17,6 +20,7 @@ body {
   align-items: flex-start;
 }
 
+/* 左侧主容器：承载 chat / todo / index / ask 等核心功能。 */
 .container {
   flex: 1;
   padding: 16px;
@@ -24,6 +28,9 @@ body {
   border-radius: 8px;
 }
 
+/* 右侧 trace 面板：
+   - sticky 让它随页面滚动时固定在可视区域；
+   - max-height + overflow 让长 trace 可滚动查看。 */
 .trace {
   width: 420px;
   padding: 16px;
@@ -35,12 +42,15 @@ body {
   overflow: auto;
 }
 
+/* trace 下的说明文字，弱化视觉权重。 */
 .hint {
   font-size: 12px;
   color: #666;
   margin-bottom: 8px;
 }
 
+/* 通用面板样式：
+   用于聊天日志、JSON 输出、引用区、trace 区等。 */
 .panel {
   background: #fafafa;
   border: 1px solid #ddd;
@@ -50,25 +60,30 @@ body {
   white-space: pre-wrap;
 }
 
+/* 一行内并排布局（输入框 + 按钮）。 */
 .row {
   display: flex;
   gap: 8px;
 }
 
+/* 输入框默认占据可用剩余宽度。 */
 input {
   flex: 1;
   padding: 8px;
 }
 
+/* 按钮统一尺寸与鼠标样式。 */
 button {
   padding: 8px 12px;
   cursor: pointer;
 }
 
+/* 聊天区每一行消息的上下间距。 */
 .chat-line {
   margin: 4px 0;
 }
 
+/* 引用块分隔样式：每条 citation 之间加细分割线。 */
 .citation {
   border-top: 1px solid #eee;
   padding: 6px 0;

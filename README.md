@@ -1,468 +1,327 @@
 # LifeOps-Agent (Web)
 
-一个可运行的个人生活助手智能体 Demo：FastAPI + SQLite + Jinja2 单页 Web UI + Qwen（DashScope OpenAI 兼容模式）。
-
-本项目重点展示：
-- 带“可审计 trace”的 ReAct 路由（LLM 决策 -> 工具调用 -> LLM 总结）
-- Human-in-the-loop 待办写入（先确认，再入库）
-- 本地多格式知识库索引与可追溯引用（PDF/TXT/PNG OCR）
+一个可运行的个人生活助手智能体项目：`FastAPI + LangGraph + SQLite + Jinja2`，接入 `Qwen (DashScope OpenAI 兼容模式)`，
+支持聊天编排、Human-in-the-loop 待办写入、结构化记忆抽取、本地知识库 RAG（含可追溯引用）。
 
 ---
 
-## 项目结构（目录树）
+## 当前能力概览
 
-> 以 `lifeops_agent/` 为项目根目录。
+- 持续聊天：对话落库（`chat_messages`），前端保留 `session_id`
+- ReAct 路由：`LLM Router -> Tool -> LLM/Result`，并返回可审计 `trace`
+- Human-in-the-loop：待办只能“先草案，再用户确认入库”
+- 记忆抽取：聊天后自动抽取 `memory_candidates`（候选态）
+- 待办查询：今日 / 未来 N 天
+- 本地知识库：递归索引 `PDF/TXT/PNG(OCR)`，`ask` 返回 `citations`
+- 可切换检索后端：`bm25 | langchain | hybrid`
 
-```
+---
+
+## 项目结构（以 `lifeops_agent/` 为根）
+
+```text
 lifeops_agent/
-  README.md
-  requirements.txt
-  run.ps1
-  .gitignore
-  .env.example
-  .env                     # 本机私有配置（不要提交）
-  data/
-    lifeops.db             # SQLite 数据库（运行时自动创建，不要提交）
+  README.md                    # 子目录文档入口（指向仓库根 README）
+  requirements.txt             # Python 依赖清单
+  run.ps1                      # Windows 启动脚本（可选）
+  .gitignore                   # Git 忽略规则
+  .env.example                 # 环境变量模板
+  .env                         # 本机私有配置（不要提交）
+  data/                        # 运行期数据目录
+    lifeops.db                 # SQLite 数据库文件
 
-  lifeops/
-    __init__.py
-    main.py                # FastAPI 入口：路由 + ReAct 编排 + trace
-    settings.py            # 环境变量配置（.env）
-    db.py                  # SQLAlchemy engine/session + init_db
-    models.py              # ORM 表结构：chat/todo/memory/doc_chunks/summary
+  lifeops/                     # 后端核心包
+    __init__.py                # 包说明与模块导入入口
+    main.py                    # FastAPI 入口：路由 + 状态编排 + API 输出
+    settings.py                # 配置中心：读取 .env
+    db.py                      # 数据库引擎/会话工厂/建表初始化
+    models.py                  # ORM 表模型定义
 
-    llm_qwen.py            # OpenAI SDK 调 Qwen（计时日志）
-    agent_router.py        # ReAct Router：让 LLM 决定调用哪些工具
-    planner.py             # 待办草案生成（LLM JSON）+ Human-in-the-loop
-    time_parser.py         # 时间解析：相对日兜底 + LLM 解析复杂表达
-    memory_extractor.py    # 对话结构化记忆抽取（候选）
+    llm_qwen.py                # Qwen 调用封装（OpenAI 兼容）
+    agent_router.py            # LLM Router：决策调用哪个工具
+    graph_chat.py              # LangGraph 状态机：聊天主流程编排
+    planner.py                 # 待办草案生成与确认/拒绝识别
+    time_parser.py             # 时间解析（规则兜底 + LLM）
+    memory_extractor.py        # 对话结构化记忆抽取
 
-    retrieval.py           # 索引 / 检索 / RAG 生成（带 citations）
+    retrieval.py               # 索引/检索/RAG 主入口（bm25/langchain/hybrid）
+    rag_langchain.py           # 向量检索链路（FAISS + 可选重排）
 
-    ingest/
-      __init__.py
-      scanner.py           # 递归扫描 docs_dir，分发给不同解析器
-      pdf_text.py          # PDF 提取文本（保留页码）
-      txt_text.py          # TXT 直接读取
-      ocr_png.py           # PNG OCR（pytesseract）
+    ingest/                    # 多格式文档解析层
+      __init__.py              # ingest 包说明
+      scanner.py               # 递归扫描并按类型分发解析
+      pdf_text.py              # PDF 按页提取文本
+      txt_text.py              # TXT 文件读取
+      ocr_png.py               # PNG 预处理 + OCR 文本提取
 
     templates/
-      index.html            # 单页 UI（左侧功能区 + 右侧 trace 面板）
+      index.html               # 单页前端模板（Jinja2）
 
     static/
-      app.js                # 极简前端逻辑：fetch API + 渲染
-      style.css             # 样式（含右侧 trace sticky 布局）
+      app.js                   # 前端交互逻辑（fetch + 渲染）
+      style.css                # 前端样式（双栏与 trace 面板）
 ```
 
----
+### 补充：每个核心文件是做什么的（恢复详细说明）
 
-## 每个文件是做什么的？（按模块解释）
-
-### 1) Web 层 / 应用入口
+#### 1) Web 层 / 应用入口
 
 - `lifeops/main.py`
   - FastAPI 应用入口。
-  - **核心职责**：把一次 `/api/chat` 请求编排成“智能体流水线”。
-    - 把用户消息写入 `chat_messages` 表
-    - 调用 `agent_router.route_decision()` 让 LLM 决策下一步动作（ReAct）
-    - 若需要工具：执行数据库查询（如 `query_todos`）或进入 Human-in-the-loop 待办流程
-    - 最后把 assistant 回复写入 DB
-    - 返回 `trace`，方便你在网页右侧审计这次请求经历了什么
-  - 还包含：
-    - `/api/plan/confirm`：把草案写入 `todo_items`
-    - `/api/todos/today` & `/api/todos/upcoming`：待办查询
-    - `/api/index` & `/api/ask`：索引与 RAG 问答
-
+  - 负责把一次 `/api/chat` 请求编排成完整智能体流程：
+    1. 写入用户消息
+    2. 调用 `graph_chat` 执行状态机
+    3. 得到回复/草案/引用/trace
+    4. 写入 assistant 消息
+    5. 触发摘要更新与记忆抽取（旁路增强）
 - `lifeops/templates/index.html`
-  - 单页 UI：聊天、待办确认、索引、问答。
-  - 右侧的 Trace 面板用于展示 /api/chat 返回的可审计轨迹。
-
+  - 单页 UI 模板：聊天、草案确认、待办查询、索引、知识库问答、trace。
 - `lifeops/static/app.js`
-  - 前端 JS：用 `fetch()` 调用后端 API。
-  - 负责渲染：聊天记录、proposal 草案、todos、index 结果、ask citations、trace。
-
+  - 前端事件绑定与 API 调用。
+  - 渲染聊天区、待办区、索引结果、引用、trace。
 - `lifeops/static/style.css`
-  - 样式文件。
-  - 重点：页面左右布局，右侧 trace 面板使用 `position: sticky` 跟随滚动。
+  - 页面布局与样式（左侧业务区 + 右侧 sticky trace）。
 
-### 2) 配置 / 数据库
+#### 2) 配置 / 数据库
 
 - `lifeops/settings.py`
-  - 用 `pydantic-settings` 读取 `.env`。
-  - 配置项包括：
-    - `QWEN_API_KEY`、`QWEN_MODEL`、`BASE_URL`
-    - `DATABASE_URL`（建议用固定路径，避免相对路径串库）
-    - `DOCS_DIR`、`TESSERACT_CMD` 等
-
+  - 从 `.env` 读取运行配置（Qwen、SQLite、OCR、RAG 后端参数）。
 - `lifeops/db.py`
-  - SQLAlchemy engine/session 工厂。
-  - `init_db()` 会在启动时创建表。
-
+  - 创建 SQLAlchemy `engine` 与 `SessionLocal`。
+  - 启动时确保 SQLite 路径存在并建表。
 - `lifeops/models.py`
-  - ORM 表结构：
-    - `ChatMessage`：持久化对话
-    - `TodoItem`：确认写入的待办
-    - `MemoryCandidate`：从对话中抽取的结构化记忆候选
-    - `DocumentChunk`：知识库分块
-    - `ConversationSummary`：对话摘要（跨重启中期记忆）
+  - ORM 表定义：
+    - `ChatMessage`
+    - `TodoItem`
+    - `MemoryCandidate`
+    - `DocumentChunk`
+    - `ConversationSummary`
 
-### 3) LLM 能力层（Qwen + ReAct）
+#### 3) LLM 与智能体编排
 
 - `lifeops/llm_qwen.py`
-  - 通过官方 `openai` SDK，以 DashScope OpenAI 兼容模式调用 Qwen。
-  - 记录 LLM 调用耗时日志（便于性能排查）。
-
+  - 封装 Qwen 调用（OpenAI SDK 兼容方式）与耗时日志。
 - `lifeops/agent_router.py`
-  - ReAct Router：
-    - 输入：用户消息 + signals + summary + 最近对话
-    - 输出：**严格 JSON**（Pydantic 校验）
-      - `action`：normal_chat/query_todos/ask_user_confirm_proposal/propose_todo
-      - `args`：工具参数
-      - `trace`：可审计的决策理由（不是 CoT）
-  - 目的：让“模型真正参与决定要不要调用工具”。
-
+  - Router 决策模块：让 LLM 输出结构化 action/args/trace。
+- `lifeops/graph_chat.py`
+  - LangGraph 状态机主流程（load_context -> hitl_check -> decide -> run_tool -> finalize）。
+  - 支持强制动作（`/api/ask` 走 `query_knowledge`）。
 - `lifeops/planner.py`
-  - `propose_plan(text)`：让 LLM 把一句话变成待办 JSON（items[{title,due_at}])
-  - Human-in-the-loop：
-    - 生成草案 ≠ 写入 todo
-    - 只有用户点确认才写入 `todo_items`
-
+  - 草案生成、确认/拒绝识别、日期兜底合并。
 - `lifeops/time_parser.py`
-  - 时间解析模块。
-  - 对“今天/明天/后天/大后天”使用确定性规则兜底（避免错一天）。
-  - 对更复杂表达交给 LLM 输出 `YYYY-MM-DD`。
-
+  - 时间解析：相对日规则兜底 + LLM 复杂表达解析。
 - `lifeops/memory_extractor.py`
-  - 从最近对话抽取 “会议/DDL/生日/待办等” 结构化候选。
-  - 输出必须符合 JSON schema（Pydantic 校验），失败即丢弃，不影响主流程。
+  - 对话后抽取结构化记忆候选（schema 校验失败则丢弃）。
 
-### 4) 知识库索引 / RAG
+#### 4) 检索与索引
 
 - `lifeops/retrieval.py`
-  - `/api/index`：扫描本地目录 -> 文本抽取 -> chunk -> 存 `document_chunks`
-  - `/api/ask`：关键词检索 topK -> 把 chunks 作为 context -> 调用 LLM 回答
-  - 返回 citations：file_path/page/snippet/score（用于可追溯）
+  - 索引构建入口（SQLite + 可选向量索引）
+  - 检索入口（`bm25/langchain/hybrid`）
+  - 证据融合（含 RRF）
+  - RAG 回答拼接与引用标签生成
+- `lifeops/rag_langchain.py`
+  - LangChain 向量链路实现：
+    - 文档加载（PDF/TXT/MD/DOCX/PNG OCR）
+    - 分块（Recursive splitter）
+    - FAISS 持久化
+    - 可选 cross-encoder 重排
 
-- `lifeops/ingest/scanner.py`
-  - 递归扫描 `DOCS_DIR`，识别文件类型并分发给对应解析器。
+#### 5) 文档解析 ingest
 
-- `lifeops/ingest/pdf_text.py`
-  - 用 `pypdf` 提取每页文字并保留页码。
-
-- `lifeops/ingest/txt_text.py`
-  - 按文本读取 `.txt`。
-
-- `lifeops/ingest/ocr_png.py`
-  - 用 Pillow + pytesseract 做 OCR（支持 `TESSERACT_CMD` 指定路径）。
-
----
-
-## 数据流（你可以怎么理解这个智能体）
-
-以 `/api/chat` 为例（ReAct）：
-
-1) 用户发消息 -> 写入 `chat_messages`
-2) Router（LLM）决策：这句话是“查询安排”还是“新增待办”还是“普通聊天”
-3) 若需要工具：
-   - 查询就查 DB 返回事实
-   - 新增待办就进入 Human-in-the-loop（先问要不要生成草案）
-4) 把工具结果交回给 LLM 生成最终自然语言回复
-5) assistant 回复写回 `chat_messages`
-6) 返回 `trace`，前端右侧展示“这一轮做了什么”
+- `lifeops/ingest/scanner.py`：递归扫描并分发 PDF/TXT/PNG
+- `lifeops/ingest/pdf_text.py`：PDF 按页提取文本
+- `lifeops/ingest/txt_text.py`：TXT 读取
+- `lifeops/ingest/ocr_png.py`：图片预处理 + OCR
 
 ---
 
-## Quick start（Windows）
+### 补充：请求的数据流（恢复详细解释）
 
-1) 创建并激活 venv
+以 `/api/chat` 为例：
+
+1. 前端发送 `{message, session_id}`
+2. 后端先把 user 消息写入 `chat_messages`
+3. 执行 `run_chat_graph`：
+   - 读最近对话与摘要
+   - HITL 检查（是否确认/拒绝草案）
+   - Router 决策 action
+   - 执行工具（`query_todos` / `query_knowledge` / `plan_gate` / `normal_chat`）
+4. 得到 `answer/proposal/citations/trace`
+5. 把 assistant 消息写入 `chat_messages`
+6. 旁路更新摘要与记忆候选
+7. 返回 JSON 给前端并渲染
+
+---
+
+## 环境要求
+
+- Windows（已按该环境开发）
+- Python 3.10+
+- Tesseract OCR（若要启用 PNG OCR）
+- Qwen API Key（仅放 `.env`）
+
+---
+
+## 快速启动（Windows PowerShell）
 
 ```powershell
+cd E:\pycharm\PythonProject\lifeops\lifeops_agent
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-```
-
-2) 安装依赖
-
-```powershell
 pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-3) 配置 `.env`
+编辑 `.env` 至少填入：
 
-复制 `.env.example` 为 `.env`，填入：
-- `QWEN_API_KEY=...`
+```dotenv
+QWEN_API_KEY=你的key
+QWEN_MODEL=qwen-turbo
+```
 
-4) 启动
+启动服务：
 
 ```powershell
 uvicorn lifeops.main:app --reload
 ```
 
-打开： http://127.0.0.1:8000
+打开：`http://127.0.0.1:8000`
 
 ---
 
-## 安全说明
+## 检索后端配置（关键）
 
-- `.env`、`data/`、`.venv/` 都应在 `.gitignore` 中忽略。
-- 不要把真实 `QWEN_API_KEY` 提交到仓库。
+`.env` 示例：
 
----
+```dotenv
+# bm25 | langchain | hybrid
+RAG_BACKEND=hybrid
+RAG_TOP_K=5
+RAG_CANDIDATE_K=24
+RAG_VECTOR_DIR=data/vector/faiss
+RAG_EMBED_MODEL=BAAI/bge-small-zh-v1.5
+RAG_RERANK_MODEL=BAAI/bge-reranker-base
+RAG_USE_RERANK=1
+RAG_CHUNK_SIZE=600
+RAG_CHUNK_OVERLAP=120
+```
 
-## API 文档（MVP）
+切换后建议重建索引：
 
-> Base URL：默认 `http://127.0.0.1:8000`
->
-> 说明：所有 API 都是 JSON（除了 `/` 返回 HTML）。
+```powershell
+Invoke-RestMethod -Method Post "http://127.0.0.1:8000/api/index?rebuild=1"
+```
 
-### 0) GET /health
+回退到稳定 BM25：
 
-- 用途：健康检查
-- 响应：
-
-```json
-{ "status": "ok" }
+```dotenv
+RAG_BACKEND=bm25
 ```
 
 ---
 
-### 1) GET /
+## API 速览
 
-- 用途：渲染单页 Web UI（Jinja2 模板）
-- 响应：HTML
-
----
-
-### 2) POST /api/chat
-
-- 用途：对话入口（ReAct 编排的核心接口）
-  - 先落库用户消息
-  - 调用 Router（LLM）决定下一步动作（查询待办 / 进入待办确认 / 普通聊天）
-  - 必要时调用工具（DB 查询 / 生成草案）
-  - 生成 assistant 回复并落库
-  - 返回可审计 trace
-
-#### Request Body
+### `GET /health`
 
 ```json
-{
-  "message": "我明天要去理发",
-  "session_id": "可选：uuid"
-}
+{"status":"ok"}
 ```
 
-- `session_id`：前端通常保存在 localStorage。首次可不传，后端会生成并返回。
+### `POST /api/chat`
 
-#### Response Body
+请求：
+
+```json
+{"message":"我后天要做什么？","session_id":"可选uuid"}
+```
+
+响应（字段会按本轮动作变化）：
 
 ```json
 {
-  "answer": "我可以为你设置提醒。需要我为你生成待办草案吗？回复“需要/好/可以”即可。",
-  "session_id": "9b7b2b2c-...",
+  "answer": "...",
+  "session_id": "...",
   "proposal_id": null,
   "proposal": null,
-  "used_tool": "plan_gate",
-  "trace": {
-    "steps": [
-      {"type": "input", "user_message": "我明天要去理发", "session_id": "..."},
-      {"type": "llm", "name": "router", "input": {"signals": ["明天"], "recent_dialogue_len": 0}, "output": {"action": "ask_user_confirm_proposal", "args": {"text": "我明天要去理发"}}},
-      {"type": "tool", "name": "ask_user_confirm_proposal", "input": {"text": "我明天要去理发"}}
-    ]
-  }
+  "used_tool": "query_todos",
+  "citations": [],
+  "trace": {"meta": {}, "steps": []}
 }
 ```
 
-#### 重要行为说明（Human-in-the-loop）
+说明：
+- 若命中待办意图且未确认：通常返回 `used_tool=plan_gate`
+- 若用户确认后生成草案：会返回 `proposal_id + proposal`
+- 若命中知识库工具：会返回 `citations`
 
-- 当用户输入像是“新增待办”的内容时：
-  - 本接口不会直接写入 todo
-  - 而是先返回 `answer` 询问用户是否生成草案
+### `POST /api/plan/confirm`
 
-- 当用户回复“需要/好/可以”等肯定词时：
-  - 本接口会返回 `proposal_id` + `proposal`（草案 JSON）
-  - 前端需要让用户点击“确认加入待办”，再调用 `/api/plan/confirm` 才会入库
+```json
+{"proposal_id":"..."}
+```
 
-#### 常见错误
+说明：
+- 这是唯一“把草案真正写入 todo_items”的接口。
+- 由于服务重启导致内存草案丢失，会返回 404。
 
-- 500：通常是 `.env` 缺失 `QWEN_API_KEY` 或网络/模型调用失败
+### `GET /api/todos/today`
+### `GET /api/todos/upcoming?days=7`
+
+说明：
+- 两个接口都按时间排序返回。
+- `today` 接口可能附带 LLM 一句话 `summary`。
+
+### `POST /api/index`
+- 支持 `?rebuild=1`
+
+说明：
+- `rebuild=1` 会重建索引（用于 OCR 参数或分块策略变更后的刷新）。
+- 在 `langchain/hybrid` 模式会额外构建向量索引。
+
+### `POST /api/ask`
+
+```json
+{"question":"work.png里面有什么"}
+```
+
+返回：`answer + citations + trace`
+
+说明：
+- `/api/ask` 复用 LangGraph，通过 `forced_action=query_knowledge` 走统一工具链。
 
 ---
 
-### 3) POST /api/plan/propose（保留接口，可选）
+## 2 分钟验收流程
 
-- 用途：显式把一句话直接变成待办草案（不入库）
-- 注意：当前 UI 主要通过 `/api/chat` 的意图识别触发，不必须使用这个接口。
-
-#### Request
-
-```json
-{ "text": "下周三下午三点开会" }
-```
-
-#### Response
-
-```json
-{
-  "proposal_id": "uuid",
-  "proposal": {
-    "items": [
-      {"title": "开会", "due_at": "2026-03-11T15:00:00"}
-    ]
-  }
-}
-```
+1. 打开页面，聊天输入：`周三和李总开会，下午三点`
+2. 模型提示是否建草案，回复：`需要`
+3. 点击 `Confirm Add To Todos`
+4. 点击 `Upcoming 7 days`，看到新增待办
+5. 点击 `Run Index` 建索引
+6. 在 `Ask Knowledge Base` 提问，确认出现 `citations`
+7. 右侧 `Trace` 可看到 `input -> router -> tool -> llm/finalize`
 
 ---
 
-### 4) POST /api/plan/confirm
+## 常见问题
 
-- 用途：把草案写入 `todo_items`（真正入库动作）
-- Human-in-the-loop：只有用户确认才调用它
+- `TypeError: Client.__init__() got an unexpected keyword argument 'proxies'`
+  - 常见于 `httpx` 版本不匹配，按 `requirements.txt` 重装依赖。
 
-#### Request
+- `TesseractNotFoundError`
+  - 配置 `.env` 中 `TESSERACT_CMD` 为 `tesseract.exe` 绝对路径，或确认 PATH 生效后重开终端。
 
-```json
-{ "proposal_id": "uuid" }
-```
-
-#### Response
-
-```json
-{ "inserted": 1 }
-```
-
-#### 常见错误
-
-- 404：`proposal_id not found (maybe server restarted)`
-  - 因为 `proposal_cache` 是内存缓存，服务重启会丢失草案。
+- `No relevant context found.`
+  - 先执行 `/api/index`
+  - 检查 `DOCS_DIR` 是否正确
+  - 若已启用向量检索，确认模型依赖已安装并索引重建成功
 
 ---
 
-### 5) GET /api/todos/today
+## 安全与提交规范
 
-- 用途：查询“今天”的待办（仅 `due_at` 非空）
-
-#### Response
-
-```json
-{
-  "items": [
-    {"id": 1, "title": "理发", "due_at": "2026-03-05T09:00:00"}
-  ],
-  "summary": "今天你需要完成 1 项待办：理发。"
-}
-```
-
-> `summary` 为可选：当前实现会调用 LLM 对清单做一句话总结。
-
----
-
-### 6) GET /api/todos/upcoming?days=7
-
-- 用途：查询未来 N 天待办（默认 7 天，仅 `due_at` 非空）
-
-#### Query
-
-- `days`：int，可选，默认 7
-
-#### Response
-
-```json
-{
-  "items": [
-    {"id": 1, "title": "和王总开会", "due_at": "2026-03-11T15:00:00"}
-  ]
-}
-```
-
----
-
-### 7) POST /api/index
-
-- 用途：扫描本地文档目录 `DOCS_DIR`（递归）并写入 `document_chunks`
-- 支持文件：PDF/TXT/PNG(OCR)
-- 去重规则：同 path + page + chunk_hash 则跳过
-
-#### Request
-
-无 body。
-
-#### Response
-
-```json
-{ "inserted": 18, "skipped": 0 }
-```
-
-字段含义：
-- `inserted`：新增写入的 chunk 数量
-- `skipped`：本次扫描中，因去重而跳过的 chunk 数量
-
----
-
-### 8) POST /api/ask
-
-- 用途：知识库问答（RAG）
-  - 先从 `document_chunks` 检索 topK
-  - 再把 chunks 作为 context 调用 LLM 生成回答
-  - 返回 citations 供前端展示（可追溯）
-
-#### Request
-
-```json
-{ "question": "work.png 里讲了什么？" }
-```
-
-#### Response
-
-```json
-{
-  "answer": "...（会带 [1][2] 这样的引用标记）",
-  "citations": [
-    {
-      "path": "E:/work/agent/docu/work.png",
-      "page": null,
-      "snippet": "...（截断片段）",
-      "score": 3.0
-    }
-  ]
-}
-```
-
-#### 常见错误
-
-- `No relevant context found.`：检索没有命中（可能需要先运行 `/api/index`）
-
----
-
-## API 快速验证（PowerShell 示例）
-
-> 下面示例假设服务运行在 8000 端口。
-
-### 1) 聊天 + 触发待办草案
-
-```powershell
-$sid = [guid]::NewGuid().ToString()
-Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/chat -ContentType 'application/json' -Body (@{message='大后天去理发'; session_id=$sid} | ConvertTo-Json)
-Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/chat -ContentType 'application/json' -Body (@{message='需要'; session_id=$sid} | ConvertTo-Json)
-```
-
-### 2) 确认写入 todo
-
-把上一步返回的 `proposal_id` 复制进来：
-
-```powershell
-Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/plan/confirm -ContentType 'application/json' -Body (@{proposal_id='YOUR_PROPOSAL_ID'} | ConvertTo-Json)
-```
-
-### 3) 查询未来待办
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/api/todos/upcoming?days=7
-```
-
-### 4) 索引与问答
-
-```powershell
-Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/index
-Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/ask -ContentType 'application/json' -Body (@{question='stage2 是什么？'} | ConvertTo-Json)
-```
+- 不提交 `.env`、`data/`、`.venv/`
+- 不在代码中硬编码任何 API Key
+- 生产环境请收紧 CORS 与日志脱敏策略

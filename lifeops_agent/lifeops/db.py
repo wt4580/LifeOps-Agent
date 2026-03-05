@@ -1,6 +1,18 @@
+"""
+lifeops.db
+
+这个模块是项目的“数据库底座”，职责只有两件：
+1) 创建数据库连接与会话工厂（engine / SessionLocal）。
+2) 在应用启动时初始化表结构（init_db）。
+
+对初学者的心智模型：
+- engine：数据库“连接能力”。
+- SessionLocal：每次请求拿到的一次“数据库操作上下文”。
+- Base：所有 ORM 表模型的共同父类。
+"""
+
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
@@ -9,31 +21,51 @@ from .settings import settings
 
 
 class Base(DeclarativeBase):
+    """ORM 基类。所有模型类都继承它，SQLAlchemy 才能收集元数据。"""
+
     pass
 
 
+# 创建数据库引擎：
+# - 这里使用 `future=True` 启用 2.x 风格行为，减少兼容层歧义。
 engine = create_engine(settings.database_url, future=True)
+
+# 创建会话工厂：
+# - autoflush=False：避免查询前自动刷盘带来的“隐式写入”困惑。
+# - autocommit=False：显式 commit 更可控。
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
 def _ensure_sqlite_dir() -> None:
     """确保 SQLite 文件所在目录存在。
 
-    我们把 DB URL 固定成绝对路径后，不能再简单 os.makedirs('./data')。
-    否则会出现“目录创建了，但 DB 文件在另一个位置”的错觉。
+    背景：
+    - 当前 database_url 使用绝对路径。
+    - 如果目录不存在，SQLite 无法创建 db 文件，会在启动时报错。
     """
 
     url = settings.database_url
     if not url.startswith("sqlite:///"):
+        # 非 sqlite 场景（例如未来切到 MySQL/Postgres）无需该步骤。
         return
 
-    # url 形如：sqlite:///E:/.../data/lifeops.db
+    # 例：sqlite:///E:/.../data/lifeops.db -> 提取真实文件路径。
     db_path = url.replace("sqlite:///", "", 1)
+
+    # 只创建父目录，不触碰具体文件。
     Path(db_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 
 
 def init_db() -> None:
+    """初始化数据库：
+    1) 确保 SQLite 目录存在。
+    2) 导入 models 触发表定义注册。
+    3) create_all 按模型创建缺失表（不会删除已有表）。
+    """
+
     _ensure_sqlite_dir()
+
+    # 仅为触发 ORM 模型注册到 Base.metadata。
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)

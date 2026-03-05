@@ -4,15 +4,24 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="d9946caa-8b85-4043-9ced-0fa18314ffc0" name="更改" comment="初步实现助手功能，设计并实现 Web 版智能体，包含持续对话、计划草案生成、人工确认入库、待办查询等核心业务流程（FastAPI + Jinja2 + SQLite）。&#10;接入通义千问 Qwen（OpenAI 兼容 SDK），实现 LLM 调用、耗时日志与可控系统提示，保证稳定可追溯响应。&#10;实现自动结构化记忆抽取（会议/截止/生日/待办等），通过 Pydantic Schema 校验保证数据质量。&#10;构建本地文档知识库索引管线（PDF/TXT/PNG OCR），实现分块、去重入库与检索问答，并输出引用溯源（path/page/snippet）。&#10;设计 Human‑in‑the‑loop 计划流程：检测意图 → 生成草案 → 用户确认写入待办，降低误写风险。&#10;工程化落地：环境配置 .env、日志、可复用模块拆分（ingest/retrieval/planner/memory），支持 Windows 一键启动。">
-      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/agent_router.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/time_parser.py" afterDir="false" />
+    <list default="true" id="d9946caa-8b85-4043-9ced-0fa18314ffc0" name="更改" comment="">
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/README.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/docs/architecture.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/graph_chat.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/rag_langchain.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/lifeops_agent/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/agent_router.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/agent_router.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/db.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/db.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/__init__.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/ocr_png.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/ocr_png.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/pdf_text.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/pdf_text.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/scanner.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/scanner.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/txt_text.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/ingest/txt_text.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/llm_qwen.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/llm_qwen.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/main.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/memory_extractor.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/memory_extractor.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/models.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/models.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/planner.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/planner.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/retrieval.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/retrieval.py" afterDir="false" />
@@ -20,6 +29,7 @@
       <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/static/app.js" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/static/app.js" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/static/style.css" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/static/style.css" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/templates/index.html" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/templates/index.html" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/lifeops_agent/lifeops/time_parser.py" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/lifeops/time_parser.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/lifeops_agent/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/lifeops_agent/requirements.txt" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -34,9 +44,9 @@
   </component>
   <component name="CopilotUserSelectedModel">
     <selectedModels>
-      <entry key="chat-panel" value="GPT-5.2" />
-      <entry key="agent-panel" value="GPT-5.2" />
       <entry key="edit-panel" value="GPT-5 mini" />
+      <entry key="chat-panel" value="GPT-5.3-Codex" />
+      <entry key="agent-panel" value="GPT-5.3-Codex" />
     </selectedModels>
   </component>
   <component name="Git.Settings">
@@ -50,7 +60,7 @@
 }</component>
   <component name="GithubPullRequestsUISettings">{
   &quot;selectedUrlAndAccountId&quot;: {
-    &quot;url&quot;: &quot;https://github.com/wt4580/LifeOps-Agent&quot;,
+    &quot;url&quot;: &quot;git@github.com:wt4580/LifeOps-Agent.git&quot;,
     &quot;accountId&quot;: &quot;fa37ac51-e6f3-456e-b519-9f705eae66ce&quot;
   }
 }</component>
@@ -69,7 +79,8 @@
   &quot;keyToString&quot;: {
     &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;master&quot;
+    &quot;git-widget-placeholder&quot;: &quot;master&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;Settings.Markdown&quot;
   }
 }</component>
   <component name="RecentsManager">
@@ -100,7 +111,15 @@
       <option name="project" value="LOCAL" />
       <updated>1772539172980</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="初步实现助手功能，设计并实现 Web 版智能体，包含持续对话、计划草案生成、人工确认入库、待办查询等核心业务流程（FastAPI + Jinja2 + SQLite）。&#10;接入通义千问 Qwen（OpenAI 兼容 SDK），实现 LLM 调用、耗时日志与可控系统提示，保证稳定可追溯响应。&#10;实现自动结构化记忆抽取（会议/截止/生日/待办等），通过 Pydantic Schema 校验保证数据质量。&#10;构建本地文档知识库索引管线（PDF/TXT/PNG OCR），实现分块、去重入库与检索问答，并输出引用溯源（path/page/snippet）。&#10;设计 Human‑in‑the‑loop 计划流程：检测意图 → 生成草案 → 用户确认写入待办，降低误写风险。&#10;工程化落地：环境配置 .env、日志、可复用模块拆分（ingest/retrieval/planner/memory），支持 Windows 一键启动。">
+      <option name="closed" value="true" />
+      <created>1772625304083</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1772625304083</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">

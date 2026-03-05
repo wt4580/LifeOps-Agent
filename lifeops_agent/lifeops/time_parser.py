@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 
 
 class DateHint(BaseModel):
-    date: str | None = None  # YYYY-MM-DD
+    # date: 解析出的标准日期（YYYY-MM-DD），无法判断则为 None。
+    date: str | None = None
+    # confidence: 模型对该日期的把握程度（0~1）。
     confidence: float = 0.5
 
 
@@ -97,6 +99,7 @@ def normalize_date_hint(user_text: str) -> str | None:
         return None
 
     if hint.confidence < 0.4:
+        # 置信度过低时宁可不填，也不把错误日期写入待办系统。
         return None
 
     return hint.date
