@@ -16,6 +16,15 @@ Chat -> (LLM decide) -> Tool -> Update state -> (maybe HITL) -> Final answer
 - 这个模块只负责“编排”聊天主流程，不改动原有工具实现（planner/retrieval/db）。
 - 写入 todo 仍然保持 Human-in-the-loop：聊天阶段只生成 proposal，真正入库仍走 /api/plan/confirm。
 - 为了兼容现有前端 trace 面板，每个节点都会写入 trace.steps。
+
+执行时序总览（最重要）：
+1) `run_chat_graph` 创建初始状态并写入 trace 的 input 步。
+2) 状态机固定先走 `load_context`（读最近对话+摘要）。
+3) 再走 `hitl_check`（判断本轮是否是“确认/取消草案”回复）。
+4) 命中确认则走 `propose_from_pending` 并结束；未命中则进入 `decide`。
+5) `decide` 决定 action（规则兜底或 LLM 路由），然后进入 `run_tool`。
+6) `run_tool` 按 action 执行工具；部分分支会调用 LLM 生成自然语言。
+7) 最后统一 `finalize` 收口，确保 answer 和 trace 完整。
 """
 
 import json
@@ -35,10 +44,18 @@ from .retrieval import rag_answer, search_chunks
 from .time_parser import normalize_date_hint
 
 
+# ChatState 是“图上流动的数据包”：
+# 每个 node 读取/修改其中的字段，再交给下一个 node。
+# 理解这个结构，就能理解整个状态机的数据依赖。
 class ChatState(TypedDict, total=False):
     # 输入
     session_id: str
     user_message: str
+    # 前置画像信息：由 main 在进 graph 前准备。
+    profile_context: str | None
+    pre_advice: str | None
+    # 供路由使用的增强输入（用户原文 + 画像/建议）。
+    effective_user_message: str
 
     # 运行时上下文
     recent_dialogue: list[dict[str, str]]
@@ -66,6 +83,8 @@ class ChatState(TypedDict, total=False):
 # DB/上下文工具（节点内部复用）
 # -----------------------------
 
+# 读取最近 N 轮消息，供后续路由和普通聊天分支作为上下文输入。
+# 注意：这里只是“短期记忆”，不是摘要。
 def _load_recent_dialogue(session_id: str, limit: int = 16) -> list[dict[str, str]]:
     with SessionLocal() as db:
         rows = (
@@ -82,6 +101,7 @@ def _load_recent_dialogue(session_id: str, limit: int = 16) -> list[dict[str, st
     return [{"role": r.role, "content": r.content} for r in rows]
 
 
+# 读取会话摘要（中期记忆），用于对话很长或重启后的补偿上下文。
 def _get_summary(session_id: str) -> str | None:
     with SessionLocal() as db:
         row = (
@@ -97,6 +117,7 @@ def _get_summary(session_id: str) -> str | None:
     return row.summary_text if row else None
 
 
+# 范围查询待办：当用户问“未来几天安排”时使用。
 def _query_upcoming_todos(range_days: int) -> list[dict[str, Any]]:
     now = datetime.now()
     end = now + timedelta(days=range_days)
@@ -115,6 +136,7 @@ def _query_upcoming_todos(range_days: int) -> list[dict[str, Any]]:
     return [{"title": r.title, "due_at": r.due_at.isoformat() if r.due_at else None} for r in rows]
 
 
+# 单天查询待办：当用户消息可解析为具体日期（如“后天”）时优先使用。
 def _query_todos_for_date(target_date_iso: str) -> list[dict[str, Any]]:
     target = datetime.fromisoformat(target_date_iso).date()
     start = datetime.combine(target, datetime.min.time())
@@ -134,11 +156,13 @@ def _query_todos_for_date(target_date_iso: str) -> list[dict[str, Any]]:
     return [{"title": r.title, "due_at": r.due_at.isoformat() if r.due_at else None} for r in rows]
 
 
+# trace 是可审计轨迹，这个函数统一追加步骤，前端右侧面板依赖它渲染。
 def _append_trace(state: ChatState, step: dict[str, Any]) -> None:
     trace = state.setdefault("trace", {"steps": []})
     trace.setdefault("steps", []).append(step)
 
 
+# 统一构造 trace step，保证每一步都有 type/name/timestamp。
 def _trace_step(*, step_type: str, name: str, **kwargs: Any) -> dict[str, Any]:
     return {
         "type": step_type,
@@ -148,6 +172,8 @@ def _trace_step(*, step_type: str, name: str, **kwargs: Any) -> dict[str, Any]:
     }
 
 
+# 规则兜底：明显“文档/文件查询”句式直接路由到 query_knowledge，
+# 目的是防止路由模型误判成 normal_chat（例如把“work.png里有什么”当寒暄）。
 def _should_force_knowledge_query(user_message: str) -> bool:
     """当问题明显是在问文档/文件内容时，用确定性规则兜底为 query_knowledge。"""
 
@@ -162,10 +188,84 @@ def _should_force_knowledge_query(user_message: str) -> bool:
     return (has_file_hint or has_kb_hint) and has_query_intent
 
 
+def _is_fact_question(user_message: str) -> bool:
+    """识别事实型问句：优先走知识检索，再决定是否回退普通聊天。"""
+
+    text = (user_message or "").strip().lower()
+    if not text:
+        return False
+
+    fact_markers = [
+        "叫什么",
+        "名字",
+        "是谁",
+        "哪位",
+        "哪里",
+        "哪个",
+        "哪家",
+        "实验室",
+        "导师",
+        "单位",
+        "学校",
+        "公司",
+    ]
+    has_fact = any(m in text for m in fact_markers)
+    has_question = any(q in text for q in ["?", "？", "什么", "哪", "谁"])
+
+    # 排除明显待办/日程创建语义，避免误走 RAG。
+    has_todo_create = any(k in text for k in ["提醒", "记住", "待办", "安排", "我要", "明天", "后天", "下周"])
+    return has_fact and has_question and not has_todo_create
+
+
+def _is_personal_state_question(user_message: str) -> bool:
+    """识别“我的近况/个人状态”类问题，这类问题应优先走个人记忆上下文而不是知识库。"""
+
+    text = (user_message or "").strip().lower()
+    if not text:
+        return False
+
+    has_self_ref = any(k in text for k in ["我", "我的", "最近", "这段时间"])
+    state_markers = [
+        "饮食怎么样",
+        "吃得怎么样",
+        "运动怎么样",
+        "状态怎么样",
+        "我最近",
+        "我今天",
+        "我这周",
+    ]
+    has_state_marker = any(k in text for k in state_markers)
+
+    # 避免把“知识型饮食问题”（如肥胖症饮食指南是什么）拦截掉。
+    has_knowledge_target = any(k in text for k in ["指南", "文档", "论文", "知识库", "pdf", "png", "txt"])
+    return has_self_ref and has_state_marker and not has_knowledge_target
+
+
+def _should_try_rag_first(user_message: str) -> bool:
+    """统一判定：文档问答或事实问句先尝试 RAG；个人近况问题不强制走 RAG。"""
+
+    if _is_personal_state_question(user_message):
+        return False
+    return _should_force_knowledge_query(user_message) or _is_fact_question(user_message)
+
+
+def _build_effective_message(user_message: str, profile_context: str | None, pre_advice: str | None) -> str:
+    """拼装给 graph 使用的增强输入。"""
+
+    parts = [f"用户输入: {user_message}"]
+    if profile_context:
+        parts.append(f"用户画像: {profile_context}")
+    if pre_advice:
+        parts.append(f"前置建议: {pre_advice}")
+    return "\n".join(parts)
+
+
 # -----------------------------
 # LangGraph 节点
 # -----------------------------
 
+# 第一个节点：加载上下文。
+# 顺序上它永远先于 hitl_check/decide，因为后续节点都可能依赖 recent_dialogue/summary。
 def _node_load_context(state: ChatState) -> ChatState:
     session_id = state["session_id"]
     recent = _load_recent_dialogue(session_id, limit=16)
@@ -183,6 +283,10 @@ def _node_load_context(state: ChatState) -> ChatState:
     return state
 
 
+# 第二个节点：HITL 闸门。
+# - 若用户说“不要/算了”且确有 pending，直接取消并可提前收口。
+# - 若用户说“需要/好/可以”且确有 pending，进入 propose_from_pending。
+# - 其他情况走普通决策 decide。
 def _node_hitl_check(state: ChatState, pending_intents: dict[str, str]) -> ChatState:
     session_id = state["session_id"]
     user_message = state["user_message"]
@@ -231,12 +335,18 @@ def _node_hitl_check(state: ChatState, pending_intents: dict[str, str]) -> ChatS
     return state
 
 
+# hitl_check 的条件分流器：
+# cancelled -> finalize（短路结束）
+# pending_text 存在 -> propose_from_pending
+# 否则 -> decide
 def _route_after_hitl(state: ChatState) -> str:
     if state.get("hitl_cancelled"):
         return "finalize"
     return "propose_from_pending" if state.get("pending_text") else "decide"
 
 
+# HITL 确认后的草案生成节点。
+# 这里会调用 propose_plan（其内部调用 LLM）把自然语言转结构化草案。
 def _node_propose_from_pending(state: ChatState, proposal_cache: dict[str, list[dict[str, Any]]]) -> ChatState:
     pending_text = state.get("pending_text") or ""
     proposal_id, proposal = propose_plan(pending_text)
@@ -260,9 +370,13 @@ def _node_propose_from_pending(state: ChatState, proposal_cache: dict[str, list[
     return state
 
 
+# 决策节点：决定下一步 action。
+# 触发顺序：forced_action > 规则兜底 > LLM 路由。
+# 其中 LLM 路由通过 route_decision 发生（内部会调用 LLM）。
 def _node_decide(state: ChatState) -> ChatState:
     forced_action = state.get("forced_action")
     if forced_action:
+        # 外部强制路由（例如某 API 包装层指定动作）时，不再调路由 LLM。
         decision = {
             "action": forced_action,
             "args": state.get("forced_args") or {},
@@ -281,16 +395,16 @@ def _node_decide(state: ChatState) -> ChatState:
         )
         return state
 
-    # 规则兜底：避免 LLM 把明显的文件内容查询误判成寒暄 normal_chat。
-    if _should_force_knowledge_query(state["user_message"]):
+    # 规则兜底：文档/知识库问答与事实型问句都先走 query_knowledge。
+    if _should_try_rag_first(state["user_message"]):
         decision = {
             "action": "query_knowledge",
-            "args": {"question": state["user_message"], "top_k": 5},
+            "args": {"question": state.get("effective_user_message") or state["user_message"], "top_k": 5},
             "assistant_message": "",
             "trace": {
                 "intent": "knowledge_query",
-                "signals": ["rule_guard:file_or_kb_query"],
-                "why": "规则兜底命中：文件/知识库查询句式，直接走 query_knowledge",
+                "signals": ["rule_guard:rag_first"],
+                "why": "规则兜底命中：文档问答或事实型问题，先尝试 query_knowledge",
             },
         }
         state["decision"] = decision
@@ -305,9 +419,11 @@ def _node_decide(state: ChatState) -> ChatState:
         )
         return state
 
+    # 到这里才真正调用“路由 LLM”。
+    # 输入包括：用户消息 + 信号词 + 最近对话长度 + 摘要。
     ctx = build_route_context(
         session_id=state["session_id"],
-        user_message=state["user_message"],
+        user_message=state.get("effective_user_message") or state["user_message"],
         recent_dialogue=state.get("recent_dialogue", []),
         summary=state.get("summary"),
     )
@@ -315,15 +431,15 @@ def _node_decide(state: ChatState) -> ChatState:
     state["decision"] = decision.model_dump()
 
     # 二次兜底：LLM 若误判为 normal_chat，且文本明显是知识库查询，则强制改写为 query_knowledge。
-    if state["decision"].get("action") == "normal_chat" and _should_force_knowledge_query(state["user_message"]):
+    if state["decision"].get("action") == "normal_chat" and _should_try_rag_first(state["user_message"]):
         state["decision"] = {
             "action": "query_knowledge",
-            "args": {"question": state["user_message"], "top_k": 5},
+            "args": {"question": state.get("effective_user_message") or state["user_message"], "top_k": 5},
             "assistant_message": "",
             "trace": {
                 "intent": "knowledge_query",
                 "signals": ctx.signals,
-                "why": "LLM 误判 normal_chat，命中知识库查询兜底改写",
+                "why": "LLM 误判 normal_chat，命中 RAG 优先兜底改写",
             },
         }
 
@@ -334,6 +450,7 @@ def _node_decide(state: ChatState) -> ChatState:
             name="router",
             input={
                 "user_message": state["user_message"],
+                "effective_user_message": state.get("effective_user_message") or state["user_message"],
                 "signals": ctx.signals,
                 "summary": state.get("summary"),
                 "recent_dialogue_len": len(state.get("recent_dialogue", [])),
@@ -344,12 +461,35 @@ def _node_decide(state: ChatState) -> ChatState:
     return state
 
 
+# 工具执行节点：根据 decision.action 执行具体分支。
+# 这里是“真正做事”的地方，同时也是 LLM 调用最密集的节点之一。
+def _build_normal_chat_answer(state: ChatState, decision: dict[str, Any]) -> tuple[str, bool]:
+    """统一 normal_chat 文本生成逻辑，供常规分支与 RAG miss 回退复用。"""
+
+    assistant_message = (decision.get("assistant_message") or "").strip()
+    if assistant_message:
+        return assistant_message, True
+
+    messages: list[dict[str, str]] = [{"role": "system", "content": "你是一个中文生活助手。"}]
+    if state.get("profile_context"):
+        messages.append({"role": "system", "content": f"用户画像：{state['profile_context']}"})
+    if state.get("pre_advice"):
+        messages.append({"role": "system", "content": f"前置建议：{state['pre_advice']}"})
+    if state.get("summary"):
+        messages.append({"role": "system", "content": f"Conversation summary: {state['summary']}"})
+    messages.extend(state.get("recent_dialogue", []))
+    messages.append({"role": "user", "content": state.get("effective_user_message") or state["user_message"]})
+    return chat_completion(messages), False
+
+
 def _node_run_tool(state: ChatState, pending_intents: dict[str, str]) -> ChatState:
     decision = state.get("decision") or {"action": "normal_chat", "args": {}, "assistant_message": ""}
     action = decision.get("action", "normal_chat")
     args = decision.get("args") or {}
 
     if action == "query_todos":
+        # 先尝试解析精确日期（如“后天/周三”）。
+        # 能解析到单日就查单日；否则按 range_days 查区间。
         date_hint = normalize_date_hint(state["user_message"])
 
         if date_hint:
@@ -365,6 +505,7 @@ def _node_run_tool(state: ChatState, pending_intents: dict[str, str]) -> ChatSta
         if not items:
             state["answer"] = "我查了一下，这个时间点没有已安排的待办。"
         else:
+            # LLM 调用点：只负责“自然语言总结”，不改动数据库原始查询结果。
             prompt = (
                 "你是生活助理。用户在询问他的安排。\n"
                 "下面是从数据库查到的待办列表（真实数据），请用中文做简短总结。\n"
@@ -391,7 +532,7 @@ def _node_run_tool(state: ChatState, pending_intents: dict[str, str]) -> ChatSta
         return state
 
     if action == "query_knowledge":
-        question = (args.get("question") or state["user_message"]).strip()
+        question = (args.get("question") or state.get("effective_user_message") or state["user_message"]).strip()
         top_k = int(args.get("top_k", 5) or 5)
         citations = search_chunks(question, top_k=top_k)
         state["used_tool"] = "query_knowledge"
@@ -402,14 +543,56 @@ def _node_run_tool(state: ChatState, pending_intents: dict[str, str]) -> ChatSta
                 "snippet": c.snippet,
                 "score": c.score,
                 "reason": c.reason,
+                "source_type": c.source_type,
+                "doc_topic": c.doc_topic,
             }
             for c in citations
         ]
 
         if not citations:
-            state["answer"] = "No relevant context found."
-        else:
-            state["answer"] = rag_answer(question, citations)
+            # RAG miss 回退：进入 normal_chat，而不是直接回答“找不到”。
+            assistant_message = (decision.get("assistant_message") or "").strip()
+            if assistant_message:
+                state["answer"] = assistant_message
+                used_assistant = True
+            else:
+                messages: list[dict[str, str]] = [{"role": "system", "content": "你是一个中文生活助手。"}]
+                if state.get("profile_context"):
+                    messages.append({"role": "system", "content": f"用户画像：{state['profile_context']}"})
+                if state.get("pre_advice"):
+                    messages.append({"role": "system", "content": f"前置建议：{state['pre_advice']}"})
+                if state.get("summary"):
+                    messages.append({"role": "system", "content": f"Conversation summary: {state['summary']}"})
+                messages.extend(state.get("recent_dialogue", []))
+                messages.append({"role": "user", "content": state.get("effective_user_message") or state["user_message"]})
+                state["answer"] = chat_completion(messages)
+                used_assistant = False
+            state["used_tool"] = "normal_chat_fallback"
+            _append_trace(
+                state,
+                _trace_step(
+                    step_type="tool",
+                    name="query_knowledge",
+                    input={"question": question, "top_k": top_k},
+                    output={"hits": 0, "fallback": "normal_chat"},
+                ),
+            )
+            _append_trace(
+                state,
+                _trace_step(
+                    step_type="llm",
+                    name="normal_chat_fallback",
+                    output={"used_assistant_message": used_assistant, "answer": state["answer"]},
+                ),
+            )
+            return state
+
+        state["answer"] = rag_answer(
+            question,
+            citations,
+            profile_context=state.get("profile_context"),
+            pre_advice=state.get("pre_advice"),
+        )
 
         _append_trace(
             state,
@@ -423,6 +606,7 @@ def _node_run_tool(state: ChatState, pending_intents: dict[str, str]) -> ChatSta
         return state
 
     if action in ("ask_user_confirm_proposal", "propose_todo"):
+        # 第一阶段 HITL：只缓存意图 + 询问是否生成草案，不直接写入
         pending_text = args.get("text") or state["user_message"]
         pending_intents[state["session_id"]] = pending_text
         state["used_tool"] = "plan_gate"
@@ -438,23 +622,31 @@ def _node_run_tool(state: ChatState, pending_intents: dict[str, str]) -> ChatSta
         )
         return state
 
-    # normal_chat
+    # normal_chat 分支：
     state["used_tool"] = None
     assistant_message = (decision.get("assistant_message") or "").strip()
     if assistant_message:
         state["answer"] = assistant_message
+        used_assistant = True
     else:
         messages: list[dict[str, str]] = [{"role": "system", "content": "你是一个中文生活助手。"}]
+        if state.get("profile_context"):
+            messages.append({"role": "system", "content": f"用户画像：{state['profile_context']}"})
+        if state.get("pre_advice"):
+            messages.append({"role": "system", "content": f"前置建议：{state['pre_advice']}"})
         if state.get("summary"):
             messages.append({"role": "system", "content": f"Conversation summary: {state['summary']}"})
         messages.extend(state.get("recent_dialogue", []))
+        messages.append({"role": "user", "content": state.get("effective_user_message") or state["user_message"]})
         state["answer"] = chat_completion(messages)
+        used_assistant = False
 
-    _append_trace(state, _trace_step(step_type="tool", name="normal_chat", output={"used_assistant_message": bool(assistant_message)}))
+    _append_trace(state, _trace_step(step_type="tool", name="normal_chat", output={"used_assistant_message": used_assistant}))
     _append_trace(state, _trace_step(step_type="llm", name="normal_chat", output=state.get("answer")))
     return state
 
 
+# 收口节点：保证每条路径都有 answer，并记录最终 used_tool / has_proposal。
 def _node_finalize(state: ChatState) -> ChatState:
     # 兜底，避免异常路径没有 answer
     if not state.get("answer"):
@@ -474,6 +666,11 @@ def _node_finalize(state: ChatState) -> ChatState:
 # 图构建与执行
 # -----------------------------
 
+# 图连线就是“先走谁再走谁”的唯一真相：
+# START -> load_context -> hitl_check -> (propose_from_pending | decide | finalize)
+# propose_from_pending -> finalize
+# decide -> run_tool -> finalize
+# finalize -> END
 def build_chat_graph(pending_intents: dict[str, str], proposal_cache: dict[str, list[dict[str, Any]]]):
     graph = StateGraph(ChatState)
 
@@ -499,6 +696,10 @@ def build_chat_graph(pending_intents: dict[str, str], proposal_cache: dict[str, 
     return graph.compile()
 
 
+# 状态机入口：
+# - 创建初始状态（包括 input trace）
+# - 调 compiled graph 执行
+# - 返回最终状态（answer/proposal/citations/trace 都在里面）
 def run_chat_graph(
     *,
     compiled_graph: Any,
@@ -506,13 +707,23 @@ def run_chat_graph(
     user_message: str,
     forced_action: str | None = None,
     forced_args: dict[str, Any] | None = None,
+    profile_context: str | None = None,
+    pre_advice: str | None = None,
+    pre_steps: list[dict[str, Any]] | None = None,
 ) -> ChatState:
+    steps = [{"type": "input", "user_message": user_message, "session_id": session_id}]
+    if pre_steps:
+        steps.extend(pre_steps)
+
     initial_state: ChatState = {
         "session_id": session_id,
         "user_message": user_message,
+        "profile_context": profile_context,
+        "pre_advice": pre_advice,
+        "effective_user_message": _build_effective_message(user_message, profile_context, pre_advice),
         "trace": {
             "meta": {"graph": "chat_v2", "started_at": datetime.now().isoformat(timespec="seconds")},
-            "steps": [{"type": "input", "user_message": user_message, "session_id": session_id}],
+            "steps": steps,
         },
         "used_tool": None,
         "proposal_id": None,
@@ -523,3 +734,4 @@ def run_chat_graph(
         "forced_args": forced_args or {},
     }
     return compiled_graph.invoke(initial_state)
+

@@ -41,12 +41,40 @@ class Citation:
     snippet: str
     score: float
     reason: str = ""  # 命中原因（bm25 / path / rewrite-bm25 / vector 等），便于可审计
+    source_type: str | None = None
+    doc_topic: str | None = None
 
 
 def _hash_text(text: str) -> str:
     """对 chunk 文本做稳定哈希，用于去重判断。"""
 
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _infer_source_type(path: str) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".pdf":
+        return "pdf"
+    if ext == ".txt":
+        return "txt"
+    if ext == ".png":
+        return "png"
+    return "other"
+
+
+def _infer_doc_topic(path: str) -> str:
+    lower = path.lower()
+    if any(k in lower for k in ["指南", "guide", "manual", "手册", "规范", "标准"]):
+        return "guideline"
+    if any(k in lower for k in ["菜谱", "食谱", "recipe", "meal"]):
+        return "recipe"
+    if any(k in lower for k in ["简历", "resume", "cv"]):
+        return "resume"
+    if any(k in lower for k in ["日记", "日志", "log", "memo", "记录"]):
+        return "personal_log"
+    if any(k in lower for k in ["论文", "paper", "study", "研究"]):
+        return "paper"
+    return "other"
 
 
 def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
@@ -63,6 +91,8 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
             logger.info("Rebuild index: cleared document_chunks deleted=%s", deleted)
 
         for doc in docs:
+            source_type = _infer_source_type(doc.path)
+            doc_topic = _infer_doc_topic(doc.path)
             for chunk in doc.chunks:
                 chunk_hash = _hash_text(chunk.text)
                 exists = db.execute(
@@ -81,6 +111,8 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
                         page=chunk.page,
                         chunk_text=chunk.text,
                         chunk_hash=chunk_hash,
+                        source_type=source_type,
+                        doc_topic=doc_topic,
                     )
                 )
                 inserted += 1
@@ -177,6 +209,30 @@ def _collect_chunks() -> list[DocumentChunk]:
         return db.execute(select(DocumentChunk)).scalars().all()
 
 
+def _is_personal_state_query(query: str) -> bool:
+    text = (query or "").strip().lower()
+    if not text:
+        return False
+    has_self_ref = any(k in text for k in ["我", "我的", "最近", "这段时间"])
+    has_state = any(k in text for k in ["饮食怎么样", "吃得怎么样", "运动怎么样", "状态怎么样", "我最近", "我今天", "我这周"])
+    return has_self_ref and has_state
+
+
+def _apply_source_filter(rows: list[DocumentChunk], query: str) -> list[DocumentChunk]:
+    """按问题类型做来源过滤，减少“指南内容误当个人事实”。"""
+
+    if not rows:
+        return rows
+
+    if _is_personal_state_query(query):
+        blocked = {"guideline", "recipe", "manual", "paper"}
+        filtered = [r for r in rows if (r.doc_topic or "other") not in blocked]
+        # 若过滤后为空，回退原集合，避免极端情况下完全无候选可检索。
+        if filtered:
+            return filtered
+    return rows
+
+
 def _path_recall(rows: list[DocumentChunk], query: str, top_k: int) -> list[Citation]:
     """路径/文件名召回：解决“某文件里有什么”这类问题。"""
 
@@ -209,7 +265,17 @@ def _path_recall(rows: list[DocumentChunk], query: str, top_k: int) -> list[Cita
             continue
 
         snippet = (r.chunk_text or "")[:240]
-        scored.append(Citation(path=r.file_path, page=r.page, snippet=snippet, score=score, reason="path"))
+        scored.append(
+            Citation(
+                path=r.file_path,
+                page=r.page,
+                snippet=snippet,
+                score=score,
+                reason="path",
+                source_type=getattr(r, "source_type", None),
+                doc_topic=getattr(r, "doc_topic", None),
+            )
+        )
 
     scored.sort(key=lambda x: x.score, reverse=True)
     return scored[:top_k]
@@ -237,6 +303,8 @@ def _bm25_recall(rows: list[DocumentChunk], query: str, top_k: int, reason: str)
                 snippet=(r.chunk_text or "")[:240],
                 score=float(s),
                 reason=reason,
+                source_type=getattr(r, "source_type", None),
+                doc_topic=getattr(r, "doc_topic", None),
             )
         )
 
@@ -302,7 +370,15 @@ def _search_langchain(query: str, top_k: int) -> list[Citation]:
     try:
         hits = search_with_rerank(query, top_k=top_k, candidate_k=settings.rag_candidate_k)
         return [
-            Citation(path=h.path, page=h.page, snippet=h.snippet, score=h.score, reason=h.reason)
+            Citation(
+                path=h.path,
+                page=h.page,
+                snippet=h.snippet,
+                score=h.score,
+                reason=h.reason,
+                source_type=getattr(h, "source_type", None),
+                doc_topic=getattr(h, "doc_topic", None),
+            )
             for h in hits
         ]
     except Exception as exc:
@@ -317,6 +393,7 @@ def search_chunks(query: str, top_k: int = 5) -> list[Citation]:
     top_k = top_k or settings.rag_top_k
 
     rows = _collect_chunks()
+    rows = _apply_source_filter(rows, query)
     if not rows and backend in {"bm25", "hybrid"}:
         return []
 
@@ -359,21 +436,61 @@ def search_chunks(query: str, top_k: int = 5) -> list[Citation]:
     return merged
 
 
-def rag_answer(question: str, citations: list[Citation]) -> str:
+def rag_answer(
+    question: str,
+    citations: list[Citation],
+    *,
+    profile_context: str | None = None,
+    pre_advice: str | None = None,
+) -> str:
     """把候选证据拼成 Context，交给 LLM 生成带引用回答。"""
+
+    if not citations:
+        return settings.rag_no_evidence_template
+
+    best_score = max(c.score for c in citations)
+    strong_count = sum(1 for c in citations if c.score >= settings.rag_evidence_min_score)
+    rich_snippet_count = sum(1 for c in citations if len((c.snippet or "").strip()) >= 30)
+    if strong_count == 0 and best_score < settings.rag_evidence_min_score and rich_snippet_count < 2:
+        return settings.rag_no_evidence_template
 
     context_lines: list[str] = []
     for idx, cite in enumerate(citations, start=1):
-        label = f"[{idx}] {os.path.basename(cite.path)} p{cite.page or '-'} ({cite.reason})"
+        label = (
+            f"[{idx}] {os.path.basename(cite.path)} p{cite.page or '-'} "
+            f"({cite.reason}|{cite.source_type or 'unknown'}|{cite.doc_topic or 'other'})"
+        )
         context_lines.append(f"{label}: {cite.snippet}")
     context = "\n".join(context_lines)
 
+    profile_lines: list[str] = []
+    if profile_context:
+        profile_lines.append(f"PROFILE: {profile_context}")
+    if pre_advice:
+        profile_lines.append(f"PROFILE_HINT: {pre_advice}")
+    profile_block = "\n".join(profile_lines)
+
     system_prompt = (
         "你是一个严谨的知识库问答助手。你只能根据提供的 Context 回答，并在句子中内联标注引用 [1][2]。\n"
-        "如果 Context 不足以回答，请明确说不知道，不要编造。"
+        "如果 Context 不足以回答，请明确说不知道，不要编造。\n"
+        "关键约束：Context 默认是外部知识文档，不代表用户真实发生过的行为。\n"
+        "例如菜谱/指南中的食物不能被表述成‘用户已经吃过’。\n"
+        "只有当 Context 明确出现‘用户本人记录/我今天吃了/个人日志’等证据时，才能描述为用户已发生事实。\n"
+        "若提供了 PROFILE/PROFILE_HINT，可用于个性化表达，但不得与 Context 冲突，也不得把文档建议误写成用户历史。"
     )
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
+        {
+            "role": "user",
+            "content": f"{profile_block}\n\nContext:\n{context}\n\nQuestion: {question}",
+        },
     ]
-    return chat_completion(messages, temperature=0.2)
+    return chat_completion(
+        messages,
+        temperature=0.2,
+        runtime_context={
+            "scenario": "rag_answer",
+            "evidence_best_score": round(best_score, 6),
+            "evidence_strong_count": strong_count,
+        },
+    )

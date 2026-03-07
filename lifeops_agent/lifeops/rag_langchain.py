@@ -15,7 +15,10 @@ from __future__ import annotations
 - 每个候选都保留 source/page，保证引用可追溯。
 """
 
+import hashlib
+import logging
 import os
+import pickle
 import shutil
 from dataclasses import dataclass
 from functools import lru_cache
@@ -23,6 +26,9 @@ from pathlib import Path
 
 from .ingest.ocr_png import extract_png
 from .settings import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -46,13 +52,50 @@ def _require_langchain() -> None:
         ) from exc
 
 
+def _pick_model_source(*, local_path: str | None, remote_model: str, model_label: str) -> tuple[str, str]:
+    """选择模型加载来源：优先本地路径，不可用则回退远程模型名。"""
+
+    if local_path:
+        p = Path(local_path)
+        if p.exists():
+            logger.info("Model source [%s]=local path=%s", model_label, str(p))
+            return "local", str(p)
+        logger.warning(
+            "Local model path not found for %s path=%s; fallback to remote model=%s",
+            model_label,
+            local_path,
+            remote_model,
+        )
+
+    logger.info("Model source [%s]=remote model=%s", model_label, remote_model)
+    return "remote", remote_model
+
+
 @lru_cache(maxsize=1)
 def _embeddings():
     """懒加载 embedding 模型，避免每次查询重复初始化。"""
     _require_langchain()
     from langchain_huggingface import HuggingFaceEmbeddings
 
-    return HuggingFaceEmbeddings(model_name=settings.rag_embed_model)
+    source, model_name = _pick_model_source(
+        local_path=settings.rag_embed_model_local,
+        remote_model=settings.rag_embed_model,
+        model_label="embedding",
+    )
+
+    try:
+        return HuggingFaceEmbeddings(model_name=model_name)
+    except Exception as exc:
+        if source == "local":
+            logger.warning(
+                "Failed to load local embedding model path=%s err=%s; fallback to remote model=%s",
+                model_name,
+                exc,
+                settings.rag_embed_model,
+            )
+            logger.info("Model source [embedding]=remote model=%s", settings.rag_embed_model)
+            return HuggingFaceEmbeddings(model_name=settings.rag_embed_model)
+        raise
 
 
 @lru_cache(maxsize=1)
@@ -64,7 +107,26 @@ def _reranker():
         from sentence_transformers import CrossEncoder
     except Exception:
         return None
-    return CrossEncoder(settings.rag_rerank_model)
+
+    source, model_name = _pick_model_source(
+        local_path=settings.rag_rerank_model_local,
+        remote_model=settings.rag_rerank_model,
+        model_label="reranker",
+    )
+
+    try:
+        return CrossEncoder(model_name)
+    except Exception as exc:
+        if source == "local":
+            logger.warning(
+                "Failed to load local reranker model path=%s err=%s; fallback to remote model=%s",
+                model_name,
+                exc,
+                settings.rag_rerank_model,
+            )
+            logger.info("Model source [reranker]=remote model=%s", settings.rag_rerank_model)
+            return CrossEncoder(settings.rag_rerank_model)
+        return None
 
 
 def _make_splitter():
@@ -83,7 +145,7 @@ def _load_documents(root_dir: str):
     """递归加载文档并切分为可向量化的 Document 列表。"""
     _require_langchain()
     from langchain_core.documents import Document
-    from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader, TextLoader
+    from langchain_community.document_loaders import PyPDFLoader, TextLoader
     from langchain_text_splitters import MarkdownHeaderTextSplitter
 
     splitter = _make_splitter()
@@ -97,8 +159,15 @@ def _load_documents(root_dir: str):
                 loaded = PyPDFLoader(path).load()
                 docs.extend(splitter.split_documents(loaded))
             elif ext == ".docx":
-                loaded = Docx2txtLoader(path).load()
-                docs.extend(splitter.split_documents(loaded))
+                try:
+                    # 按需导入，避免缺少 docx2txt 时整个索引失败。
+                    from langchain_community.document_loaders import Docx2txtLoader
+
+                    loaded = Docx2txtLoader(path).load()
+                    docs.extend(splitter.split_documents(loaded))
+                except Exception as exc:
+                    logger.warning("Skip DOCX file due to loader/dependency error path=%s err=%s", path, exc)
+                    continue
             elif ext == ".md":
                 raw = TextLoader(path, encoding="utf-8", autodetect_encoding=True).load()[0]
                 md_splitter = MarkdownHeaderTextSplitter(
@@ -121,6 +190,7 @@ def _load_documents(root_dir: str):
 
     # 规范 metadata，确保 source/page 可追溯
     normalized: list[Document] = []
+    chunk_pos_counter: dict[tuple[str, int | None], int] = {}
     for d in docs:
         src = d.metadata.get("source") or d.metadata.get("file_path") or ""
         page = d.metadata.get("page")
@@ -128,11 +198,118 @@ def _load_documents(root_dir: str):
             page_num = int(page) + 1 if page is not None else None
         except Exception:
             page_num = None
+
+        key = (str(src), page_num)
+        chunk_pos_counter[key] = chunk_pos_counter.get(key, 0) + 1
+
         d.metadata["source"] = str(src)
         d.metadata["page"] = page_num
+        # 每个 source+page 内的序号，用于后续判断“同位置是否改写”。
+        d.metadata["chunk_pos"] = chunk_pos_counter[key]
         normalized.append(d)
 
     return normalized
+
+
+def _doc_signature_from_values(source: str, page: int | None, chunk_pos: int | None, content: str) -> tuple[tuple[str, int | None, int | None], str]:
+    """生成文档分块签名：位置键 + 内容哈希。"""
+
+    key = (source, page, chunk_pos)
+    content_hash = hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+    return key, content_hash
+
+
+def _collect_new_doc_signatures(docs: list) -> list[tuple[tuple[str, int | None, int | None], str]]:
+    out: list[tuple[tuple[str, int | None, int | None], str]] = []
+    for d in docs:
+        source = str(d.metadata.get("source") or "")
+        page = d.metadata.get("page")
+        chunk_pos = d.metadata.get("chunk_pos")
+        try:
+            page_num = int(page) if page is not None else None
+        except Exception:
+            page_num = None
+        try:
+            pos_num = int(chunk_pos) if chunk_pos is not None else None
+        except Exception:
+            pos_num = None
+        out.append(_doc_signature_from_values(source, page_num, pos_num, d.page_content or ""))
+    return out
+
+
+def _collect_old_doc_signatures(vec_dir: Path) -> list[tuple[tuple[str, int | None, int | None], str]]:
+    """从已持久化的 index.pkl 读取旧索引签名（无需加载 embedding）。"""
+
+    pkl_path = vec_dir / "index.pkl"
+    if not pkl_path.exists():
+        return []
+
+    try:
+        with pkl_path.open("rb") as f:
+            obj = pickle.load(f)
+    except Exception as exc:
+        logger.warning("Failed to load previous vector index metadata path=%s err=%s", pkl_path, exc)
+        return []
+
+    docstore = None
+    index_to_docstore_id = None
+    if isinstance(obj, tuple) and len(obj) == 2:
+        docstore, index_to_docstore_id = obj
+
+    if docstore is None or index_to_docstore_id is None:
+        return []
+
+    doc_dict = getattr(docstore, "_dict", {}) or {}
+    out: list[tuple[tuple[str, int | None, int | None], str]] = []
+
+    for doc_id in index_to_docstore_id.values():
+        doc = doc_dict.get(doc_id)
+        if doc is None:
+            continue
+        source = str(getattr(doc, "metadata", {}).get("source") or "")
+        page = getattr(doc, "metadata", {}).get("page")
+        chunk_pos = getattr(doc, "metadata", {}).get("chunk_pos")
+        try:
+            page_num = int(page) if page is not None else None
+        except Exception:
+            page_num = None
+        try:
+            pos_num = int(chunk_pos) if chunk_pos is not None else None
+        except Exception:
+            pos_num = None
+        out.append(_doc_signature_from_values(source, page_num, pos_num, getattr(doc, "page_content", "") or ""))
+
+    return out
+
+
+def _calc_vector_diff(
+    old_sigs: list[tuple[tuple[str, int | None, int | None], str]],
+    new_sigs: list[tuple[tuple[str, int | None, int | None], str]],
+) -> dict:
+    """计算向量索引差异：新增/改写/删除/不变。"""
+
+    old_map = {k: h for k, h in old_sigs}
+    new_map = {k: h for k, h in new_sigs}
+
+    old_keys = set(old_map.keys())
+    new_keys = set(new_map.keys())
+
+    added_keys = new_keys - old_keys
+    deleted_keys = old_keys - new_keys
+    common_keys = old_keys & new_keys
+
+    rewritten_keys = {k for k in common_keys if old_map.get(k) != new_map.get(k)}
+    unchanged_keys = {k for k in common_keys if old_map.get(k) == new_map.get(k)}
+
+    return {
+        "vector_prev_chunks": len(old_map),
+        "vector_chunks": len(new_map),
+        "vector_added_chunks": len(added_keys),
+        "vector_rewritten_chunks": len(rewritten_keys),
+        "vector_deleted_chunks": len(deleted_keys),
+        "vector_unchanged_chunks": len(unchanged_keys),
+        "vector_changed": bool(added_keys or rewritten_keys or deleted_keys),
+    }
 
 
 def build_vector_index(*, root_dir: str, rebuild: bool = False) -> dict:
@@ -142,6 +319,10 @@ def build_vector_index(*, root_dir: str, rebuild: bool = False) -> dict:
 
     docs = _load_documents(root_dir)
     vec_dir = Path(settings.rag_vector_dir)
+
+    old_sigs = _collect_old_doc_signatures(vec_dir)
+    new_sigs = _collect_new_doc_signatures(docs)
+    diff = _calc_vector_diff(old_sigs, new_sigs)
 
     if rebuild and vec_dir.exists():
         shutil.rmtree(vec_dir)
@@ -153,7 +334,10 @@ def build_vector_index(*, root_dir: str, rebuild: bool = False) -> dict:
 
     # 清理缓存，防止同进程中旧索引驻留
     _load_vector_store.cache_clear()
-    return {"vector_chunks": len(docs), "vector_dir": str(vec_dir), "rebuild": rebuild}
+
+    result = {"vector_dir": str(vec_dir), "rebuild": rebuild}
+    result.update(diff)
+    return result
 
 
 @lru_cache(maxsize=1)

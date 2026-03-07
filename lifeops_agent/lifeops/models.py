@@ -54,6 +54,39 @@ class MemoryCandidate(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)  # 候选记忆的创建时间
 
 
+class LifeEvent(Base):
+    """个人事件表：长期可检索的生活记录（饮食/活动/研究/消费等）。"""
+
+    __tablename__ = "life_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)  # 事件唯一标识
+    session_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)  # 来源会话
+    category: Mapped[str] = mapped_column(String(32), index=True)  # 事件类别，如 diet/activity/research/finance
+    title: Mapped[str] = mapped_column(String(255))  # 事件标题（抽取后的核心短语）
+    event_time: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # 事件时间（可空）
+    amount: Mapped[float | None] = mapped_column(Float, nullable=True)  # 金额或数量
+    amount_unit: Mapped[str | None] = mapped_column(String(32), nullable=True)  # 金额/数量单位，如 元、次、公里
+    tags_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # 标签 JSON 字符串，便于后续画像统计
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)  # 备注信息
+    source_text: Mapped[str | None] = mapped_column(Text, nullable=True)  # 原始用户文本，便于追溯
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)  # 写入时间
+
+
+class UserProfile(Base):
+    """用户身份画像表：保存推荐强相关的稳定信息。"""
+
+    __tablename__ = "user_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    preferences_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    conditions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class DocumentChunk(Base):
     """知识库分块表：保存可检索的文本片段与来源信息。"""
 
@@ -64,6 +97,8 @@ class DocumentChunk(Base):
     page: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 文档的页码（如果适用）
     chunk_text: Mapped[str] = mapped_column(Text)  # 内容块的文本内容
     chunk_hash: Mapped[str] = mapped_column(String(64), index=True)  # 内容块的哈希值，用于去重
+    source_type: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)  # 来源类型：pdf/txt/png/other
+    doc_topic: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)  # 文档主题标签：guideline/resume/personal_log/other
     score: Mapped[float | None] = mapped_column(Float, nullable=True)  # 内容块的相关性评分
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)  # 内容块的创建时间
 

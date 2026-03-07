@@ -16,5 +16,6 @@ langchain==0.3.27
 langchain-community==0.3.27
 langchain-text-splitters==0.3.9
 langchain-huggingface==0.1.2
+docx2txt==0.8
 sentence-transformers==3.0.1
 faiss-cpu==1.8.0.post1

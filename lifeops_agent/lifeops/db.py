@@ -14,7 +14,7 @@ lifeops.db
 from __future__ import annotations
 
 from pathlib import Path
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 from .settings import settings
@@ -56,6 +56,29 @@ def _ensure_sqlite_dir() -> None:
     Path(db_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 
 
+def _ensure_document_chunks_columns() -> None:
+    """为已存在 SQLite 库做轻量列迁移（不依赖 Alembic）。"""
+
+    url = settings.database_url
+    if not url.startswith("sqlite:///"):
+        return
+
+    with engine.begin() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='document_chunks'")
+        ).fetchone()
+        if not table_exists:
+            return
+
+        rows = conn.execute(text("PRAGMA table_info(document_chunks)")).fetchall()
+        existing = {r[1] for r in rows}
+
+        if "source_type" not in existing:
+            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN source_type VARCHAR(32)"))
+        if "doc_topic" not in existing:
+            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN doc_topic VARCHAR(64)"))
+
+
 def init_db() -> None:
     """初始化数据库：
     1) 确保 SQLite 目录存在。
@@ -69,3 +92,4 @@ def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _ensure_document_chunks_columns()

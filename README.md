@@ -11,9 +11,12 @@
 - ReAct 路由：`LLM Router -> Tool -> LLM/Result`，并返回可审计 `trace`
 - Human-in-the-loop：待办只能“先草案，再用户确认入库”
 - 记忆抽取：聊天后自动抽取 `memory_candidates`（候选态）
+- 个人记忆：结构化存储 `life_events` + `user_profiles`，支持跨会话记忆范围配置
 - 待办查询：今日 / 未来 N 天
 - 本地知识库：递归索引 `PDF/TXT/PNG(OCR)`，`ask` 返回 `citations`
 - 可切换检索后端：`bm25 | langchain | hybrid`
+- 来源感知 RAG：`DocumentChunk` 记录 `source_type/doc_topic`，支持来源过滤减少误归因
+- 证据门控：支持“证据可信度阈值 + 无证据拒答模板”
 
 ---
 
@@ -34,7 +37,7 @@ lifeops_agent/
     __init__.py                # 包说明与模块导入入口
     main.py                    # FastAPI 入口：路由 + 状态编排 + API 输出
     settings.py                # 配置中心：读取 .env
-    db.py                      # 数据库引擎/会话工厂/建表初始化
+    db.py                      # 数据库引擎/会话工厂/建表初始化（含轻量列迁移）
     models.py                  # ORM 表模型定义
 
     llm_qwen.py                # Qwen 调用封装（OpenAI 兼容）
@@ -43,6 +46,7 @@ lifeops_agent/
     planner.py                 # 待办草案生成与确认/拒绝识别
     time_parser.py             # 时间解析（规则兜底 + LLM）
     memory_extractor.py        # 对话结构化记忆抽取
+    personal_memory.py         # 个人事件/画像抽取与主动建议决策
 
     retrieval.py               # 索引/检索/RAG 主入口（bm25/langchain/hybrid）
     rag_langchain.py           # 向量检索链路（FAISS + 可选重排）
@@ -60,6 +64,11 @@ lifeops_agent/
     static/
       app.js                   # 前端交互逻辑（fetch + 渲染）
       style.css                # 前端样式（双栏与 trace 面板）
+
+  docs/
+    architecture.md            # 架构图与状态机说明
+    operation-log.md           # 每日功能操作日志
+    dev-retrospective.md       # 研发问题与决策复盘
 ```
 
 ### 补充：每个核心文件是做什么的（恢复详细说明）
@@ -86,15 +95,19 @@ lifeops_agent/
 
 - `lifeops/settings.py`
   - 从 `.env` 读取运行配置（Qwen、SQLite、OCR、RAG 后端参数）。
+  - 包含 RAG 证据门控配置（`RAG_EVIDENCE_MIN_SCORE`、`RAG_NO_EVIDENCE_TEMPLATE`）。
 - `lifeops/db.py`
   - 创建 SQLAlchemy `engine` 与 `SessionLocal`。
   - 启动时确保 SQLite 路径存在并建表。
+  - 对旧库做 `document_chunks` 轻量列迁移（补 `source_type/doc_topic`）。
 - `lifeops/models.py`
   - ORM 表定义：
     - `ChatMessage`
     - `TodoItem`
     - `MemoryCandidate`
-    - `DocumentChunk`
+    - `LifeEvent`
+    - `UserProfile`
+    - `DocumentChunk`（含 `source_type/doc_topic`）
     - `ConversationSummary`
 
 #### 3) LLM 与智能体编排
@@ -112,6 +125,8 @@ lifeops_agent/
   - 时间解析：相对日规则兜底 + LLM 复杂表达解析。
 - `lifeops/memory_extractor.py`
   - 对话后抽取结构化记忆候选（schema 校验失败则丢弃）。
+- `lifeops/personal_memory.py`
+  - 个人事件与画像信息抽取，主动建议待办与日程决策。
 
 #### 4) 检索与索引
 
@@ -119,7 +134,9 @@ lifeops_agent/
   - 索引构建入口（SQLite + 可选向量索引）
   - 检索入口（`bm25/langchain/hybrid`）
   - 证据融合（含 RRF）
+  - 来源过滤（按 `doc_topic` 场景过滤）
   - RAG 回答拼接与引用标签生成
+  - 证据阈值门控与无证据拒答
 - `lifeops/rag_langchain.py`
   - LangChain 向量链路实现：
     - 文档加载（PDF/TXT/MD/DOCX/PNG OCR）
@@ -205,6 +222,12 @@ RAG_RERANK_MODEL=BAAI/bge-reranker-base
 RAG_USE_RERANK=1
 RAG_CHUNK_SIZE=600
 RAG_CHUNK_OVERLAP=120
+RAG_EVIDENCE_MIN_SCORE=0.02
+RAG_NO_EVIDENCE_TEMPLATE=当前证据不足以支持确定结论。我可以继续按关键词重检，或请你提供更具体的文件名/术语。
+
+# 个人记忆范围
+PERSONAL_MEMORY_SCOPE=global
+PERSONAL_MEMORY_GLOBAL_ID=default_user
 ```
 
 切换后建议重建索引：
@@ -246,7 +269,17 @@ RAG_BACKEND=bm25
   "proposal_id": null,
   "proposal": null,
   "used_tool": "query_todos",
-  "citations": [],
+  "citations": [
+    {
+      "path": "...",
+      "page": 1,
+      "snippet": "...",
+      "score": 0.12,
+      "reason": "rewrite-bm25",
+      "source_type": "pdf",
+      "doc_topic": "guideline"
+    }
+  ],
   "trace": {"meta": {}, "steps": []}
 }
 ```
@@ -254,7 +287,7 @@ RAG_BACKEND=bm25
 说明：
 - 若命中待办意图且未确认：通常返回 `used_tool=plan_gate`
 - 若用户确认后生成草案：会返回 `proposal_id + proposal`
-- 若命中知识库工具：会返回 `citations`
+- 若命中知识库工具：会返回 `citations`（含 `source_type/doc_topic`）
 
 ### `POST /api/plan/confirm`
 
@@ -313,10 +346,11 @@ RAG_BACKEND=bm25
 - `TesseractNotFoundError`
   - 配置 `.env` 中 `TESSERACT_CMD` 为 `tesseract.exe` 绝对路径，或确认 PATH 生效后重开终端。
 
-- `No relevant context found.`
-  - 先执行 `/api/index`
+- `No relevant context found.` / 回答与证据不一致
+  - 先执行 `/api/index?rebuild=1`
   - 检查 `DOCS_DIR` 是否正确
-  - 若已启用向量检索，确认模型依赖已安装并索引重建成功
+  - 调低/调高 `RAG_EVIDENCE_MIN_SCORE` 观察拒答与命中平衡
+  - 若是个人近况问题，优先检查是否命中了个人记忆而非外部指南
 
 ---
 

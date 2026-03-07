@@ -41,13 +41,21 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 
 from .db import SessionLocal, init_db
-from .models import ChatMessage, TodoItem, MemoryCandidate, ConversationSummary
+from .models import ChatMessage, TodoItem, MemoryCandidate, ConversationSummary, LifeEvent, UserProfile
 from .settings import settings
 from .llm_qwen import chat_completion
 from .memory_extractor import extract_memory_from_dialogue
+from .personal_memory import (
+    build_profile_context,
+    extract_personal_events,
+    extract_profile_facts,
+    generate_profile_pre_advice,
+    parse_event_time,
+    decide_proactive_advice,
+)
 from .planner import propose_plan
 from .graph_chat import build_chat_graph, run_chat_graph
 from .retrieval import index_documents
@@ -168,6 +176,15 @@ chat_graph = None
 
 # 每多少条消息刷新一次摘要（越小越频繁，也越费 token/cost）
 SUMMARY_REFRESH_TURNS = 10
+
+
+def _resolve_memory_owner_id(session_id: str) -> str:
+    """根据配置决定个人记忆写入/读取使用的 owner id。"""
+
+    scope = (settings.personal_memory_scope or "global").strip().lower()
+    if scope == "session":
+        return session_id
+    return (settings.personal_memory_global_id or "default_user").strip() or "default_user"
 
 
 # --------------------------------------------------------------------------------------
@@ -302,112 +319,305 @@ def _maybe_update_summary(session_id: str) -> None:
         _save_summary(session_id, summary_text)
 
 
-# --------------------------------------------------------------------------------------
-# 工具函数：日程/待办查询（tool），避免 LLM 胡编
-# --------------------------------------------------------------------------------------
-
-def _is_schedule_query(text: str) -> bool:
-    """识别用户是否在“查询”日程/待办，而不是“新增”日程/待办。
-
-    你之前的版本把“周/今天/明天/安排...”都当成查询信号，会导致严重误判：
-    - "我明天要去理发" 实际是新增待办，但因为包含"明天"被当成查询
-
-    这里做一个 MVP 但更稳的区分：
-    1) 只把“查询句式”当成 query（有什么/有哪些/列出/查看/查一下/我...有什么）
-    2) 一旦出现明显的“新增/记录”动词，就判定不是 query（交给待办流程）
-
-    注意：更高级/更鲁棒的方式是引入 LLM router，这里先把闭环做正确。
-    """
-
-    text = text.strip()
-
-    # 明显“新增/记录”动词：出现这些就不要走查询
-    create_markers = [
-        "记住",
-        "记录",
-        "帮我",
-        "提醒我",
-        "设个提醒",
-        "设置提醒",
-        "加入",
-        "添加",
-        "安排一下",
-        "我要",
-        "我明天要",
-        "我后天要",
-        "我下周",
-    ]
-    if any(m in text for m in create_markers):
-        return False
-
-    # 明显的“查询句式/疑问句”：只在这些情况下走工具查询
-    query_markers = [
-        "有什么",
-        "有哪些",
-        "有啥",
-        "有没有",
-        "查看",
-        "查一下",
-        "查询",
-        "列出",
-        "我今天有什么",
-        "我明天有什么",
-        "我这周有什么",
-        "我下周有什么",
-        "我周",
-        "我星期",
-    ]
-    if any(m in text for m in query_markers):
-        return True
-
-    # 兜底：含“？”通常是查询，但仍然要避免被“我要...”误判
-    if "?" in text or "？" in text:
-        return True
-
-    return False
-
-
-def _answer_schedule(session_id: str) -> str:
-    """查询未来 7 天待办，并让 LLM 做一句话总结。
-
-    为什么“查询 + 总结”的组合很重要：
-    - 查询保证事实正确
-    - 总结让输出更自然
-
-    注意：这里默认查未来 7 天，你也可以根据用户问题解析时间范围。
-    """
-
-    now = datetime.now()
-    end = now + timedelta(days=7)
+def _maybe_prune_chat_history(session_id: str) -> None:
+    """当聊天记录过长时执行“摘要 + 删除最旧消息”的滚动压缩。"""
 
     with SessionLocal() as db:
         rows = (
             db.execute(
-                select(TodoItem)
-                .where(TodoItem.due_at != None)
-                .where(TodoItem.due_at >= now)
-                .where(TodoItem.due_at < end)
-                .order_by(TodoItem.due_at.asc())
+                select(ChatMessage)
+                .where(ChatMessage.session_id == session_id)
+                .order_by(ChatMessage.created_at.asc())
             )
             .scalars()
             .all()
         )
 
-    if not rows:
-        return "未来7天没有已安排的待办。"
+    total = len(rows)
+    if total <= settings.chat_retention_limit:
+        return
 
-    items = [
-        {"title": r.title, "due_at": r.due_at.isoformat() if r.due_at else None}
-        for r in rows
-    ]
+    target = settings.chat_prune_target
+    if target >= settings.chat_retention_limit:
+        target = max(100, settings.chat_retention_limit - 100)
 
-    prompt = "Summarize the upcoming schedule in one or two short sentences."
-    return chat_completion(
-        [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": json.dumps(items, ensure_ascii=False)},
-        ],
-        temperature=0.2,
+    prune_count = max(0, total - target)
+    if prune_count <= 0:
+        return
+
+    old_rows = rows[:prune_count]
+    old_dialogue = [{"role": r.role, "content": r.content} for r in old_rows]
+
+    summary_text = ""
+    try:
+        summary_text = chat_completion(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "请把这段历史对话压缩成长期记忆摘要。"
+                        "重点保留：个人偏好、长期目标、反复出现的任务、已确认事实。"
+                        "输出一段简洁中文。"
+                    ),
+                },
+                {"role": "user", "content": json.dumps(old_dialogue, ensure_ascii=False)},
+            ],
+            temperature=0.2,
+        )
+    except Exception as exc:
+        logger.warning("Chat prune summary failed: %s", exc)
+
+    if summary_text.strip():
+        _save_summary(session_id, f"[rolling-prune] {summary_text.strip()}")
+
+    ids = [r.id for r in old_rows]
+    with SessionLocal() as db:
+        db.execute(delete(ChatMessage).where(ChatMessage.id.in_(ids)))
+        db.commit()
+
+    logger.info(
+        "Pruned chat history session_id=%s total=%s pruned=%s kept=%s",
+        session_id,
+        total,
+        prune_count,
+        total - prune_count,
+    )
+
+
+def _store_personal_events(session_id: str, source_text: str, events: list[dict]) -> int:
+    """把抽取到的个人事件落库到 life_events。"""
+
+    if not events:
+        return 0
+
+    inserted = 0
+    with SessionLocal() as db:
+        for item in events:
+            db.add(
+                LifeEvent(
+                    # 这里的 session_id 实际上作为“记忆 owner id”使用，可按配置跨会话共享。
+                    session_id=session_id,
+                    category=item.get("category", "other"),
+                    title=item.get("title", ""),
+                    event_time=parse_event_time(item.get("event_time")),
+                    amount=item.get("amount"),
+                    amount_unit=item.get("amount_unit"),
+                    tags_json=json.dumps(item.get("tags", []), ensure_ascii=False),
+                    notes=item.get("notes"),
+                    source_text=source_text,
+                )
+            )
+            inserted += 1
+        db.commit()
+    return inserted
+
+
+def _load_recent_life_events(session_id: str, limit: int = 30) -> list[dict]:
+    """读取某个记忆 owner 的近期个人事件，供主动建议使用。
+
+    已改为 `_load_life_events_in_window` 按时间窗口读取，不再保留固定条数版 `_load_recent_life_events`。
+    """
+
+    with SessionLocal() as db:
+        rows = (
+            db.execute(
+                select(LifeEvent)
+                .where(LifeEvent.session_id == session_id)
+                .order_by(LifeEvent.created_at.desc())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+
+    rows.reverse()
+    out: list[dict] = []
+    for r in rows:
+        try:
+            tags = json.loads(r.tags_json) if r.tags_json else []
+        except json.JSONDecodeError:
+            tags = []
+        out.append(
+            {
+                "category": r.category,
+                "title": r.title,
+                "event_time": r.event_time.isoformat() if r.event_time else None,
+                "amount": r.amount,
+                "amount_unit": r.amount_unit,
+                "tags": tags,
+                "notes": r.notes,
+            }
+        )
+    return out
+
+
+def _load_upcoming_todos_for_advice(session_id: str, hours: int = 24) -> list[dict]:
+    """读取未来一段时间的待办，供冲突/提醒建议。"""
+
+    now = datetime.now()
+    end = now + timedelta(hours=hours)
+    with SessionLocal() as db:
+        stmt = (
+            select(TodoItem)
+            .where(TodoItem.due_at != None)
+            .where(TodoItem.due_at >= now)
+            .where(TodoItem.due_at < end)
+            .order_by(TodoItem.due_at.asc())
+        )
+        scope = (settings.personal_memory_scope or "global").strip().lower()
+        session_col = getattr(TodoItem, "session_id", None)
+        if scope == "session" and session_col is not None:
+            stmt = stmt.where(session_col == session_id)
+
+        rows = db.execute(stmt).scalars().all()
+
+    return [{"title": r.title, "due_at": r.due_at.isoformat() if r.due_at else None} for r in rows]
+
+
+def _load_user_profile(session_id: str) -> dict | None:
+    """读取某个记忆 owner 的身份画像。"""
+
+    with SessionLocal() as db:
+        row = (
+            db.execute(select(UserProfile).where(UserProfile.session_id == session_id).limit(1))
+            .scalars()
+            .first()
+        )
+
+    if not row:
+        return None
+
+    try:
+        preferences = json.loads(row.preferences_json) if row.preferences_json else []
+    except json.JSONDecodeError:
+        preferences = []
+    try:
+        conditions = json.loads(row.conditions_json) if row.conditions_json else []
+    except json.JSONDecodeError:
+        conditions = []
+
+    return {
+        "height_cm": row.height_cm,
+        "weight_kg": row.weight_kg,
+        "preferences": preferences,
+        "conditions": conditions,
+        "notes": row.notes,
+    }
+
+
+def _merge_unique(base: list[str], patch: list[str]) -> list[str]:
+    seen = {x.strip() for x in base if x and x.strip()}
+    out = [x for x in base if x and x.strip()]
+    for item in patch:
+        t = (item or "").strip()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
+def _upsert_user_profile(session_id: str, patch: dict | None) -> bool:
+    """把画像补丁写回 user_profiles（增量更新，按记忆 owner 聚合）。"""
+
+    if not patch:
+        return False
+
+    with SessionLocal() as db:
+        row = (
+            db.execute(select(UserProfile).where(UserProfile.session_id == session_id).limit(1))
+            .scalars()
+            .first()
+        )
+        if not row:
+            row = UserProfile(session_id=session_id)
+            db.add(row)
+            db.flush()
+
+        changed = False
+
+        h = patch.get("height_cm")
+        if h is not None and h > 0:
+            row.height_cm = float(h)
+            changed = True
+
+        w = patch.get("weight_kg")
+        if w is not None and w > 0:
+            row.weight_kg = float(w)
+            changed = True
+
+        try:
+            cur_prefs = json.loads(row.preferences_json) if row.preferences_json else []
+        except json.JSONDecodeError:
+            cur_prefs = []
+        merged_prefs = _merge_unique(cur_prefs, patch.get("preferences") or [])
+        if merged_prefs != cur_prefs:
+            row.preferences_json = json.dumps(merged_prefs, ensure_ascii=False)
+            changed = True
+
+        try:
+            cur_conds = json.loads(row.conditions_json) if row.conditions_json else []
+        except json.JSONDecodeError:
+            cur_conds = []
+        merged_conds = _merge_unique(cur_conds, patch.get("conditions") or [])
+        if merged_conds != cur_conds:
+            row.conditions_json = json.dumps(merged_conds, ensure_ascii=False)
+            changed = True
+
+        notes = (patch.get("notes") or "").strip()
+        if notes and notes != (row.notes or ""):
+            row.notes = notes
+            changed = True
+
+        if changed:
+            db.commit()
+        else:
+            db.rollback()
+
+    return changed
+
+
+def _load_life_events_in_window(session_id: str, hours: int, now_dt: datetime) -> tuple[list[dict], str, str]:
+    """按时间窗口读取个人事件（不再按固定条数），并返回窗口起止时间。"""
+
+    window_start = now_dt - timedelta(hours=hours)
+    with SessionLocal() as db:
+        rows = (
+            db.execute(
+                select(LifeEvent)
+                .where(LifeEvent.session_id == session_id)
+                .where(func.coalesce(LifeEvent.event_time, LifeEvent.created_at) >= window_start)
+                .where(func.coalesce(LifeEvent.event_time, LifeEvent.created_at) <= now_dt)
+                .order_by(func.coalesce(LifeEvent.event_time, LifeEvent.created_at).asc())
+            )
+            .scalars()
+            .all()
+        )
+
+    out: list[dict] = []
+    for r in rows:
+        try:
+            tags = json.loads(r.tags_json) if r.tags_json else []
+        except json.JSONDecodeError:
+            tags = []
+        out.append(
+            {
+                "category": r.category,
+                "title": r.title,
+                "event_time": r.event_time.isoformat() if r.event_time else None,
+                "recorded_at": r.created_at.isoformat() if r.created_at else None,
+                "effective_time": (r.event_time or r.created_at).isoformat() if (r.event_time or r.created_at) else None,
+                "amount": r.amount,
+                "amount_unit": r.amount_unit,
+                "tags": tags,
+                "notes": r.notes,
+            }
+        )
+
+    return (
+        out,
+        window_start.isoformat(timespec="seconds"),
+        now_dt.isoformat(timespec="seconds"),
     )
 
 
@@ -439,14 +649,152 @@ def chat(req: ChatRequest):
     if chat_graph is None:
         raise HTTPException(status_code=500, detail="chat graph not initialized")
 
-    # B) 交给状态机执行：内部会完成 Router 决策、工具调用、answer 生成。
-    state = run_chat_graph(compiled_graph=chat_graph, session_id=session_id, user_message=req.message)
+    # A1) 前置执行：画像更新 + 个人事件抽取落库 + 前置知识提示生成。
+    recent_for_profile = _load_recent_dialogue(session_id, limit=12)
+    memory_owner_id = _resolve_memory_owner_id(session_id)
+    now_dt = datetime.now()
+    now_iso = now_dt.isoformat(timespec="seconds")
+
+    profile_patch = extract_profile_facts(
+        req.message,
+        recent_for_profile,
+        now_iso=now_iso,
+        session_id=session_id,
+    )
+    profile_changed = _upsert_user_profile(memory_owner_id, profile_patch.model_dump() if profile_patch else None)
+    profile = _load_user_profile(memory_owner_id)
+    profile_context = build_profile_context(profile)
+
+    personal = extract_personal_events(
+        req.message,
+        recent_for_profile,
+        now_iso=now_iso,
+        session_id=session_id,
+    )
+    personal_inserted = 0
+    if personal and personal.items:
+        personal_inserted = _store_personal_events(
+            memory_owner_id,
+            req.message,
+            [item.model_dump() for item in personal.items],
+        )
+
+    recent_events, event_window_start, event_window_end = _load_life_events_in_window(
+        session_id=memory_owner_id,
+        hours=settings.proactive_event_window_hours,
+        now_dt=now_dt,
+    )
+    pre_advice = generate_profile_pre_advice(
+        user_message=req.message,
+        profile_context=profile_context,
+        recent_events=recent_events,
+        now_iso=now_iso,
+        session_id=session_id,
+    )
+
+    pre_steps = [
+        {
+            "type": "preprocess",
+            "name": "profile_context",
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "output": {
+                "profile_changed": profile_changed,
+                "has_profile": bool(profile_context),
+                "profile_context": profile_context or "",
+                "memory_scope": settings.personal_memory_scope,
+                "memory_owner_id": memory_owner_id,
+            },
+        },
+        {
+            "type": "preprocess",
+            "name": "personal_events",
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "output": {
+                "inserted": personal_inserted,
+                "recent_events_count": len(recent_events),
+                "event_window_hours": settings.proactive_event_window_hours,
+                "event_window_start": event_window_start,
+                "event_window_end": event_window_end,
+            },
+        },
+        {
+            "type": "preprocess",
+            "name": "pre_graph_hint",
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "output": {
+                "pre_advice": pre_advice or "NONE",
+                "source": "profile+life_events",
+            },
+        },
+    ]
+
+    # B) 交给状态机执行：graph 从一开始就能使用画像与前置知识提示。
+    state = run_chat_graph(
+        compiled_graph=chat_graph,
+        session_id=session_id,
+        user_message=req.message,
+        profile_context=profile_context or None,
+        pre_advice=pre_advice,
+        pre_steps=pre_steps,
+    )
     answer = state.get("answer") or ""
     proposal_id = state.get("proposal_id")
     proposal_payload = state.get("proposal")
     used_tool = state.get("used_tool")
     citations = state.get("citations") or []
     trace = state.get("trace")
+
+    # B2) 阈值门控：只有提醒必要性分数超过阈值，才追加“补充建议”。
+    upcoming_todos = _load_upcoming_todos_for_advice(
+        session_id=memory_owner_id,
+        hours=settings.proactive_todo_hours,
+    )
+    decision = decide_proactive_advice(
+        user_message=req.message,
+        assistant_answer=answer,
+        recent_events=recent_events,
+        upcoming_todos=upcoming_todos,
+        profile_context=profile_context,
+        now_iso=now_iso,
+        threshold=settings.proactive_advice_threshold,
+        session_id=session_id,
+    )
+
+    advice_added = False
+    if decision.should_add and decision.advice and decision.advice not in answer:
+        answer = f"{answer}\n\n补充建议：{decision.advice}".strip()
+        advice_added = True
+
+    if isinstance(trace, dict):
+        steps = trace.get("steps")
+        if isinstance(steps, list):
+            steps.append(
+                {
+                    "type": "postprocess",
+                    "name": "proactive_advice_threshold",
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "output": {
+                        "score": decision.score,
+                        "threshold": settings.proactive_advice_threshold,
+                        "added": advice_added,
+                        "reasons": decision.reasons,
+                        "events_used": len(recent_events),
+                        "upcoming_todos_used": len(upcoming_todos),
+                        "now_iso": now_iso,
+                        "event_window_start": event_window_start,
+                        "event_window_end": event_window_end,
+                    },
+                }
+            )
+
+    logger.info(
+        "proactive advice decision score=%.3f threshold=%.3f added=%s events=%s todos=%s",
+        decision.score,
+        settings.proactive_advice_threshold,
+        advice_added,
+        len(recent_events),
+        len(upcoming_todos),
+    )
 
     # C) 保存助手消息，形成完整对话闭环。
     with SessionLocal() as db:
@@ -455,12 +803,11 @@ def chat(req: ChatRequest):
 
     # D) 尝试刷新摘要（中期记忆）。
     _maybe_update_summary(session_id)
+    # E) 超过上限后滚动压缩聊天记录（摘要+删旧）。
+    _maybe_prune_chat_history(session_id)
 
-    # E) 旁路增强：结构化记忆抽取（失败不影响主流程）。
-    dialogue = [
-        {"role": "user", "content": req.message},
-        {"role": "assistant", "content": answer},
-    ]
+    # F) 旁路增强：结构化记忆抽取（失败不影响主流程）。
+    dialogue = _load_recent_dialogue(session_id, limit=8)
     extraction = extract_memory_from_dialogue(dialogue)
     if extraction:
         with SessionLocal() as db:
@@ -475,7 +822,7 @@ def chat(req: ChatRequest):
                 )
             db.commit()
 
-    # F) 统一返回给前端：答案 + 可选草案 + 可选引用 + trace。
+    # G) 统一返回给前端：答案 + 可选草案 + 可选引用 + trace。
     return {
         "answer": answer,
         "session_id": session_id,

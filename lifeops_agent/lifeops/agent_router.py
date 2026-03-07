@@ -118,6 +118,19 @@ def _detect_signals(text: str) -> list[str]:
         "我要",
         "添加",
         "加入",
+        # 事实问答类（优先走 RAG）
+        "叫什么",
+        "名字",
+        "是谁",
+        "哪位",
+        "哪里",
+        "哪个",
+        "哪家",
+        "实验室",
+        "导师",
+        "单位",
+        "学校",
+        "公司",
         # 时间
         "今天",
         "明天",
@@ -158,11 +171,7 @@ def build_route_context(
 
 
 def route_decision(ctx: RouteContext) -> RouterDecision:
-    """用 LLM 做一次路由决策。
-
-    - 输出严格 JSON
-    - 失败则降级 normal_chat
-    """
+    """用 LLM 做一次路由决策。"""
 
     tool_spec = {
         "tools": [
@@ -213,7 +222,10 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
         "4) 只有当用户明确在问\"我有什么安排\"这类问题，才选择 query_todos。\n"
         "5) 如果用户是在问某个明确日期（今天/明天/后天/周X/下周X）的安排，query_todos.args 优先填 target_date；不要返回宽泛 range_days。\n"
         "6) 当用户明显在问知识库/文档内容（例如‘work.png里有什么’‘某篇论文提到什么’），应选择 query_knowledge。\n"
-        "7) 你的输出 JSON schema：\n"
+        "7) 当用户在问事实类问题（例如‘我的实验室叫什么名字’‘某人是谁’），默认先选择 query_knowledge 做检索。\n"
+        "8) 当用户在问个人近况（例如‘我最近饮食怎么样’‘我这周运动怎么样’），不要强制 query_knowledge，优先 normal_chat 结合上下文回答。\n"
+        "9) 如果不确定：事实/文档问题优先 query_knowledge；个人近况问题优先 normal_chat。\n"
+        "10) 你的输出 JSON schema：\n"
         "{\n"
         "  \"action\": \"normal_chat|query_todos|query_knowledge|propose_todo|ask_user_confirm_proposal\",\n"
         "  \"args\": { ... },\n"
@@ -238,6 +250,7 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ],
         temperature=0.0,
+        runtime_context={"scenario": "router_decision", "session_id": ctx.session_id},
     )
 
     try:
