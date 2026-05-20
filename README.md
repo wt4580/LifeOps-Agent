@@ -201,9 +201,11 @@ QWEN_MODEL=qwen-turbo
 
 ```powershell
 uvicorn lifeops.main:app --reload
+或者
+python -m app.src
 ```
 
-打开：`http://127.0.0.1:8000`
+打开：`http://127.0.0.1:5000`
 
 ---
 
@@ -225,6 +227,10 @@ RAG_CHUNK_OVERLAP=120
 RAG_EVIDENCE_MIN_SCORE=0.02
 RAG_NO_EVIDENCE_TEMPLATE=当前证据不足以支持确定结论。我可以继续按关键词重检，或请你提供更具体的文件名/术语。
 
+# 存储拆分：知识库与 LangGraph Checkpointer 使用不同 SQLite 文件
+KNOWLEDGE_DATABASE_URL=sqlite:///data/knowledge_base.db
+CHECKPOINTER_DB_PATH=data/checkpointer.db
+
 # 个人记忆范围
 PERSONAL_MEMORY_SCOPE=global
 PERSONAL_MEMORY_GLOBAL_ID=default_user
@@ -241,6 +247,19 @@ Invoke-RestMethod -Method Post "http://127.0.0.1:8000/api/index?rebuild=1"
 ```dotenv
 RAG_BACKEND=bm25
 ```
+
+---
+
+## 会话状态与数据分层
+
+- `Checkpointer`：跨轮次对话历史与图执行挂起状态（LangGraph 管理，SQLite 持久化）。
+- `DB`：长期业务数据（画像/事件/摘要/待办/审计消息），由业务层管理。
+
+当前聊天链路采用 `interrupt` HITL：
+
+- 首轮命中待办确认动作时，图在工具节点 `interrupt` 挂起。
+- 下一轮先检查 `current_state.tasks`；有挂起任务则 `Command(resume=message)` 恢复执行。
+- 恢复后若用户确认则生成 `proposal`，若拒绝则取消，不再依赖进程内全局 pending 缓存。
 
 ---
 

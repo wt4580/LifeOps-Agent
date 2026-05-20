@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <title>LifeOps Agent</title>
+  <link rel="stylesheet" href="/static/style.css?v=2" />
+</head>
+<body>
+  <div class="app">
+    <!-- 左侧：聊天区（主） -->
+    <main class="chat-section">
+      <header class="chat-header">
+        <h1>LifeOps</h1>
+        <div class="header-actions">
+          <button id="toggle-rag" class="btn-icon" title="知识库">📚</button>
+        </div>
+      </header>
+      
+      <div id="chat-log" class="chat-messages"></div>
+      
+      <!-- 待办草案卡片 -->
+      <div id="proposal-card" class="proposal-card hidden">
+        <div class="card-header">
+          <h3>📋 待办草案</h3>
+          <button id="close-proposal" class="btn-close">×</button>
+        </div>
+        <pre id="proposal-content" class="proposal-content"></pre>
+        <div class="card-actions">
+          <button id="confirm-proposal" class="btn btn-success">✓ 确认加入待办</button>
+          <button id="reject-proposal" class="btn btn-secondary">✗ 取消</button>
+        </div>
+      </div>
+      
+      <div class="chat-input-box">
+        <textarea 
+          id="chat-input" 
+          placeholder="输入消息... (例如: 明天下午三点和李总开会)"
+          rows="2"
+        ></textarea>
+        <button id="chat-send" class="btn-primary">发送</button>
+      </div>
+    </main>
+
+    <!-- 右侧：待办 + RAG -->
+    <aside class="side-panel">
+      <!-- 待办区域（常驻） -->
+      <section class="todos-section">
+        <div class="section-title">
+          <h2>待办事项</h2>
+          <div class="todo-actions">
+            <button id="todos-today" class="btn-sm">今天</button>
+            <button id="todos-upcoming" class="btn-sm">7天</button>
+          </div>
+        </div>
+        <div id="todos-output" class="todos-list"></div>
+      </section>
+
+      <!-- RAG 区域（默认隐藏，点击按钮显示） -->
+      <section id="rag-section" class="rag-section hidden">
+        <div class="section-title">
+          <h2>知识库</h2>
+          <button id="close-rag" class="btn-close">×</button>
+        </div>
+        
+        <div class="rag-tabs">
+          <button class="tab-btn active" data-tab="index">索引</button>
+          <button class="tab-btn" data-tab="ask">问答</button>
+        </div>
+        
+        <div id="tab-index" class="tab-content active">
+          <button id="index-run" class="btn-secondary full-width">运行索引</button>
+          <pre id="index-output" class="mini-panel"></pre>
+        </div>
+        
+        <div id="tab-ask" class="tab-content">
+          <textarea 
+            id="ask-input" 
+            placeholder="提问..."
+            rows="2"
+          ></textarea>
+          <button id="ask-send" class="btn-secondary full-width">查询</button>
+          <div id="ask-answer" class="answer-box hidden"></div>
+          <div id="ask-citations" class="citations-box"></div>
+        </div>
+      </section>
+    </aside>
+
+  </div>
+
+  <script src="/static/app.js?v=2"></script>
+</body>
+</html>
+

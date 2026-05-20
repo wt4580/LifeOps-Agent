@@ -1,0 +1,19 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.env.*
+.venv*
+.idea/
+.vscode/
+*.log
+data/
+agent_env/
+
+# Local model weights/artifacts
+bge-*/
+*.safetensors
+*.onnx
