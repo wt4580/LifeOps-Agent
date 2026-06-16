@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from ..common.domain.response import success_response,BaseResponse
-from ..service.chat_service import chat_service
+from ..service.chat_service import ChatService
 
 router = APIRouter()
 
@@ -26,7 +26,7 @@ async def chat(req: ChatVo):
 
 
     logger.info("#####################对话开始#########################")
-    result = await chat_service.chat(message=req.message, session_id=req.session_id)
+    result = await ChatService().chat(message=req.message, session_id=req.session_id)
     logger.info("#####################对话结束#########################")
     return success_response(data=result)
 
@@ -34,7 +34,7 @@ async def chat(req: ChatVo):
 @router.post("/api/chat/stream")
 async def chat_stream(req: ChatVo):
     async def event_stream():
-        async for event in chat_service.chat_stream(message=req.message, session_id=req.session_id):
+        async for event in ChatService().chat_stream(message=req.message, session_id=req.session_id):
             yield event
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

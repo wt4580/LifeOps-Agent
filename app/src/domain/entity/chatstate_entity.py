@@ -1,7 +1,7 @@
 from typing import Any, TypedDict
 
 
-# ChatState 是“图上流动的数据包”：
+# ChatState 是"图上流动的数据包"：
 # 每个 node 读取/修改其中的字段，再交给下一个 node。
 # 理解这个结构，就能理解整个状态机的数据依赖。
 class ChatState(TypedDict, total=False):
@@ -32,7 +32,12 @@ class ChatState(TypedDict, total=False):
     proposal_id: str | None
     proposal: dict[str, Any] | None
 
+    # 主动决策上下文（用于 postprocess 阶段）
+    recent_events: list[dict[str, Any]]
+    upcoming_todos: list[dict[str, Any]]
+    event_window_start: str | None
+    event_window_end: str | None
+
     # Trace
     citations: list[dict[str, Any]]
     trace: dict[str, Any]
-

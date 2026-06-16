@@ -131,7 +131,13 @@ class ChatService:
             },
         ]
 
-        # C) 执行状态机：统一交给 LangGraph 处理路由、工具调用和 HITL。
+          # C) 执行状态机：统一交给 LangGraph 处理路由、工具调用、HITL 和主动建议。
+        # 将主动决策所需的上下文传递给 Graph，由 Graph 内部的 proactive_decision 节点处理。
+        upcoming_todos = self._load_upcoming_todos_for_advice(
+            session_id=memory_owner_id,
+            hours=settings.proactive_todo_hours,
+        )
+        
         state = await arun_chat_graph(
             compiled_graph=app_cfg.chat_graph,   # ← 用导入的全局实例
             session_id=session_id,
@@ -139,6 +145,10 @@ class ChatService:
             profile_context=profile_context or None,
             pre_advice=pre_advice,
             pre_steps=pre_steps,
+            recent_events=recent_events,
+            upcoming_todos=upcoming_todos,
+            event_window_start=event_window_start,
+            event_window_end=event_window_end,
         )
         answer = state.get("answer") or ""
         proposal_id = state.get("proposal_id")
@@ -153,96 +163,17 @@ class ChatService:
         citations = state.get("citations") or []
         trace = state.get("trace")
 
-        # D) 主动建议决策：普通聊天可补充提醒；HITL 流程则跳过。
-        upcoming_todos = self._load_upcoming_todos_for_advice(
-            session_id=memory_owner_id,
-            hours=settings.proactive_todo_hours,
-        )
-        advice_added = False
-        if used_tool not in {"plan_proposal", "plan_gate_cancel", "plan_gate_wait"}:
-            decision = decide_proactive_advice(
-                user_message=message,
-                assistant_answer=answer,
-                recent_events=recent_events,
-                upcoming_todos=upcoming_todos,
-                profile_context=profile_context,
-                now_iso=now_iso,
-                threshold=settings.proactive_advice_threshold,
-                session_id=session_id,
-            )
-
-            if decision.should_add and decision.advice and decision.advice not in answer:
-                answer = f"{answer}\n\n补充建议：{decision.advice}".strip()
-                advice_added = True
-
-            logger.info(
-                "proactive advice decision score=%.3f threshold=%.3f added=%s events=%s todos=%s",
-                decision.score,
-                settings.proactive_advice_threshold,
-                advice_added,
-                len(recent_events),
-                len(upcoming_todos),
-            )
-
-            if isinstance(trace, dict):
-                steps = trace.get("steps")
-                if isinstance(steps, list):
-                    steps.append(
-                        {
-                            "type": "postprocess",
-                            "name": "proactive_advice_threshold",
-                            "ts": datetime.now().isoformat(timespec="seconds"),
-                            "output": {
-                                "score": decision.score,
-                                "threshold": settings.proactive_advice_threshold,
-                                "added": advice_added,
-                                "reasons": decision.reasons,
-                                "events_used": len(recent_events),
-                                "upcoming_todos_used": len(upcoming_todos),
-                                "now_iso": now_iso,
-                                "event_window_start": event_window_start,
-                                "event_window_end": event_window_end,
-                            },
-                        }
-                    )
-        else:
-            # 待办草案确认场景由 Graph 自己处理，这里不再额外插入建议。
-            logger.info(
-                "proactive advice skipped for HITL flow tool=%s events=%s todos=%s",
-                used_tool,
-                len(recent_events),
-                len(upcoming_todos),
-            )
-            if isinstance(trace, dict):
-                steps = trace.get("steps")
-                if isinstance(steps, list):
-                    steps.append(
-                        {
-                            "type": "postprocess",
-                            "name": "proactive_advice_threshold",
-                            "ts": datetime.now().isoformat(timespec="seconds"),
-                            "output": {
-                                "skipped": True,
-                                "reason": "hitl_flow",
-                                "events_used": len(recent_events),
-                                "upcoming_todos_used": len(upcoming_todos),
-                                "now_iso": now_iso,
-                                "event_window_start": event_window_start,
-                                "event_window_end": event_window_end,
-                            },
-                        }
-                    )
-
-        # E) 保存助手消息：和 user 消息配对入库，方便后续摘要与回放。
+        
+        # D) 保存助手消息：和 user 消息配对入库，方便后续摘要与回放。
         with SessionLocal() as db:
             db.add(ChatMessage(session_id=session_id, role="assistant", content=answer))
             db.commit()
 
-        # F) 按轮次刷新摘要，并在必要时裁剪历史，控制长期上下文长度。
-        self._maybe_update_summary(session_id)
+        # E) 按轮次刷新摘要，并在必要时裁剪历史，控制长期上下文长度。
+        await self._maybe_update_summary(session_id)
         self._maybe_prune_chat_history(session_id)
 
-        # G) 旁路增强：抽取结构化记忆候选，但不阻塞主响应返回。
+        # F) 旁路增强：抽取结构化记忆候选，但不阻塞主响应返回。
         latest_checkpoint_context = await aload_chat_checkpoint_context(app_cfg.chat_graph, session_id) if app_cfg.chat_graph else {}
         dialogue = latest_checkpoint_context.get("recent_dialogue") or self._load_recent_dialogue(session_id, limit=8)
         extraction = extract_memory_from_dialogue(dialogue)
@@ -259,7 +190,7 @@ class ChatService:
                     )
                 db.commit()
 
-            # H) 返回前端所需结果。
+            # G) 返回前端所需结果。
         return {
             "answer": answer,
             "session_id": session_id,
@@ -563,7 +494,7 @@ class ChatService:
             db.add(ConversationSummary(session_id=session_id, summary_text=summary_text))
             db.commit()
     
-    def _maybe_update_summary(self, session_id: str) -> None:
+    async def _maybe_update_summary(self, session_id: str) -> None:
         """按轮次定期刷新摘要，避免长对话无限增长。"""
         with SessionLocal() as db:
             count = db.execute(
@@ -571,7 +502,8 @@ class ChatService:
             ).scalar_one()
         
         if count > 0 and count % self.summary_refresh_turns == 0:
-            checkpoint_context = load_chat_checkpoint_context(app_cfg.chat_graph, session_id) if app_cfg.chat_graph else {}
+            # 使用异步版本加载 checkpoint 上下文
+            checkpoint_context = await aload_chat_checkpoint_context(app_cfg.chat_graph, session_id) if app_cfg.chat_graph else {}
             recent = checkpoint_context.get("recent_dialogue") or self._load_recent_dialogue(
                 session_id, limit=self.summary_refresh_turns * 2
             )

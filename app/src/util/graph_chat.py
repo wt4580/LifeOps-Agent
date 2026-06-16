@@ -5,7 +5,7 @@ from __future__ import annotations
 基于 LangGraph 的聊天状态机编排。
 
 目标流程：
-Chat -> (LLM decide) -> Tool -> Update state -> (maybe HITL) -> Final answer
+Chat -> (LLM decide) -> Tool -> Update state -> (maybe HITL) -> Final answer -> (proactive advice)
 """
 import json
 import re
@@ -14,15 +14,18 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from .agent_router import build_route_context, route_decision
 from ..common.config.db_config import SessionLocal
+from ..common.config.base_config import settings
+from ..common.config.log_config import logger
 from .llm.llm_qwen import chat_completion
-from ..domain.entity.chat_entity import ConversationSummary, TodoItem
+from ..domain.entity.chat_entity import ConversationSummary, TodoItem, LifeEvent
 from .planner.planner import detect_affirmation, detect_rejection, propose_plan
 from .retrieval.retrieval import rag_answer, search_chunks
 from .time.time_parser import normalize_date_hint
+from .memory.personal_memory import decide_proactive_advice
 from app.src.domain.entity.chatstate_entity import ChatState
 
 # 范围查询待办：当用户问“未来几天安排”时使用。
@@ -77,6 +80,88 @@ def _get_summary(session_id: str) -> str | None:
             .first()
         )
     return row.summary_text if row else None
+
+
+def _load_life_events_in_window(session_id: str, hours: int, now_dt: datetime) -> tuple[list[dict], str, str]:
+    """按时间窗口读取个人事件，避免只看固定条数导致时间上下文丢失。"""
+    window_start = now_dt - timedelta(hours=hours)
+    with SessionLocal() as db:
+        rows = (
+            db.execute(
+                select(LifeEvent)
+                .where(LifeEvent.session_id == session_id)
+                .where(func.coalesce(LifeEvent.event_time, LifeEvent.created_at) >= window_start)
+                .where(func.coalesce(LifeEvent.event_time, LifeEvent.created_at) <= now_dt)
+                .order_by(func.coalesce(LifeEvent.event_time, LifeEvent.created_at).asc())
+            )
+            .scalars()
+            .all()
+        )
+    
+    out: list[dict] = []
+    for r in rows:
+        try:
+            tags = json.loads(r.tags_json) if r.tags_json else []
+        except json.JSONDecodeError:
+            tags = []
+        out.append(
+            {
+                "category": r.category,
+                "title": r.title,
+                "event_time": r.event_time.isoformat() if r.event_time else None,
+                "recorded_at": r.created_at.isoformat() if r.created_at else None,
+                "effective_time": (r.event_time or r.created_at).isoformat() if (r.event_time or r.created_at) else None,
+                "amount": r.amount,
+                "amount_unit": r.amount_unit,
+                "tags": tags,
+                "notes": r.notes,
+            }
+        )
+    
+    return (
+        out,
+        window_start.isoformat(timespec="seconds"),
+        now_dt.isoformat(timespec="seconds"),
+    )
+
+
+def _load_upcoming_todos_for_advice(session_id: str, hours: int = 24) -> list[dict]:
+    """读取未来待办事项，用于判断是否要主动提醒用户。"""
+    now = datetime.now()
+    end = now + timedelta(hours=hours)
+    with SessionLocal() as db:
+        stmt = (
+            select(TodoItem)
+            .where(TodoItem.due_at != None)
+            .where(TodoItem.due_at >= now)
+            .where(TodoItem.due_at < end)
+            .order_by(TodoItem.due_at.asc())
+        )
+        scope = (settings.personal_memory_scope or "global").strip().lower()
+        session_col = getattr(TodoItem, "session_id", None)
+        if scope == "session" and session_col is not None:
+            stmt = stmt.where(session_col == session_id)
+        
+        rows = db.execute(stmt).scalars().all()
+    
+    return [{"title": r.title, "due_at": r.due_at.isoformat() if r.due_at else None} for r in rows]
+
+
+def _resolve_memory_owner_id(session_id: str) -> str:
+    """解析记忆所有者 ID。
+
+    `session` 模式按会话隔离；`global` 模式则共享到统一 owner。
+    """
+    scope = (settings.personal_memory_scope or "global").strip().lower()
+    if scope == "session":
+        return session_id
+    return "global"
+
+
+def _should_check_proactive(state: ChatState) -> bool:
+    """判断是否需要执行主动决策。HITL 流程跳过，普通聊天才检查。"""
+    used_tool = state.get("used_tool")
+    return used_tool not in {"plan_proposal", "plan_gate_cancel", "plan_gate_wait"}
 
 
 # trace 是可审计轨迹，这个函数统一追加步骤，前端右侧面板依赖它渲染。
@@ -388,21 +473,58 @@ def _node_decide(state: ChatState) -> ChatState:
             },
         }
 
+      # 增强的 trace 输出：包含完整的决策理由和上下文
+    decision_detail = state["decision"]
+    router_trace = decision_detail.get("trace", {})
+    
     _append_trace(
         state,
         _trace_step(
             step_type="llm",
-            name="router",
+            name="router_decision",
             input={
                 "user_message": state["user_message"],
                 "effective_user_message": state.get("effective_user_message") or state["user_message"],
                 "signals": ctx.signals,
-                "summary": state.get("summary"),
+                "signal_count": len(ctx.signals),
+                "summary_present": bool(state.get("summary")),
+                "summary_preview": (state.get("summary") or "")[:100] if state.get("summary") else None,
                 "recent_dialogue_len": len(state.get("recent_dialogue", [])),
             },
-            output=state["decision"],
+            output={
+                "action": decision_detail.get("action"),
+                "args": decision_detail.get("args", {}),
+                "assistant_message_preview": (decision_detail.get("assistant_message") or "")[:100],
+                "decision_reasoning": {
+                    "intent": router_trace.get("intent"),
+                    "why": router_trace.get("why"),
+                    "signals_used": router_trace.get("signals", []),
+                },
+            },
+            metadata={
+                "session_id": state["session_id"],
+                "has_summary": bool(state.get("summary")),
+                "dialogue_context_length": len(state.get("recent_dialogue", [])),
+            }
         ),
     )
+    
+    # 如果触发了 RAG 优先兜底，额外记录一条 trace
+    if state["decision"].get("action") == "query_knowledge" and _should_try_rag_first(state["user_message"]):
+        _append_trace(
+            state,
+            _trace_step(
+                step_type="router_guard",
+                name="rag_priority_override",
+                input={"original_action": "normal_chat", "triggered_by_rule": True},
+                output={
+                    "overridden_action": "query_knowledge",
+                    "reason": "LLM 误判 normal_chat，但命中 RAG 优先规则，强制改写为 query_knowledge",
+                    "user_message_keywords": state["user_message"][:50],
+                },
+            ),
+        )
+    
     return state
 
 
@@ -597,6 +719,97 @@ def _node_run_tool(state: ChatState) -> ChatState:
     return state
 
 
+# 主动决策节点：基于近期事件/待办/画像，决定是否追加主动建议。
+def _node_proactive_decision(state: ChatState) -> ChatState:
+    """执行主动建议决策逻辑。
+    
+    这个节点负责：
+    1. 加载近期事件和未来待办（如果还未加载）
+    2. 调用 decide_proactive_advice 进行智能决策
+    3. 如果需要追加建议，修改 answer
+    4. 记录 trace 到状态中
+    """
+    
+    # 1. 确保上下文已加载（从 Service 传入或在此加载）
+    recent_events = state.get("recent_events", [])
+    upcoming_todos = state.get("upcoming_todos", [])
+    profile_context = state.get("profile_context") or ""
+    
+    # 如果上下文中没有，尝试从数据库加载
+    if not recent_events and not upcoming_todos:
+        now_dt = datetime.now()
+        memory_owner_id = _resolve_memory_owner_id(state["session_id"])
+        
+        if not recent_events:
+            recent_events, event_window_start, event_window_end = _load_life_events_in_window(
+                session_id=memory_owner_id,
+                hours=settings.proactive_event_window_hours,
+                now_dt=now_dt,
+            )
+            state["recent_events"] = recent_events
+            state["event_window_start"] = event_window_start
+            state["event_window_end"] = event_window_end
+        
+        if not upcoming_todos:
+            upcoming_todos = _load_upcoming_todos_for_advice(
+                session_id=memory_owner_id,
+                hours=settings.proactive_todo_hours,
+            )
+            state["upcoming_todos"] = upcoming_todos
+    
+    # 2. 调用决策函数
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    decision = decide_proactive_advice(
+        user_message=state["user_message"],
+        assistant_answer=state.get("answer", ""),
+        recent_events=recent_events,
+        upcoming_todos=upcoming_todos,
+        profile_context=profile_context,
+        now_iso=now_iso,
+        threshold=settings.proactive_advice_threshold,
+        session_id=state["session_id"],
+    )
+    
+    # 3. 如果需要追加建议，修改 answer
+    advice_added = False
+    if decision.should_add and decision.advice:
+        current_answer = state.get("answer", "")
+        if decision.advice not in current_answer:
+            state["answer"] = f"{current_answer}\n\n补充建议：{decision.advice}".strip()
+            advice_added = True
+    
+    # 4. 记录 trace（自动进入 checkpoint）
+    _append_trace(
+        state,
+        _trace_step(
+            step_type="postprocess",
+            name="proactive_advice_decision",
+            output={
+                "score": decision.score,
+                "threshold": settings.proactive_advice_threshold,
+                "added": advice_added,
+                "reasons": decision.reasons,
+                "events_used": len(recent_events),
+                "upcoming_todos_used": len(upcoming_todos),
+                "now_iso": now_iso,
+                "event_window_start": state.get("event_window_start"),
+                "event_window_end": state.get("event_window_end"),
+            }
+        )
+    )
+    
+    logger.info(
+        "proactive advice decision score=%.3f threshold=%.3f added=%s events=%s todos=%s",
+        decision.score,
+        settings.proactive_advice_threshold,
+        advice_added,
+        len(recent_events),
+        len(upcoming_todos),
+    )
+    
+    return state
+
+
 # 收口节点：保证每条路径都有 answer，并记录最终 used_tool / has_proposal。
 def _node_finalize(state: ChatState) -> ChatState:
     # 兜底，避免异常路径没有 answer
@@ -624,8 +837,8 @@ def _node_finalize(state: ChatState) -> ChatState:
 # 图构建与执行
 # -----------------------------
 
-# 图连线就是“先走谁再走谁”的唯一真相：
-# START -> load_context -> hitl_resume? -> decide -> run_tool -> finalize -> END
+# 图连线就是"先走谁再走谁"的唯一真相：
+# START -> load_context -> hitl_resume? -> decide -> run_tool -> finalize -> (proactive_decision?) -> END
 def build_chat_graph(
     *,
     checkpointer: Any | None = None,
@@ -637,6 +850,7 @@ def build_chat_graph(
     graph.add_node("decide", _node_decide)
     graph.add_node("run_tool", _node_run_tool)
     graph.add_node("finalize", _node_finalize)
+    graph.add_node("proactive_decision", _node_proactive_decision)
 
     graph.add_edge(START, "load_context")
     graph.add_conditional_edges(
@@ -647,7 +861,18 @@ def build_chat_graph(
     graph.add_edge("hitl_resume", "finalize")
     graph.add_edge("decide", "run_tool")
     graph.add_edge("run_tool", "finalize")
-    graph.add_edge("finalize", END)
+    
+    # 在 finalize 之后增加条件分支：根据 used_tool 决定是否执行主动决策
+    graph.add_conditional_edges(
+        "finalize",
+        lambda s: "proactive_decision" if _should_check_proactive(s) else END,
+        {
+            "proactive_decision": "proactive_decision",
+            END: END
+        }
+    )
+    
+    graph.add_edge("proactive_decision", END)
 
     return graph.compile(checkpointer=checkpointer)
 
@@ -706,6 +931,10 @@ def run_chat_graph(
     profile_context: str | None = None,
     pre_advice: str | None = None,
     pre_steps: list[dict[str, Any]] | None = None,
+    recent_events: list[dict[str, Any]] | None = None,
+    upcoming_todos: list[dict[str, Any]] | None = None,
+    event_window_start: str | None = None,
+    event_window_end: str | None = None,
 ) -> ChatState:
     checkpoint_context = load_chat_checkpoint_context(compiled_graph, session_id)
 
@@ -737,6 +966,11 @@ def run_chat_graph(
         "hitl_cancelled": False,
         "forced_action": forced_action,
         "forced_args": forced_args or {},
+        # 主动决策上下文（由 Service 层传入，Graph 节点使用）
+        "recent_events": recent_events or [],
+        "upcoming_todos": upcoming_todos or [],
+        "event_window_start": event_window_start,
+        "event_window_end": event_window_end,
     }
     return compiled_graph.invoke(
         initial_state,
@@ -754,6 +988,10 @@ async def arun_chat_graph(
     profile_context: str | None = None,
     pre_advice: str | None = None,
     pre_steps: list[dict[str, Any]] | None = None,
+    recent_events: list[dict[str, Any]] | None = None,
+    upcoming_todos: list[dict[str, Any]] | None = None,
+    event_window_start: str | None = None,
+    event_window_end: str | None = None,
 ) -> ChatState:
     config = {"configurable": {"thread_id": session_id}}
     current_state = await compiled_graph.aget_state(config)
@@ -792,6 +1030,11 @@ async def arun_chat_graph(
         "hitl_cancelled": False,
         "forced_action": forced_action,
         "forced_args": forced_args or {},
+        # 主动决策上下文（由 Service 层传入，Graph 节点使用）
+        "recent_events": recent_events or [],
+        "upcoming_todos": upcoming_todos or [],
+        "event_window_start": event_window_start,
+        "event_window_end": event_window_end,
     }
     return await compiled_graph.ainvoke(initial_state, config=config)
 
