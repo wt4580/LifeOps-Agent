@@ -56,6 +56,8 @@ Action = Literal[
     "query_knowledge",
     "propose_todo",
     "ask_user_confirm_proposal",
+    "query_calendar",
+    "query_weather",
 ]
 
 
@@ -191,6 +193,22 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
                 "description": "普通聊天，不调用任何工具。",
                 "args": {},
             },
+            {
+                "name": "query_calendar",
+                "description": "查询 Google Calendar 的日程事件（只读），当用户问\"我本周/明天/下周三有什么会议/日程/事件\"时使用。注意与 query_todos 区分：query_todos 是用户自建的待办提醒；query_calendar 是外部日历中的真实事件。",
+                "args": {
+                    "range_days": "int, default 7. 查询未来多少天",
+                    "start_date": "string|null, YYYY-MM-DD。区间起点，与 range_days 二选一",
+                    "end_date": "string|null, YYYY-MM-DD。区间终点，与 range_days 二选一",
+                },
+            },
+            {
+                "name": "query_weather",
+                "description": "查询高德天气（实况 + 4 天预报）。当用户问\"今天/明天/本周天气怎么样\"、\"北京下雨吗\"、\"上海多少度\"时使用。",
+                "args": {
+                    "city": "string|null. 城市名（中文）。为空时会自动从用户画像读取默认城市。",
+                },
+            },
         ]
     }
 
@@ -206,9 +224,11 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
         "7) 当用户在问事实类问题（例如‘我的实验室叫什么名字’‘某人是谁’），默认先选择 query_knowledge 做检索。\n"
         "8) 当用户在问个人近况（例如‘我最近饮食怎么样’‘我这周运动怎么样’），不要强制 query_knowledge，优先 normal_chat 结合上下文回答。\n"
         "9) 如果不确定：事实/文档问题优先 query_knowledge；个人近况问题优先 normal_chat。\n"
-        "10) 你的输出 JSON schema：\n"
+        "10) 当用户在问外部日历事件（会议/预约/旅行等）时，选择 query_calendar；注意它和 query_todos 的区分。\n"
+        "11) 当用户在问天气/气温/是否下雨/穿什么/带不带伞等气象相关问题时，选择 query_weather；城市能从对话中识别就填，否则留空让上层从 profile 取。\n"
+        "12) 你的输出 JSON schema：\n"
         "{\n"
-        "  \"action\": \"normal_chat|query_todos|query_knowledge|propose_todo|ask_user_confirm_proposal\",\n"
+        "  \"action\": \"normal_chat|query_todos|query_knowledge|propose_todo|ask_user_confirm_proposal|query_calendar|query_weather\",\n"
         "  \"args\": { ... },\n"
         "  \"assistant_message\": \"给用户的第一句回应（中文）\",\n"
         "  \"trace\": {\"intent\": \"...\", \"signals\": [...], \"why\": \"...\"}\n"

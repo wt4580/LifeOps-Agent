@@ -106,6 +106,28 @@ class Settings(BaseSettings):
     # 压缩后希望保留的消息条数（应小于 retention_limit，避免每条消息都触发压缩）。
     chat_prune_target: int = Field(default=800, alias="CHAT_PRUNE_TARGET")
 
+    # -------------------------
+    # Google Calendar 配置（OAuth2）
+    # -------------------------
+    # 从 Google Cloud Console 下载的 client_secret JSON 文件路径
+    google_calendar_credentials_json: str = Field(default="", alias="GOOGLE_CALENDAR_CREDENTIALS_JSON")
+    # 首次授权后缓存的 user token 文件位置（自动刷新）
+    google_calendar_token_path: str = Field(default=".cache/google_token.json", alias="GOOGLE_CALENDAR_TOKEN_PATH")
+    # 单次查询的最大时间跨度（天）
+    google_calendar_max_days: int = Field(default=90, alias="GOOGLE_CALENDAR_MAX_DAYS")
+    # 默认查询哪个日历；"primary" 表示用户主日历
+    google_calendar_id: str = Field(default="primary", alias="GOOGLE_CALENDAR_ID")
+
+    # -------------------------
+    # 高德天气配置
+    # -------------------------
+    # 从 https://console.amap.com/ 申请的 Web 服务 Key
+    amap_weather_key: str = Field(default="", alias="AMAP_WEATHER_KEY")
+    # 当用户未提供城市且 profile 中也没有 default_city 时使用的兜底城市
+    default_weather_city: str = Field(default="", alias="DEFAULT_WEATHER_CITY")
+    # 天气查询结果内存缓存秒数（节省免费额度）
+    weather_cache_ttl_seconds: int = Field(default=300, alias="WEATHER_CACHE_TTL_SECONDS")
+
     class Config:
         # 指定 .env 读取位置与编码。
         env_file = str(env_path)

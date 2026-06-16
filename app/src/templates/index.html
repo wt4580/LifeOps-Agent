@@ -2,58 +2,96 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
-  <title>LifeOps Agent</title>
-  <link rel="stylesheet" href="/static/style.css?v=2" />
+  <meta name="theme-color" content="#FAF5EC" />
+  <title>LifeOps</title>
+  <link rel="stylesheet" href="/static/style.css?v=4" />
 </head>
 <body>
   <div class="app">
     <!-- 左侧：聊天区（主） -->
     <main class="chat-section">
       <header class="chat-header">
-        <h1>LifeOps</h1>
+        <div>
+          <h1>LifeOps</h1>
+          <span class="brand-subtitle">生活管理助手</span>
+        </div>
         <div class="header-actions">
-          <button id="toggle-rag" class="btn-icon" title="知识库">📚</button>
+          <button id="toggle-rag" class="btn-icon" title="知识库" aria-label="切换知识库面板">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+              <line x1="8" y1="7" x2="16" y2="7"/>
+              <line x1="8" y1="11" x2="13" y2="11"/>
+            </svg>
+          </button>
+          <button id="mobile-menu-toggle" class="btn-icon btn-mobile-menu" title="待办与知识库" aria-label="打开侧边面板">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="3" y1="12" x2="21" y2="12"/>
+              <line x1="3" y1="6" x2="21" y2="6"/>
+              <line x1="3" y1="18" x2="21" y2="18"/>
+            </svg>
+          </button>
         </div>
       </header>
-      
-      <div id="chat-log" class="chat-messages"></div>
-      
+
+      <div id="chat-log" class="chat-messages">
+        <!-- 空状态欢迎提示 -->
+        <div class="chat-empty" id="chat-empty">
+          <div class="chat-empty-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </div>
+          <h2>你好，我是 LifeOps</h2>
+          <p>你的个人生活管理助手，可以帮你规划日程、整理信息、管理知识库。</p>
+          <div class="chat-empty-hints">
+            <span class="chat-hint-chip" data-hint="明天下午三点和李总开会">明天下午三点和李总开会</span>
+            <span class="chat-hint-chip" data-hint="帮我查一下本周的待办">帮我查一下本周的待办</span>
+            <span class="chat-hint-chip" data-hint="最近有什么需要注意的？">最近有什么需要注意的？</span>
+          </div>
+        </div>
+      </div>
+
       <!-- 待办草案卡片 -->
       <div id="proposal-card" class="proposal-card hidden">
         <div class="card-header">
-          <h3>📋 待办草案</h3>
-          <button id="close-proposal" class="btn-close">×</button>
+          <h3>待办草案</h3>
+          <button id="close-proposal" class="btn-close" aria-label="关闭草案">×</button>
         </div>
         <pre id="proposal-content" class="proposal-content"></pre>
         <div class="card-actions">
-          <button id="confirm-proposal" class="btn btn-success">✓ 确认加入待办</button>
-          <button id="reject-proposal" class="btn btn-secondary">✗ 取消</button>
+          <button id="confirm-proposal" class="btn btn-success">确认加入待办</button>
+          <button id="reject-proposal" class="btn-secondary">取消</button>
         </div>
       </div>
-      
+
       <div class="chat-input-box">
-        <textarea 
-          id="chat-input" 
+        <textarea
+          id="chat-input"
           placeholder="输入消息... (例如: 明天下午三点和李总开会)"
           rows="2"
+          aria-label="聊天输入框"
         ></textarea>
         <button id="chat-send" class="btn-primary">发送</button>
       </div>
     </main>
 
+    <!-- 移动端侧边面板遮罩 -->
+    <div class="side-panel-overlay" id="side-panel-overlay"></div>
+
     <!-- 右侧：待办 + RAG -->
-    <aside class="side-panel">
+    <aside class="side-panel" id="side-panel">
       <!-- 待办区域（常驻） -->
       <section class="todos-section">
         <div class="section-title">
           <h2>待办事项</h2>
           <div class="todo-actions">
             <button id="todos-today" class="btn-sm">今天</button>
-            <button id="todos-upcoming" class="btn-sm">7天</button>
+            <button id="todos-upcoming" class="btn-sm active">7天</button>
           </div>
         </div>
         <div id="todos-output" class="todos-list"></div>
@@ -63,24 +101,31 @@
       <section id="rag-section" class="rag-section hidden">
         <div class="section-title">
           <h2>知识库</h2>
-          <button id="close-rag" class="btn-close">×</button>
+          <button id="close-rag" class="btn-close" aria-label="关闭知识库">×</button>
         </div>
-        
+
         <div class="rag-tabs">
           <button class="tab-btn active" data-tab="index">索引</button>
           <button class="tab-btn" data-tab="ask">问答</button>
         </div>
-        
+
         <div id="tab-index" class="tab-content active">
-          <button id="index-run" class="btn-secondary full-width">运行索引</button>
+          <button id="index-run" class="btn-secondary full-width">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 4px;">
+              <polyline points="23 4 23 10 17 10"/>
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+            </svg>
+            运行索引
+          </button>
           <pre id="index-output" class="mini-panel"></pre>
         </div>
-        
+
         <div id="tab-ask" class="tab-content">
-          <textarea 
-            id="ask-input" 
-            placeholder="提问..."
+          <textarea
+            id="ask-input"
+            placeholder="输入你的问题..."
             rows="2"
+            aria-label="知识库问答输入"
           ></textarea>
           <button id="ask-send" class="btn-secondary full-width">查询</button>
           <div id="ask-answer" class="answer-box hidden"></div>
@@ -91,7 +136,55 @@
 
   </div>
 
-  <script src="/static/app.js?v=2"></script>
+  <script src="/static/app.js?v=4"></script>
+  <script>
+    // 移动端侧边面板切换逻辑
+    (function() {
+      var toggle = document.getElementById('mobile-menu-toggle');
+      var panel = document.getElementById('side-panel');
+      var overlay = document.getElementById('side-panel-overlay');
+      var toggleRag = document.getElementById('toggle-rag');
+
+      function openPanel() {
+        if (panel) panel.classList.add('open');
+        if (overlay) overlay.classList.add('visible');
+      }
+
+      function closePanel() {
+        if (panel) panel.classList.remove('open');
+        if (overlay) overlay.classList.remove('visible');
+      }
+
+      if (toggle) toggle.addEventListener('click', openPanel);
+      if (overlay) overlay.addEventListener('click', closePanel);
+
+      // 点击知识库按钮时也关闭移动侧边面板（桌面端无影响）
+      // toggle-rag 的原有逻辑在 app.js 中处理
+
+      // 点击提示快捷指令填入输入框
+      document.querySelectorAll('.chat-hint-chip').forEach(function(chip) {
+        chip.addEventListener('click', function() {
+          var input = document.getElementById('chat-input');
+          if (input) {
+            input.value = chip.getAttribute('data-hint') || chip.textContent;
+            input.focus();
+          }
+        });
+      });
+
+      // 隐藏空状态提示
+      var chatLog = document.getElementById('chat-log');
+      var chatEmpty = document.getElementById('chat-empty');
+      var chatSend = document.getElementById('chat-send');
+
+      if (chatSend && chatEmpty) {
+        chatSend.addEventListener('click', function() {
+          if (chatEmpty && chatEmpty.parentNode) {
+            chatEmpty.style.display = 'none';
+          }
+        });
+      }
+    })();
+  </script>
 </body>
 </html>
-

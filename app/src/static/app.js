@@ -47,6 +47,29 @@ function _pretty(obj) {
   }
 }
 
+function _fmtValue(v, maxLen = 140) {
+  if (v === undefined || v === null) return "";
+  let s;
+  if (typeof v === "string") s = v;
+  else {
+    try { s = JSON.stringify(v); } catch { s = String(v); }
+  }
+  s = s.replace(/\s+/g, " ").trim();
+  return s.length > maxLen ? s.slice(0, maxLen - 1) + "…" : s;
+}
+
+function _fmtDetail(obj, maxLen = 220) {
+  if (obj === undefined || obj === null) return "";
+  if (typeof obj !== "object") return _fmtValue(obj, maxLen);
+  const entries = Object.entries(obj);
+  if (entries.length === 0) return "{}";
+  const parts = entries
+    .map(([k, v]) => `${k}=${_fmtValue(v, 100)}`)
+    .filter((p) => !p.endsWith("="));
+  const out = parts.join(", ");
+  return out.length > maxLen ? out.slice(0, maxLen - 1) + "…" : out;
+}
+
 function buildThoughtLines(trace, result) {
   const steps = Array.isArray(trace?.steps) ? trace.steps : [];
   const routeStep = steps.find((step) =>
@@ -68,6 +91,25 @@ function buildThoughtLines(trace, result) {
     }
   } else if (toolStep?.name === "propose_from_pending") {
     reasoning.push("我已根据你的确认生成待办草案，等你确认入库。")
+  } else if (toolStep?.name === "query_weather") {
+    const city = toolStep.output?.city || toolStep.input?.resolved_city || toolStep.input?.city || "未知城市";
+    const cached = toolStep.output?.cached ? "（命中缓存）" : "";
+    if (toolStep.error) {
+      reasoning.push(`查询${city}的高德天气失败：${toolStep.error}。`);
+    } else {
+      reasoning.push(`我查询了${city}的高德天气实况与预报${cached}。`);
+    }
+  } else if (toolStep?.name === "query_calendar") {
+    const eventsCount = toolStep.output?.events_count;
+    if (toolStep.error) {
+      reasoning.push(`查询 Google Calendar 失败：${toolStep.error}。`);
+    } else if (eventsCount === 0) {
+      reasoning.push("我从 Google Calendar 查了这段时间，没有事件。");
+    } else if (typeof eventsCount === "number") {
+      reasoning.push(`我从 Google Calendar 拉取了 ${eventsCount} 条事件。`);
+    } else {
+      reasoning.push("我从 Google Calendar 拉取了这段时间的事件。");
+    }
   } else if (toolStep?.name) {
     reasoning.push(`本轮执行了「${toolStep.name}」步骤。`);
   }
@@ -76,7 +118,28 @@ function buildThoughtLines(trace, result) {
     reasoning.push(`答案引用了 ${result.citations.length} 条知识库片段。`);
   }
 
-  return reasoning.length > 0 ? reasoning : ["我已完成意图判断并生成本轮回答。"];
+  const summary = reasoning.length > 0 ? reasoning : ["我已完成意图判断并生成本轮回答。"];
+  const lines = summary.map((text) => ({ text, className: "" }));
+
+  if (steps.length > 0) {
+    lines.push({ text: `—— 完整过程（共 ${steps.length} 步） ——`, className: "separator" });
+    steps.forEach((step, idx) => {
+      const tag = `[${idx + 1}] ${step.type || "?"} / ${step.name || "?"}`;
+      const when = step.ts ? `  (${step.ts})` : "";
+      lines.push({ text: `${tag}${when}`, className: "detail" });
+      if (step.input !== undefined) lines.push({ text: `    输入: ${_fmtDetail(step.input)}`, className: "detail" });
+      if (step.output !== undefined) lines.push({ text: `    输出: ${_fmtDetail(step.output)}`, className: "detail" });
+      if (step.metadata !== undefined) lines.push({ text: `    元信息: ${_fmtDetail(step.metadata)}`, className: "detail" });
+      if (step.error) lines.push({ text: `    错误: ${_fmtValue(step.error, 240)}`, className: "detail error" });
+    });
+    if (trace?.meta) {
+      lines.push({ text: `—— 元数据: ${_fmtDetail(trace.meta)}`, className: "detail" });
+    }
+  } else {
+    lines.push({ text: "—— 本轮未记录详细步骤 ——", className: "separator" });
+  }
+
+  return lines;
 }
 
 function renderCitations(citations) {
@@ -125,7 +188,7 @@ function appendAssistantTurn() {
   answerDiv.className = "assistant-answer";
   answerDiv.textContent = "回答：";
 
-  let collapsed = false;
+  let collapsed = true;
   thoughtToggle.addEventListener("click", () => {
     collapsed = !collapsed;
     thoughtDiv.classList.toggle("collapsed", collapsed);
@@ -147,10 +210,15 @@ function setThoughtLines(thoughtDiv, lines) {
   if (!thoughtDiv) return;
   const safeLines = Array.isArray(lines) && lines.length > 0 ? lines : ["我已完成意图判断并生成本轮回答。"];
   thoughtDiv.innerHTML = "";
-  safeLines.forEach((line) => {
+  safeLines.forEach((entry) => {
     const row = document.createElement("div");
     row.className = "thought-line";
-    row.textContent = line;
+    if (entry && typeof entry === "object") {
+      row.textContent = entry.text ?? "";
+      if (entry.className) row.classList.add(...entry.className.split(/\s+/).filter(Boolean));
+    } else {
+      row.textContent = String(entry);
+    }
     thoughtDiv.appendChild(row);
   });
 }
@@ -252,6 +320,13 @@ const toggleRag = document.getElementById("toggle-rag");
 if (toggleRag) {
   toggleRag.addEventListener("click", () => {
     if (ragSection) ragSection.classList.toggle("hidden");
+    // On mobile, also open the side panel
+    var sidePanel = document.getElementById("side-panel");
+    var sideOverlay = document.getElementById("side-panel-overlay");
+    if (sidePanel && window.innerWidth <= 768) {
+      sidePanel.classList.add("open");
+      if (sideOverlay) sideOverlay.classList.add("visible");
+    }
   });
 }
 
@@ -325,7 +400,14 @@ if (chatSend) {
             assistantText += payload.delta || "";
             if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：${assistantText}`;
           } else if (payload.type === "status") {
-            if (assistantTurn?.thoughtDiv) assistantTurn.thoughtDiv.textContent = `思考：${payload.message || "正在思考..."}`;
+            if (assistantTurn?.thoughtDiv) {
+              let firstLine = assistantTurn.thoughtDiv.querySelector(".thought-line");
+              if (!firstLine) {
+                setThoughtLines(assistantTurn.thoughtDiv, [payload.message || "正在思考..."]);
+              } else {
+                firstLine.textContent = payload.message || "正在思考...";
+              }
+            }
           } else if (payload.type === "final") {
             finalResult = payload.result;
           }
@@ -499,11 +581,19 @@ async function loadTodos(url) {
 }
 
 if (todosToday) {
-  todosToday.addEventListener("click", () => loadTodos("/api/todos/today"));
+  todosToday.addEventListener("click", () => {
+    todosToday.classList.add("active");
+    if (todosUpcoming) todosUpcoming.classList.remove("active");
+    loadTodos("/api/todos/today");
+  });
 }
 
 if (todosUpcoming) {
-  todosUpcoming.addEventListener("click", () => loadTodos("/api/todos/upcoming?days=7"));
+  todosUpcoming.addEventListener("click", () => {
+    todosUpcoming.classList.add("active");
+    if (todosToday) todosToday.classList.remove("active");
+    loadTodos("/api/todos/upcoming?days=7");
+  });
 }
 
 loadTodos("/api/todos/upcoming?days=7");

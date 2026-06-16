@@ -26,6 +26,8 @@ from .planner.planner import detect_affirmation, detect_rejection, propose_plan
 from .retrieval.retrieval import rag_answer, search_chunks
 from .time.time_parser import normalize_date_hint
 from .memory.personal_memory import decide_proactive_advice
+from ..service.calendar_service import CalendarService, CalendarServiceError
+from ..service.weather_service import weather_service, WeatherServiceError
 from app.src.domain.entity.chatstate_entity import ChatState
 
 # 范围查询待办：当用户问“未来几天安排”时使用。
@@ -223,6 +225,48 @@ def _is_fact_question(user_message: str) -> bool:
     # 排除明显待办/日程创建语义，避免误走 RAG。
     has_todo_create = any(k in text for k in ["提醒", "记住", "待办", "安排", "我要", "明天", "后天", "下周"])
     return has_fact and has_question and not has_todo_create
+
+
+def _is_weather_question(user_message: str) -> bool:
+    """识别天气类问句：优先走 query_weather，防止 LLM 误判为 query_knowledge。"""
+
+    text = (user_message or "").strip().lower()
+    if not text:
+        return False
+
+    weather_keywords = [
+        "天气", "气温", "温度", "下雨", "下雪", "雨吗", "雪吗",
+        "多少度", "带伞", "穿什么", "风力", "空气质量", "pm2.5", "紫外线",
+        "预报", "气候", "阴天", "晴天", "多云",
+    ]
+    if not any(k in text for k in weather_keywords):
+        return False
+
+    # 排除明显待办/文档语义，避免与 propose_todo / query_knowledge 冲突。
+    has_todo_create = any(k in text for k in ["提醒", "记住", "待办", "我要", "安排"])
+    has_doc_hint = any(k in text for k in [".pdf", ".png", ".txt", "知识库", "文档", "论文"])
+    return not has_todo_create and not has_doc_hint
+
+
+def _is_calendar_question(user_message: str) -> bool:
+    """识别外部日历事件问句（会议/预约/行程等）。"""
+
+    text = (user_message or "").strip().lower()
+    if not text:
+        return False
+
+    calendar_keywords = [
+        "日历", "日程", "会议", "行程", "预约", "订票", "航班", "火车", "高铁",
+    ]
+    if not any(k in text for k in calendar_keywords):
+        return False
+
+    # 必须含查询意图词，避免和 propose_todo 冲突（"我要订机票" ≠ 查询）。
+    query_intent = any(k in text for k in [
+        "有", "吗", "？", "?", "查", "看", "列", "什么时候", "几点", "哪些",
+    ])
+    has_todo_create = any(k in text for k in ["提醒", "记住", "待办", "我要", "帮我"])
+    return query_intent and not has_todo_create
 
 
 def _is_personal_state_question(user_message: str) -> bool:
@@ -425,6 +469,54 @@ def _node_decide(state: ChatState) -> ChatState:
         )
         return state
 
+    # 天气守卫：明显问天气直接走 query_weather，避免 LLM 误判 query_knowledge 或 normal_chat。
+    if _is_weather_question(state["user_message"]):
+        decision = {
+            "action": "query_weather",
+            "args": {"city": None},
+            "assistant_message": "",
+            "trace": {
+                "intent": "weather_query",
+                "signals": ["rule_guard:weather"],
+                "why": "规则兜底命中：用户问天气，直接 query_weather",
+            },
+        }
+        state["decision"] = decision
+        _append_trace(
+            state,
+            _trace_step(
+                step_type="router_guard",
+                name="weather_query_guard",
+                input={"user_message": state["user_message"]},
+                output=decision,
+            ),
+        )
+        return state
+
+    # 日历守卫：明显查外部日程事件直接走 query_calendar。
+    if _is_calendar_question(state["user_message"]):
+        decision = {
+            "action": "query_calendar",
+            "args": {"range_days": 7},
+            "assistant_message": "",
+            "trace": {
+                "intent": "calendar_query",
+                "signals": ["rule_guard:calendar"],
+                "why": "规则兜底命中：用户查日历事件，直接 query_calendar",
+            },
+        }
+        state["decision"] = decision
+        _append_trace(
+            state,
+            _trace_step(
+                step_type="router_guard",
+                name="calendar_query_guard",
+                input={"user_message": state["user_message"]},
+                output=decision,
+            ),
+        )
+        return state
+
     # 规则兜底：文档/知识库问答与事实型问句都先走 query_knowledge。
     if _should_try_rag_first(state["user_message"]):
         decision = {
@@ -470,6 +562,32 @@ def _node_decide(state: ChatState) -> ChatState:
                 "intent": "knowledge_query",
                 "signals": ctx.signals,
                 "why": "LLM 误判 normal_chat，命中 RAG 优先兜底改写",
+            },
+        }
+
+    # 天气二次兜底：LLM 把天气问句判成 normal_chat 或 query_knowledge 时强制改写。
+    if state["decision"].get("action") in ("normal_chat", "query_knowledge") and _is_weather_question(state["user_message"]):
+        state["decision"] = {
+            "action": "query_weather",
+            "args": {"city": None},
+            "assistant_message": "",
+            "trace": {
+                "intent": "weather_query",
+                "signals": ctx.signals,
+                "why": "LLM 误判，命中天气守卫二次兜底改写为 query_weather",
+            },
+        }
+
+    # 日历二次兜底：LLM 把日历问句判成 normal_chat 或 query_todos 时强制改写为 query_calendar。
+    if state["decision"].get("action") in ("normal_chat", "query_todos") and _is_calendar_question(state["user_message"]):
+        state["decision"] = {
+            "action": "query_calendar",
+            "args": {"range_days": 7},
+            "assistant_message": "",
+            "trace": {
+                "intent": "calendar_query",
+                "signals": ctx.signals,
+                "why": "LLM 误判，命中日历守卫二次兜底改写为 query_calendar",
             },
         }
 
@@ -672,6 +790,116 @@ def _node_run_tool(state: ChatState) -> ChatState:
                 output={"hits": len(citations)},
             ),
         )
+        return state
+
+    if action == "query_weather":
+        city_arg = (args.get("city") or "").strip() if isinstance(args, dict) else ""
+        profile_ctx = state.get("profile_context") or ""
+        query_input: dict[str, Any] = {"city": city_arg or None, "has_profile_city": bool(profile_ctx)}
+        try:
+            result = weather_service.query(city_arg, profile_context=profile_ctx)
+            query_input["resolved_city"] = result.get("city")
+            query_input["cached"] = bool(result.get("cached"))
+            state["used_tool"] = "query_weather"
+
+            prompt = (
+                "你是生活助理。用户在询问天气。下面是一段结构化天气数据（实况 + 未来几天预报，真实数据）。\n"
+                "请用中文生成简短、自然的回复：\n"
+                "- 先说实况（当前温度/天气/湿度/风）\n"
+                "- 再提示未来几天的趋势与出行建议（带伞/穿衣）\n"
+                "- 不要编造数据里没有的温度或天气现象；如果字段缺失就跳过。\n"
+            )
+            state["answer"] = chat_completion(
+                [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": json.dumps(result, ensure_ascii=False)},
+                ],
+                temperature=0.2,
+            )
+            _append_trace(
+                state,
+                _trace_step(
+                    step_type="llm",
+                    name="weather_summarize",
+                    input={"city": result.get("city"), "has_live": bool(result.get("live")), "forecast_days": len(result.get("forecast") or [])},
+                    output=state["answer"],
+                ),
+            )
+            _append_trace(state, _trace_step(step_type="tool", name="query_weather", input=query_input, output={"city": result.get("city"), "adcode": result.get("adcode"), "cached": bool(result.get("cached"))}))
+        except WeatherServiceError as exc:
+            logger.warning("query_weather failed: %s", exc)
+            state["used_tool"] = "query_weather"
+            state["answer"] = str(exc)
+            _append_trace(state, _trace_step(step_type="tool", name="query_weather", input=query_input, error=str(exc)))
+        return state
+
+    if action == "query_calendar":
+        now = datetime.now()
+        max_days = max(1, int(settings.google_calendar_max_days or 90))
+
+        start_date = (args.get("start_date") or "").strip() if isinstance(args, dict) else ""
+        end_date = (args.get("end_date") or "").strip() if isinstance(args, dict) else ""
+
+        try:
+            if start_date and end_date:
+                start_dt = datetime.fromisoformat(start_date)
+                end_dt = datetime.fromisoformat(end_date) + timedelta(days=1)
+            else:
+                range_days = int(args.get("range_days", 7) or 7) if isinstance(args, dict) else 7
+                range_days = min(max(1, range_days), max_days)
+                start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_dt = start_dt + timedelta(days=range_days)
+        except ValueError as exc:
+            state["used_tool"] = "query_calendar"
+            state["answer"] = f"日期格式解析失败: {exc}"
+            _append_trace(state, _trace_step(step_type="tool", name="query_calendar", input={"args": args}, error=str(exc)))
+            return state
+
+        start_iso = start_dt.isoformat() + ("Z" if not start_dt.tzinfo else "")
+        end_iso = end_dt.isoformat() + ("Z" if not end_dt.tzinfo else "")
+        query_input = {
+            "start": start_dt.isoformat(),
+            "end": end_dt.isoformat(),
+            "calendar_id": settings.google_calendar_id or "primary",
+        }
+
+        try:
+            events = CalendarService().list_events(start_iso, end_iso)
+            state["used_tool"] = "query_calendar"
+
+            if not events:
+                state["answer"] = "我查了一下 Google Calendar，这段时间没有安排的事件。"
+            else:
+                prompt = (
+                    "你是生活助理。用户在询问他的日程/会议/事件安排。下面是从 Google Calendar 拉取到的真实事件列表。\n"
+                    "请用中文做简短总结：\n"
+                    "- 按时间顺序列出\n"
+                    "- 不要编造列表中没有的事项\n"
+                    "- 全天事件单独说明\n"
+                    "- 给出 1 句时间冲突或出行提醒（如果明显有）"
+                )
+                state["answer"] = chat_completion(
+                    [
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": json.dumps(events, ensure_ascii=False)},
+                    ],
+                    temperature=0.2,
+                )
+                _append_trace(
+                    state,
+                    _trace_step(
+                        step_type="llm",
+                        name="calendar_summarize",
+                        input={"events_count": len(events)},
+                        output=state["answer"],
+                    ),
+                )
+            _append_trace(state, _trace_step(step_type="tool", name="query_calendar", input=query_input, output={"events_count": len(events)}))
+        except CalendarServiceError as exc:
+            logger.warning("query_calendar failed: %s", exc)
+            state["used_tool"] = "query_calendar"
+            state["answer"] = str(exc)
+            _append_trace(state, _trace_step(step_type="tool", name="query_calendar", input=query_input, error=str(exc)))
         return state
 
     if action in ("ask_user_confirm_proposal", "propose_todo"):

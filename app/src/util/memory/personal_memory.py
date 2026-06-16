@@ -160,12 +160,27 @@ def build_profile_context(profile: dict | None) -> str:
     if profile.get("weight_kg"):
         parts.append(f"体重{profile['weight_kg']}kg")
 
-    prefs = profile.get("preferences") or []
+    prefs = list(profile.get("preferences") or [])
     conds = profile.get("conditions") or []
-    if prefs:
-        parts.append("喜好:" + "、".join(prefs[:6]))
+
+    # 特殊偏好条目：单独挑出来展示，避免混入"喜好"列表。
+    default_city = ""
+    normal_prefs: list[str] = []
+    for p in prefs:
+        if not isinstance(p, str):
+            normal_prefs.append(str(p))
+            continue
+        if p.startswith("默认城市:") or p.startswith("所在城市:"):
+            default_city = p.split(":", 1)[-1].strip()
+        else:
+            normal_prefs.append(p)
+
+    if normal_prefs:
+        parts.append("喜好:" + "、".join(normal_prefs[:6]))
     if conds:
         parts.append("健康情况:" + "、".join(conds[:6]))
+    if default_city:
+        parts.append(f"所在城市:{default_city}")
     if profile.get("notes"):
         parts.append(f"备注:{profile['notes']}")
 
