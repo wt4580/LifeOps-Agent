@@ -6,26 +6,7 @@ from __future__ import annotations
 
 目标流程：
 Chat -> (LLM decide) -> Tool -> Update state -> (maybe HITL) -> Final answer
-
-建议阅读顺序（初学者）：
-1) 先看 `ChatState`（状态里到底存了哪些数据）。
-2) 再看 `_node_*` 函数（每个节点做什么变换）。
-3) 最后看 `build_chat_graph`（节点如何连成状态机）。
-
-说明：
-- 这个模块只负责"编排"聊天主流程，不改动原有工具实现（planner/retrieval/db）。
-- 写入 todo 仍然保持 Human-in-the-loop：聊天阶段只生成 proposal，真正入库仍走 /api/plan/confirm。
-- 为了兼容现有前端 trace 面板，每个节点都会写入 trace.steps。
-
-执行时序总览（最重要）：
-1) `run_chat_graph` 创建初始状态并写入 trace 的 input 步。
-2) 状态机固定先走 `load_context`（从 checkpoint 历史 + DB 摘要恢复上下文）。
-3) 再走 `decide`（规则兜底或 LLM 路由）。
-4) `run_tool` 按 action 执行工具；若命中待办确认分支，会通过 `interrupt` 挂起等待用户恢复输入。
-5) 用户下一轮输入通过 `Command(resume=...)` 继续执行中断节点并生成草案或取消。
-6) 最后统一 `finalize` 收口，确保 answer 和 trace 完整。
 """
-
 import json
 import re
 from datetime import datetime, timedelta
@@ -42,43 +23,7 @@ from ..domain.entity.chat_entity import ConversationSummary, TodoItem
 from .planner.planner import detect_affirmation, detect_rejection, propose_plan
 from .retrieval.retrieval import rag_answer, search_chunks
 from .time.time_parser import normalize_date_hint
-
-
-# ChatState 是“图上流动的数据包”：
-# 每个 node 读取/修改其中的字段，再交给下一个 node。
-# 理解这个结构，就能理解整个状态机的数据依赖。
-class ChatState(TypedDict, total=False):
-    # 输入
-    session_id: str
-    user_message: str
-    # 前置画像信息：由 main 在进 graph 前准备。
-    profile_context: str | None
-    pre_advice: str | None
-    # 供路由使用的增强输入（用户原文 + 画像/建议）。
-    effective_user_message: str
-
-    # 运行时上下文
-    history: list[dict[str, str]]
-    recent_dialogue: list[dict[str, str]]
-    summary: str | None
-
-    # 路由/执行
-    decision: dict[str, Any]
-    forced_action: str | None
-    forced_args: dict[str, Any] | None
-    answer: str
-    used_tool: str | None
-
-    # 提案/HITL（由 checkpoint 持久化）
-    pending_text: str | None
-    hitl_cancelled: bool
-    proposal_id: str | None
-    proposal: dict[str, Any] | None
-
-    # Trace
-    citations: list[dict[str, Any]]
-    trace: dict[str, Any]
-
+from app.src.domain.entity.chatstate_entity import ChatState
 
 # 范围查询待办：当用户问“未来几天安排”时使用。
 def _query_upcoming_todos(range_days: int) -> list[dict[str, Any]]:

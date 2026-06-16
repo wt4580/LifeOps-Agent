@@ -32,26 +32,35 @@ class ChatService:
     """聊天核心服务"""
 
     def __init__(self):
-        # ✅ 不再自己持有 chat_graph，直接用 app_config 里的全局实例
+        # 服务只保留自身参数，不直接持有 graph；graph 在应用启动阶段统一创建。
         self.summary_refresh_turns = 10
 
-    # ✅ 删掉 initialize() 方法，不再需要了
+    # ----------------------------------------------------------------------
+    # 主聊天流程
+    # ----------------------------------------------------------------------
 
     async def chat(self, message: str, session_id: str | None = None) -> dict:
+        """执行一次完整聊天请求。
+
+        这条链路会先保存用户消息，再抽取画像/事件/预建议，
+        最后交给 LangGraph 统一做路由、工具调用和 HITL 处理。
+        """
         session_id = session_id or str(uuid4())
+        # 优先使用 checkpointer 中恢复的上下文，避免只依赖数据库回读。
         checkpoint_context = await aload_chat_checkpoint_context(app_cfg.chat_graph, session_id) if app_cfg.chat_graph else {}
 
-        # A) 保存用户消息
+        # A) 用户消息先落库，保证审计链完整。
         with SessionLocal() as db:
             db.add(ChatMessage(session_id=session_id, role="user", content=message))
             db.commit()
 
-        # B) 前置处理
+        # B) 前置处理：尽量在进图之前补齐可用上下文。
         recent_for_profile = checkpoint_context.get("recent_dialogue") or self._load_recent_dialogue(session_id, limit=12)
         memory_owner_id = self._resolve_memory_owner_id(session_id)
         now_dt = datetime.now()
         now_iso = now_dt.isoformat(timespec="seconds")
 
+        # 画像抽取：记录稳定偏好、身高体重、限制条件等信息。
         profile_patch = extract_profile_facts(
             message, recent_for_profile, now_iso=now_iso, session_id=session_id,
         )
@@ -61,6 +70,7 @@ class ChatService:
         profile = self._load_user_profile(memory_owner_id)
         profile_context = build_profile_context(profile)
 
+        # 个人事件抽取：把事实性内容存下来，供后续建议与画像分析使用。
         personal = extract_personal_events(
             message, recent_for_profile, now_iso=now_iso, session_id=session_id,
         )
@@ -70,11 +80,13 @@ class ChatService:
                 memory_owner_id, message, [item.model_dump() for item in personal.items],
             )
 
+        # 近期事件窗口：不要只看固定条数，尽量按时间范围判断上下文。
         recent_events, event_window_start, event_window_end = self._load_life_events_in_window(
             session_id=memory_owner_id,
             hours=settings.proactive_event_window_hours,
             now_dt=now_dt,
         )
+        # 基于画像与近期事件生成一个前置建议，交给 Graph 作为软提示。
         pre_advice = generate_profile_pre_advice(
             user_message=message,
             profile_context=profile_context,
@@ -119,7 +131,7 @@ class ChatService:
             },
         ]
 
-        # C) 执行状态机 ← 直接用模块级的 chat_graph
+        # C) 执行状态机：统一交给 LangGraph 处理路由、工具调用和 HITL。
         state = await arun_chat_graph(
             compiled_graph=app_cfg.chat_graph,   # ← 用导入的全局实例
             session_id=session_id,
@@ -134,13 +146,14 @@ class ChatService:
         if proposal_id and isinstance(proposal_payload, dict):
             items = proposal_payload.get("items") or []
             if isinstance(items, list):
+                # 图里生成的待办草案缓存起来，供确认接口继续使用。
                 plan_service.proposal_cache[proposal_id] = items
 
         used_tool = state.get("used_tool")
         citations = state.get("citations") or []
         trace = state.get("trace")
 
-        # D) 主动建议决策
+        # D) 主动建议决策：普通聊天可补充提醒；HITL 流程则跳过。
         upcoming_todos = self._load_upcoming_todos_for_advice(
             session_id=memory_owner_id,
             hours=settings.proactive_todo_hours,
@@ -193,6 +206,7 @@ class ChatService:
                         }
                     )
         else:
+            # 待办草案确认场景由 Graph 自己处理，这里不再额外插入建议。
             logger.info(
                 "proactive advice skipped for HITL flow tool=%s events=%s todos=%s",
                 used_tool,
@@ -219,16 +233,16 @@ class ChatService:
                         }
                     )
 
-        # E) 保存助手消息
+        # E) 保存助手消息：和 user 消息配对入库，方便后续摘要与回放。
         with SessionLocal() as db:
             db.add(ChatMessage(session_id=session_id, role="assistant", content=answer))
             db.commit()
 
-        # F) 刷新摘要
+        # F) 按轮次刷新摘要，并在必要时裁剪历史，控制长期上下文长度。
         self._maybe_update_summary(session_id)
         self._maybe_prune_chat_history(session_id)
 
-        # G) 旁路增强：结构化记忆抽取
+        # G) 旁路增强：抽取结构化记忆候选，但不阻塞主响应返回。
         latest_checkpoint_context = await aload_chat_checkpoint_context(app_cfg.chat_graph, session_id) if app_cfg.chat_graph else {}
         dialogue = latest_checkpoint_context.get("recent_dialogue") or self._load_recent_dialogue(session_id, limit=8)
         extraction = extract_memory_from_dialogue(dialogue)
@@ -245,7 +259,7 @@ class ChatService:
                     )
                 db.commit()
 
-        # H) 返回结果
+            # H) 返回前端所需结果。
         return {
             "answer": answer,
             "session_id": session_id,
@@ -257,8 +271,13 @@ class ChatService:
         }
 
     async def chat_stream(self, message: str, session_id: str | None = None):
-        """以 SSE 事件流方式返回聊天结果。"""
+        """以 SSE 事件流方式返回聊天结果。
 
+        先持续发送 status 事件，再在主任务完成后按片段输出答案。
+        这样前端看起来更像“流式回复”。
+        """
+
+        # 轮播式提示文案，减少用户等待时的空白感。
         progress_messages = [
             "正在分析你的问题...",
             "正在检索可用信息...",
@@ -267,12 +286,14 @@ class ChatService:
         progress_index = 0
         task = asyncio.create_task(self.chat(message=message, session_id=session_id))
 
+        # 主任务未结束前，周期性发送状态消息。
         while not task.done():
             msg = progress_messages[progress_index % len(progress_messages)]
             progress_index += 1
             yield f"data: {json.dumps({'type': 'status', 'message': msg}, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0.7)
 
+        # 主任务结束后，把答案拆成更小的片段输出。
         result = await task
         answer = result.get("answer") or ""
         chunks = self._chunk_text(answer)
@@ -288,6 +309,7 @@ class ChatService:
         yield f"data: {json.dumps({'type': 'final', 'result': result}, ensure_ascii=False)}\n\n"
 
     def _chunk_text(self, text: str) -> list[str]:
+        """把长文本拆成适合 SSE 推送的小片段。"""
         text = (text or "").strip()
         if not text:
             return []
@@ -302,8 +324,9 @@ class ChatService:
         if buffer:
             chunks.append(buffer)
         return chunks
+
     def _load_recent_dialogue(self, session_id: str, limit: int = 12) -> list[dict]:
-        """读取最近 N 条对话消息"""
+        """读取最近 N 条对话消息。"""
         with SessionLocal() as db:
             rows = (
                 db.execute(
@@ -320,14 +343,17 @@ class ChatService:
         return [{"role": r.role, "content": r.content} for r in rows]
     
     def _resolve_memory_owner_id(self, session_id: str) -> str:
-        """解析记忆所有者ID（默认使用session_id）"""
+        """解析记忆所有者 ID。
+
+        `session` 模式按会话隔离；`global` 模式则共享到统一 owner。
+        """
         scope = (settings.personal_memory_scope or "global").strip().lower()
         if scope == "session":
             return session_id
         return "global"
     
     def _load_user_profile(self, session_id: str) -> dict | None:
-        """读取用户画像"""
+        """读取用户画像，并还原成普通字典供上层使用。"""
         with SessionLocal() as db:
             row = (
                 db.execute(select(UserProfile).where(UserProfile.session_id == session_id).limit(1))
@@ -356,7 +382,10 @@ class ChatService:
         }
     
     def _upsert_user_profile(self, session_id: str, patch: dict | None) -> bool:
-        """增量更新用户画像"""
+        """增量更新用户画像。
+
+        返回值表示这次是否真的写入了变化，方便上层判断。
+        """
         if not patch:
             return False
         
@@ -414,7 +443,7 @@ class ChatService:
         return changed
     
     def _merge_unique(self, base: list[str], patch: list[str]) -> list[str]:
-        """合并列表并去重"""
+        """合并列表并去重，尽量保留原顺序。"""
         seen = {x.strip() for x in base if x and x.strip()}
         out = [x for x in base if x and x.strip()]
         for item in patch:
@@ -426,7 +455,7 @@ class ChatService:
         return out
     
     def _store_personal_events(self, session_id: str, source_text: str, events: list[dict]) -> int:
-        """存储个人事件"""
+        """存储个人事件候选，供后续主动建议与画像分析复用。"""
         if not events:
             return 0
         
@@ -451,7 +480,7 @@ class ChatService:
         return inserted
     
     def _load_life_events_in_window(self, session_id: str, hours: int, now_dt: datetime) -> tuple[list[dict], str, str]:
-        """按时间窗口读取个人事件"""
+        """按时间窗口读取个人事件，避免只看固定条数导致时间上下文丢失。"""
         window_start = now_dt - timedelta(hours=hours)
         with SessionLocal() as db:
             rows = (
@@ -493,7 +522,7 @@ class ChatService:
         )
     
     def _load_upcoming_todos_for_advice(self, session_id: str, hours: int = 24) -> list[dict]:
-        """读取未来待办事项"""
+        """读取未来待办事项，用于判断是否要主动提醒用户。"""
         now = datetime.now()
         end = now + timedelta(hours=hours)
         with SessionLocal() as db:
@@ -514,7 +543,7 @@ class ChatService:
         return [{"title": r.title, "due_at": r.due_at.isoformat() if r.due_at else None} for r in rows]
     
     def _get_summary(self, session_id: str) -> str | None:
-        """获取会话摘要"""
+        """获取最近一条会话摘要。"""
         with SessionLocal() as db:
             row = (
                 db.execute(
@@ -529,13 +558,13 @@ class ChatService:
         return row.summary_text if row else None
     
     def _save_summary(self, session_id: str, summary_text: str) -> None:
-        """保存会话摘要"""
+        """保存会话摘要。"""
         with SessionLocal() as db:
             db.add(ConversationSummary(session_id=session_id, summary_text=summary_text))
             db.commit()
     
     def _maybe_update_summary(self, session_id: str) -> None:
-        """按需更新摘要"""
+        """按轮次定期刷新摘要，避免长对话无限增长。"""
         with SessionLocal() as db:
             count = db.execute(
                 select(func.count()).select_from(ChatMessage).where(ChatMessage.session_id == session_id)
@@ -565,7 +594,10 @@ class ChatService:
             self._save_summary(session_id, summary_text)
     
     def _maybe_prune_chat_history(self, session_id: str) -> None:
-        """滚动压缩聊天记录"""
+        """滚动压缩聊天记录。
+
+        当消息过多时，把更早的内容压缩成摘要并删除原消息，控制上下文体积。
+        """
         with SessionLocal() as db:
             rows = (
                 db.execute(
