@@ -44,6 +44,8 @@ class MemoryCandidate(Base):
     title: Mapped[str] = mapped_column(String(255))
     occurred_at: Mapped[str | None] = mapped_column(String(64), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    insight_type: Mapped[str] = mapped_column(String(16), default="explicit")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -83,3 +85,17 @@ class ConversationSummary(Base):
     session_id: Mapped[str] = mapped_column(String(64), index=True)
     summary_text: Mapped[str] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CalendarEvent(Base):
+    __tablename__ = "calendar_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    title: Mapped[str] = mapped_column(String(255))
+    start_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    end_at: Mapped[datetime] = mapped_column(DateTime)
+    is_all_day: Mapped[bool] = mapped_column(Boolean, default=False)
+    location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

@@ -53,7 +53,7 @@ def _require_langchain() -> None:
 
 
 def _pick_model_source(*, local_path: str | None, remote_model: str, model_label: str) -> tuple[str, str]:
-    """选择模型加载来源：优先本地路径，不可用则回退远程模型名。"""
+    """选择模型加载来源：优先指定本地路径，其次 HuggingFace 默认缓存，最后回退远程模型名。"""
 
     if local_path:
         p = Path(local_path)
@@ -67,8 +67,37 @@ def _pick_model_source(*, local_path: str | None, remote_model: str, model_label
             remote_model,
         )
 
+    cache_path = _find_in_hf_cache(remote_model)
+    if cache_path:
+        logger.info("Model source [%s]=hf-cache path=%s", model_label, cache_path)
+        return "local", cache_path
+
     logger.info("Model source [%s]=remote model=%s", model_label, remote_model)
     return "remote", remote_model
+
+
+def _find_in_hf_cache(model_name: str) -> str | None:
+    """在 HuggingFace 默认缓存目录中查找已下载的模型快照。"""
+    repo_id = model_name.replace("/", "--")
+    cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+    model_dir = cache_dir / f"models--{repo_id}"
+    if not model_dir.is_dir():
+        return None
+    refs_dir = model_dir / "refs"
+    snapshots_dir = model_dir / "snapshots"
+    if not refs_dir.is_dir() or not snapshots_dir.is_dir():
+        return None
+    main_ref = refs_dir / "main"
+    if main_ref.is_file():
+        commit_hash = main_ref.read_text().strip()
+        snapshot = snapshots_dir / commit_hash
+        if snapshot.is_dir():
+            return str(snapshot)
+    # fallback: pick first snapshot
+    for entry in sorted(snapshots_dir.iterdir()):
+        if entry.is_dir():
+            return str(entry)
+    return None
 
 
 @lru_cache(maxsize=1)

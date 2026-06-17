@@ -24,7 +24,7 @@ from rank_bm25 import BM25Okapi
 from ...common.config.log_config import logger
 from ...common.config.knowledge_db_config import KnowledgeSessionLocal
 from ...domain.entity.knowledge_entity import DocumentChunk
-from ..llm.llm_qwen import chat_completion
+from ...common.config.llm_config import chat_completion
 from ...common.config.base_config import settings
 from ..ingest.scanner import scan_documents
 
@@ -37,9 +37,11 @@ class Citation:
     page: int | None
     snippet: str
     score: float
-    reason: str = ""  # 命中原因（bm25 / path / rewrite-bm25 / vector 等），便于可审计
+    reason: str = ""
     source_type: str | None = None
     doc_topic: str | None = None
+    section_title: str | None = None
+    summary: str | None = None
 
 
 def _hash_text(text: str) -> str:
@@ -110,12 +112,125 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
                         chunk_hash=chunk_hash,
                         source_type=source_type,
                         doc_topic=doc_topic,
+                        section_title=chunk.section_title,
+                        heading_level=chunk.heading_level,
+                        is_table=chunk.is_table,
                     )
                 )
                 inserted += 1
         db.commit()
 
     return inserted, skipped
+
+
+def _generate_chunk_summaries() -> None:
+    with KnowledgeSessionLocal() as db:
+        rows = db.execute(
+            select(DocumentChunk).where(DocumentChunk.summary == None).limit(200)
+        ).scalars().all()
+        if not rows:
+            return
+
+        batch_size = 10
+        updated = 0
+        for i in range(0, len(rows), batch_size):
+            group = rows[i:i + batch_size]
+            texts = []
+            for r in group:
+                t = (r.chunk_text or "").strip()[:300]
+                texts.append(t)
+
+            prompt_lines = []
+            for idx, t in enumerate(texts, start=1):
+                prompt_lines.append(f"[{idx}] {t}")
+            try:
+                answer = chat_completion(
+                    [{"role": "user", "content": (
+                        "为以下每段文本生成一句话摘要（20字以内），"
+                        "按格式输出：\n[idx] 摘要\n\n文本：\n" + "\n".join(prompt_lines)
+                    )}],
+                    temperature=0.0,
+                )
+                for r, line in zip(group, answer.strip().split("\n")):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    m = re.match(r"^\[(\d+)\]\s*(.*)", line)
+                    if m:
+                        idx = int(m.group(1)) - 1
+                        if 0 <= idx < len(group):
+                            group[idx].summary = m.group(2).strip()[:80]
+                            updated += 1
+            except Exception as exc:
+                logger.warning("Chunk summary batch failed: %s", exc)
+                # fallback: individual calls
+                for r in group:
+                    try:
+                        s = chat_completion(
+                            [{"role": "user", "content": f"用一句话概括以下内容（20字以内）：\n{(r.chunk_text or '')[:300]}"}],
+                            temperature=0.0,
+                        ).strip()[:80]
+                        if s:
+                            r.summary = s
+                            updated += 1
+                    except Exception:
+                        pass
+        db.commit()
+        logger.info("Generated chunk summaries count=%s", updated)
+
+
+def get_available_knowledge_topics() -> list[dict]:
+    with KnowledgeSessionLocal() as db:
+        rows = db.execute(
+            select(
+                DocumentChunk.file_path,
+                DocumentChunk.section_title,
+                DocumentChunk.summary,
+            ).distinct().limit(500)
+        ).all()
+        doc_map: dict[str, dict] = {}
+        for fp, section, summary in rows:
+            if fp not in doc_map:
+                topic = _infer_doc_topic(fp)
+                doc_map[fp] = {"file": os.path.basename(fp), "topic": topic, "sections": set(), "summaries": []}
+            if section:
+                doc_map[fp]["sections"].add(section)
+            if summary:
+                doc_map[fp]["summaries"].append(summary)
+        result = []
+        for info in doc_map.values():
+            entry = {"file": info["file"], "topic": info["topic"]}
+            if info["sections"]:
+                entry["sections"] = sorted(info["sections"])[:10]
+            if info["summaries"]:
+                entry["summary_samples"] = info["summaries"][:3]
+            result.append(entry)
+        return result
+
+
+def get_document_outline() -> list[dict]:
+    with KnowledgeSessionLocal() as db:
+        rows = db.execute(
+            select(
+                DocumentChunk.file_path,
+                DocumentChunk.section_title,
+                DocumentChunk.heading_level,
+            ).distinct().order_by(DocumentChunk.file_path, DocumentChunk.heading_level, DocumentChunk.id)
+        ).all()
+        doc_outline: dict[str, list[dict]] = {}
+        for fp, title, level in rows:
+            if not title:
+                continue
+            if fp not in doc_outline:
+                doc_outline[fp] = []
+            doc_outline[fp].append({"title": title, "level": level or 1})
+        result = []
+        for fp, headings in doc_outline.items():
+            result.append({
+                "file": os.path.basename(fp),
+                "headings": headings[:20],
+            })
+        return result
 
 
 def index_documents(*, rebuild: bool = False) -> dict:
@@ -142,6 +257,9 @@ def index_documents(*, rebuild: bool = False) -> dict:
         except Exception as exc:
             logger.warning("Vector index build failed, keep sqlite index only: %s", exc)
             result["vector_error"] = str(exc)
+
+    if inserted > 0:
+        _generate_chunk_summaries()
 
     elapsed = (datetime.now(timezone.utc) - start).total_seconds()
     logger.info(
@@ -301,6 +419,8 @@ def _path_recall(rows: list[DocumentChunk], query: str, top_k: int) -> list[Cita
                 reason="path",
                 source_type=getattr(r, "source_type", None),
                 doc_topic=getattr(r, "doc_topic", None),
+                section_title=getattr(r, "section_title", None),
+                summary=getattr(r, "summary", None),
             )
         )
 
@@ -332,6 +452,8 @@ def _bm25_recall(rows: list[DocumentChunk], query: str, top_k: int, reason: str)
                 reason=reason,
                 source_type=getattr(r, "source_type", None),
                 doc_topic=getattr(r, "doc_topic", None),
+                section_title=getattr(r, "section_title", None),
+                summary=getattr(r, "summary", None),
             )
         )
 
@@ -371,7 +493,11 @@ def _rrf_fuse(*lists: list[Citation], top_k: int, k: int = 60) -> list[Citation]
         for rank, c in enumerate(l, start=1):
             key = (c.path, c.page, c.snippet)
             if key not in fused:
-                fused[key] = Citation(path=c.path, page=c.page, snippet=c.snippet, score=0.0, reason=c.reason)
+                fused[key] = Citation(
+                    path=c.path, page=c.page, snippet=c.snippet, score=0.0, reason=c.reason,
+                    source_type=c.source_type, doc_topic=c.doc_topic,
+                    section_title=c.section_title, summary=c.summary,
+                )
             else:
                 if c.reason not in fused[key].reason:
                     fused[key].reason = f"{fused[key].reason}+{c.reason}"
@@ -405,6 +531,8 @@ def _search_langchain(query: str, top_k: int) -> list[Citation]:
                 reason=h.reason,
                 source_type=getattr(h, "source_type", None),
                 doc_topic=getattr(h, "doc_topic", None),
+                section_title=getattr(h, "section_title", None),
+                summary=getattr(h, "summary", None),
             )
             for h in hits
         ]
@@ -490,9 +618,13 @@ def rag_answer(
 
     context_lines: list[str] = []
     for idx, cite in enumerate(citations, start=1):
+        meta = f"{cite.reason}|{cite.source_type or 'unknown'}|{cite.doc_topic or 'other'}"
+        if cite.section_title:
+            meta += f"|section:{cite.section_title}"
+        if cite.summary:
+            meta += f"|summary:{cite.summary}"
         label = (
-            f"[{idx}] {os.path.basename(cite.path)} p{cite.page or '-'} "
-            f"({cite.reason}|{cite.source_type or 'unknown'}|{cite.doc_topic or 'other'})"
+            f"[{idx}] {os.path.basename(cite.path)} p{cite.page or '-'} ({meta})"
         )
         context_lines.append(f"{label}: {cite.snippet}")
     context = "\n".join(context_lines)

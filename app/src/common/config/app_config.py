@@ -19,8 +19,9 @@ from .db_config import init_db
 from .knowledge_db_config import init_knowledge_db
 from .checkpointer_config import create_checkpointer
 from .log_config import logger
+from .chat_graph_holder import set_chat_graph
 from ..domain.global_exception import register_global_exception_handlers
-from ...util.graph_chat import build_chat_graph
+from ...agent.graph_chat import build_chat_graph
 from ...controller import (
         chat_router,
         plan_router,
@@ -30,7 +31,6 @@ from ...controller import (
         web_router,
     )
 
-chat_graph = None
 checkpointer = None
 resource_stack: AsyncExitStack | None = None
 
@@ -58,9 +58,8 @@ def register_routers(app: FastAPI):
 
 async def init_resources():
     """初始化应用所需资源"""
-    global chat_graph, checkpointer, resource_stack
-    
-    # 初始化数据库
+    global checkpointer, resource_stack
+
     init_db()
     init_knowledge_db()
     logger.info("Database initialized (business + knowledge)")
@@ -68,9 +67,7 @@ async def init_resources():
     stack = AsyncExitStack()
     try:
         checkpointer = await stack.enter_async_context(create_checkpointer())
-
-        # 初始化LangGraph
-        chat_graph = build_chat_graph(checkpointer=checkpointer)
+        set_chat_graph(build_chat_graph(checkpointer=checkpointer))
     except Exception:
         await stack.aclose()
         raise

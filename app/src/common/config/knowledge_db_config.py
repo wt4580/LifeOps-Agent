@@ -38,8 +38,6 @@ def _ensure_sqlite_dir() -> None:
 
 
 def _ensure_document_chunks_columns() -> None:
-    """为已存在知识库做轻量列迁移（不依赖 Alembic）。"""
-
     url = settings.knowledge_database_url
     if not url.startswith("sqlite:///"):
         return
@@ -58,6 +56,14 @@ def _ensure_document_chunks_columns() -> None:
             conn.execute(text("ALTER TABLE document_chunks ADD COLUMN source_type VARCHAR(32)"))
         if "doc_topic" not in existing:
             conn.execute(text("ALTER TABLE document_chunks ADD COLUMN doc_topic VARCHAR(64)"))
+        if "section_title" not in existing:
+            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN section_title VARCHAR(255)"))
+        if "heading_level" not in existing:
+            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN heading_level INTEGER"))
+        if "is_table" not in existing:
+            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN is_table INTEGER"))
+        if "summary" not in existing:
+            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN summary TEXT"))
 
 
 def init_knowledge_db() -> None:

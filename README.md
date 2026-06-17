@@ -1,196 +1,190 @@
 # LifeOps-Agent
 
-一个面向个人效率与生活管理的智能体项目，基于 `FastAPI + LangGraph + SQLite + Qwen`，提供：
+基于 `FastAPI + LangGraph + SQLite + Qwen` 的个人生活管理智能体。通过自然语言对话管理待办、日程、知识库，具备多步任务分解、主动建议和长期记忆能力。
 
-- 自然语言聊天与任务规划
-- 人在回路（HITL）待办确认
-- 本地文档知识库问答（RAG）
-- 结构化个人记忆抽取与复用
+## 功能
 
-适合用作：
+- **多轮对话** — LangGraph 状态机编排，支持工具路由、计划分解、HITL 确认
+- **多步任务分解** — 复杂请求自动拆分子步骤（如"查天气+查日程+综合回答"），按序执行后汇总；简单请求走快速通道跳过 LLM
+- **人在回路（HITL）** — 待办草案先经用户确认再入库，支持`pending_add_confirmation` 双阶段确认（生成草案→确认加入）
+- **待办管理** — 创建、查询、完成状态切换、截止日期跟踪；用户说"要"/"需要"即自动确认草案入库
+- **日历集成** — 查看日程事件，识别中国传统节日（端午、中秋、春节等），支持多日区间查询
+- **天气查询** — 高德天气 API，实况 + 未来预报
+- **知识库 RAG** — PDF/TXT/PNG 文档索引，BM25 / 向量 / 混合检索，可选重排序；语义切块 + 章节标题提取 + 块摘要生成
+- **个人记忆** — 自动抽取饮食、运动、消费等生活事件；推断隐性偏好与模式（深度反思每 3 轮触发）
+- **主动建议** — 基于日历、待办、记忆，在对话中主动提示时间冲突/健康风险等
+- **用户画像** — 逐步积累身高体重、饮食运动偏好、健康状况等信息；隐式偏好推断带确信度标记
+- **模糊输入识别** — 打错字（如"上一台哦"）通过上下文推断路由到正确的工具
 
-- 个人智能助手原型
-- 智能体工程实践样例（路由、工具调用、状态持久化）
-- 本地知识增强问答系统（含证据引用）
+## 架构
 
----
+```text
+用户输入 → ChatService → LangGraph 状态机 → 工具调用 → 应答返回
+                              │
+                    ┌─────────┼──────────┐
+                    │         │          │
+                路由决策   多步分解  HITL/确认
+                    │         │          │
+              query_todos  query_calendar  query_weather
+              query_knowledge  normal_chat  propose_todo
+              confirm_proposal              ask_user_confirm_proposal
+                              │
+                         主动建议决策
+```
 
-## 核心能力
+### 数据流
 
-- **多轮对话编排**：LangGraph 管理对话流程，支持工具路由与回退。
-- **待办草案确认**：先生成草案，再由用户确认入库，降低误操作风险。
-- **待办状态管理**：支持今日/7日查询、完成状态勾选、分组展示。
-- **知识库问答**：支持 `bm25 / langchain / hybrid` 检索策略，返回 citations。
-- **记忆能力**：抽取 `life_events`、`user_profiles` 等结构化信息用于后续对话。
-- **状态分层**：
-  - Checkpointer：跨轮会话状态与中断恢复
-  - 业务数据库：待办、画像、事件、摘要
-  - 知识库数据库：文档分块与检索索引
+1. `ChatService.chat()` 接收消息 → 保存到 `chat_messages`
+2. 抽取画像事实与个人事件 → 更新 `user_profiles` / `life_events`
+3. 生成前置建议 → 进入 LangGraph 状态机
+4. 图内流程：`load_context → decompose → decide → run_tool → advance_plan → (loop | finalize) → proactive_decision`
+5. 保存助手消息 → 更新摘要 → 提取记忆候选 → 可选深度反思
+6. 如果 `proposal_confirmed` 标记为真，自动调 `confirm_proposal()` 写入 DB
 
----
+### 提案确认流程
 
-## 技术架构
-
-### 后端
-
-- `FastAPI`：HTTP API 与页面入口
-- `LangGraph`：聊天状态机、工具调用、HITL 逻辑
-- `SQLAlchemy + SQLite`：业务数据存储
-- `langgraph-checkpoint-sqlite`：会话状态持久化
-
-### RAG
-
-- 文档解析：`PDF / TXT / DOCX / PNG(OCR)`
-- 检索后端：`bm25`、`langchain`、`hybrid`
-- 可选重排：`bge-reranker-base`
-
-### 前端
-
-- 原生 `HTML + JS + CSS`
-- 支持流式回复展示、思考摘要折叠、待办草案确认卡片
-
----
+```
+用户: "导员没有回我关于报销的事"
+  → Router: ask_user_confirm_proposal
+  → _node_run_tool: 调用 propose_plan → 缓存草案 → 设 pending_add_confirmation=True
+  → 回复: "已生成待办草案，请确认是否加入待办。"
+用户: "要"
+  → _node_decide: 检测 pending_add_confirmation + detect_affirmation → action=confirm_proposal
+  → _node_run_tool: 设 proposal_confirmed=True
+  → chat_service: 自动调 confirm_proposal() 写入 SQLite
+  → 回复: "好的，已添加到待办。"
+```
 
 ## 项目结构
 
 ```text
-LifeOps-Agent/
-  app/
-    src/
-      common/         # 配置、响应体、全局异常
-      controller/     # API 路由层
-      domain/         # dto/entity/vo
-      service/        # 业务服务层
-      util/           # 智能体编排、RAG、时间解析等
-      static/         # 前端资源
-      templates/      # 页面模板
-      main.py         # FastAPI app 对外入口
-      __main__.py     # python -m app.src 启动入口
-    docs/             # 架构与开发文档
-  requirements.txt
-  README.md
+app/src/
+├── agent/                    # 智能体层（核心大脑）
+│   ├── agent_router.py       # LLM 路由决策（含知识主题感知 + 文档大纲注入）
+│   ├── graph_chat.py         # LangGraph 状态机构建与执行
+│   ├── memory/
+│   │   ├── memory_extractor.py   # 对话记忆提取（confidence/insight_type）
+│   │   └── personal_memory.py    # 生活事件/画像抽取、主动建议、深度反思
+│   ├── planner/planner.py    # 待办草案规划 + 确认/拒绝检测
+│   └── time/time_parser.py   # 自然语言时间解析
+├── common/
+│   ├── config/               # 配置文件、数据库、LLM、日志
+│   │   ├── base_config.py    # pydantic-settings 配置模型
+│   │   ├── llm_config.py     # LLM 调用封装（DashScope 兼容）
+│   │   ├── db_config.py      # 业务数据库（lifeops.db）含列迁移
+│   │   ├── knowledge_db_config.py  # 知识库数据库含列迁移
+│   │   ├── chat_graph_holder.py    # 全局图实例持有器
+│   │   └── ...
+│   ├── env/.env.example      # 环境变量模板（含 HF 镜像说明）
+│   ├── static/               # 前端资源
+│   └── templates/            # HTML 模板
+├── controller/               # API 路由层
+├── domain/
+│   ├── dto/                  # 数据传输对象
+│   └── entity/               # SQLAlchemy ORM 模型
+│       ├── chatstate_entity.py     # ChatState TypedDict（所有图字段定义）
+│       ├── knowledge_entity.py     # DocumentChunk（含 section 元数据）
+│       └── chat_entity.py          # 聊天/待办/记忆/摘要模型
+├── service/                  # 业务服务层
+│   ├── chat_service.py       # 聊天主服务（含自动确认提案）
+│   ├── plan_service.py       # 待办规划服务（proposal 缓存 + 确认入库）
+│   ├── calendar_service.py   # 日历服务
+│   ├── weather_service.py    # 天气服务
+│   └── chinese_holidays.py   # 中国传统节日动态计算
+└── util/
+    ├── ingest/               # 文档加载与 OCR
+    │   ├── scanner.py        # 语义切块 + 章节标题提取 + 表格检测
+    │   ├── pdf_text.py       # PDF 文本提取
+    │   ├── txt_text.py       # TXT 文本提取
+    │   └── ocr_png.py        # PNG OCR
+    └── retrieval/            # RAG 检索（BM25 + 向量 + 混合）
+        ├── retrieval.py      # 主入口：索引/检索/摘要/大纲/RAG 回答
+        └── rag_langchain.py  # LangChain 向量后端
 ```
 
----
+## 快速开始
 
-## 快速开始（Windows PowerShell）
+### 环境要求
 
-### 1) 创建并激活虚拟环境
+- Python 3.11+
+- 可选：Tesseract OCR（PNG 文字识别）
+
+### 安装
 
 ```powershell
-cd C:\develop\code\wt\LifeOps-Agent
+git clone <repo-url>
+cd LifeOps-Agent
 python -m venv agent_env
 .\agent_env\Scripts\Activate.ps1
-```
-
-### 2) 安装依赖
-
-```powershell
 pip install -r requirements.txt
 ```
 
-### 3) 配置环境变量
+### 配置
 
-当前配置读取路径是：`app/src/common/env/.env`（由 `base_config.py` 指定）。
-
-创建目录和配置文件：
+复制环境变量模板并编辑：
 
 ```powershell
-New-Item -ItemType Directory -Force app\src\common\env
-New-Item -ItemType File -Force app\src\common\env\.env
+cp app\src\common\env\.env.example app\src\common\env\.env
 ```
 
-建议最小配置示例：
+至少需要填写 `QWEN_API_KEY`，其余项有默认值。详细配置说明见 `.env.example` 中的注释。
 
-```dotenv
-QWEN_API_KEY=your_api_key
-QWEN_MODEL=qwen-turbo
-BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+关键配置项：
 
-# 存储
-DATABASE_URL=sqlite:///data/lifeops.db
-KNOWLEDGE_DATABASE_URL=sqlite:///data/knowledge_base.db
-CHECKPOINTER_DB_PATH=data/checkpointer.db
+| 变量 | 必填 | 说明 |
+|------|------|------|
+| `QWEN_API_KEY` | 是 | 阿里云 DashScope API Key |
+| `QWEN_MODEL` | 否 | 模型名（默认 `qwen-turbo`） |
+| `BASE_URL` | 否 | API 地址 |
+| `AMAP_WEATHER_KEY` | 否 | 高德天气 Key |
+| `DOCS_DIR` | 否 | 知识库文档目录 |
+| `HF_ENDPOINT` | 否 | HuggingFace 镜像（国内用 `https://hf-mirror.com`） |
+| `RAG_EMBED_MODEL` | 否 | 向量模型（默认 `BAAI/bge-small-zh-v1.5`） |
 
-# RAG
-RAG_BACKEND=bm25
-RAG_TOP_K=5
-RAG_CANDIDATE_K=24
-RAG_VECTOR_DIR=data/vector/faiss
-RAG_EMBED_MODEL=BAAI/bge-small-zh-v1.5
-RAG_RERANK_MODEL=BAAI/bge-reranker-base
-RAG_USE_RERANK=1
-```
-
-> 提示：模型权重建议本地下载，不建议提交到 Git 仓库。
-
-### 4) 启动服务
+### 启动
 
 ```powershell
 python -m app.src
 ```
 
-或：
+访问 `http://localhost:5000`
 
-```powershell
-uvicorn app.src.main:app --host 0.0.0.0 --port 5000 --reload
-```
+### 首次使用
 
-访问：`http://127.0.0.1:5000`
-
----
-
-## 使用流程（建议）
-
-1. 打开首页聊天，输入你的计划或问题。
-2. 若命中待办意图，系统会生成待办草案并等待你确认。
-3. 点击确认后写入待办数据库，可在今日/7日视图查看。
-4. 执行文档索引后，可在知识问答中获得带引用的回答。
-
----
+1. 打开首页聊天框，输入你的计划或问题
+2. 如需知识库问答，在 `.env` 设置 `DOCS_DIR` → 调用 `/api/index` 触发索引（索引后自动生成块摘要）
+3. 待办草案生成后说"要"/"好的"/"确认"即自动入库
+4. 持续使用后画像和记忆会自动积累，每 3 轮触发深度反思
 
 ## API 速览
 
-- `GET /health`：健康检查
-- `POST /api/chat`：标准聊天接口
-- `POST /api/chat/stream`：SSE 流式聊天接口
-- `POST /api/plan/propose`：生成待办草案
-- `POST /api/plan/confirm`：确认草案并入库
-- `GET /api/todos/today`：今日待办（含完成/未完成分组）
-- `GET /api/todos/upcoming?days=7`：未来待办查询
-- `POST /api/todos/{todo_id}/status`：更新待办完成状态
-- `POST /api/index`：知识库索引
-- `POST /api/ask`：知识库问答
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/` | Web 聊天页面 |
+| GET | `/health` | 健康检查 |
+| POST | `/api/chat` | 标准聊天 |
+| POST | `/api/chat/stream` | SSE 流式聊天（实时进度显示） |
+| POST | `/api/plan/propose` | 生成待办草案 |
+| POST | `/api/plan/confirm` | 确认草案入库 |
+| GET | `/api/todos/today` | 今日待办 |
+| GET | `/api/todos/upcoming?days=7` | 未来待办 |
+| POST | `/api/todos/{id}/status` | 更新完成状态 |
+| POST | `/api/index` | 知识库索引（含块摘要生成） |
+| POST | `/api/ask` | 知识库问答 |
 
----
+## 开发说明
 
-## 开发与扩展建议
+- **新增模型**：在 `common/config/base_config.py` 加配置项，`llm_config.py` 统一调用
+- **新增工具**：`agent_router.py` 加路由规则 + `prompt` 描述，`graph_chat.py` 加 `_node_run_tool` 分支
+- **新增状态字段**：`domain/entity/chatstate_entity.py` 加 TypedDict 字段，`graph_chat.py` 的 `_build_initial_state` / `_build_checkpoint_context` 同步更新
+- **数据库迁移**：新列通过 `ALTER TABLE ADD COLUMN` 在 `init_db()` 中自动补齐（无需 Alembic）
+- **RAG 索引流程**：`scanner.py` 负责切块 + 提取元数据 → `retrieval.py` 入库 → `_generate_chunk_summaries()` 批量生成摘要 → `get_available_knowledge_topics()` / `get_document_outline()` 供路由层参考
+- **调试日志**：设置 `LOG_LEVEL=DEBUG` 查看 LLM 调用、路由细节和 RAG 检索过程
 
-- **接入新模型**：优先在 `app/src/common/config/llm_config.py` 统一管理。
-- **扩展工具路由**：修改 `app/src/util/agent_router.py` 与 `app/src/util/graph_chat.py`。
-- **增加业务能力**：按 `controller -> service -> domain` 分层新增，便于维护。
-- **前端交互优化**：集中在 `app/src/static/app.js` 和 `app/src/static/style.css`。
+## .gitignore 覆盖内容
 
----
-
-## 常见问题
-
-- **`httpx` 兼容报错**：请按 `requirements.txt` 重新安装依赖。
-- **OCR 不生效**：检查本机 Tesseract 安装与 `TESSERACT_CMD` 配置。
-- **问答命中差**：先 `POST /api/index?rebuild=1` 重建索引，再调整 `RAG_TOP_K` 与阈值。
-
----
-
-## 安全与提交规范
-
-- 不提交 `.env`、数据库文件、向量索引、模型权重。
-- 不在代码中硬编码 API Key。
-- 生产环境建议收紧 CORS 与日志内容。
-
----
-
-## 路线图（可选）
-
-- 多用户鉴权与租户隔离
-- 更细粒度的记忆检索策略
-- 更完整的前端组件化与测试体系
+- `.env` 及所有敏感配置
+- `data/`（SQLite 数据库、向量索引）
+- 模型权重（`bge-*/`、`*.safetensors`）
+- `__pycache__`、`.idea`、`.vscode`
+- 虚拟环境 `agent_env/`

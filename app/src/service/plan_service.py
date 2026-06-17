@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..util.planner.planner import propose_plan, detect_affirmation, detect_rejection
+from ..agent.planner.planner import propose_plan, detect_affirmation, detect_rejection
 
 logger = logging.getLogger(__name__)
 

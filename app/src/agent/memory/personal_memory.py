@@ -18,7 +18,7 @@ from datetime import datetime
 from pydantic import ValidationError
 
 from ...common.config.log_config import logger
-from ..llm.llm_qwen import chat_completion
+from ...common.config.llm_config import chat_completion
 from ...domain.dto.memory_dto import (
     PersonalEventItem,
     PersonalEventExtraction,
@@ -90,7 +90,7 @@ def extract_personal_events(
         ]
         return PersonalEventExtraction(items=fixed_items)
     except (json.JSONDecodeError, ValidationError) as exc:
-        logger.warning("personal event extraction failed: %s", exc)
+        logger.warning("personal event extraction failed session=%s msg=%s err=%s", session_id, user_message[:40], exc)
         return None
 
 
@@ -133,7 +133,7 @@ def extract_profile_facts(
         data = json.loads(content)
         return ProfileFactPatch.model_validate(data)
     except (json.JSONDecodeError, ValidationError) as exc:
-        logger.warning("profile fact extraction failed: %s", exc)
+        logger.warning("profile fact extraction failed session=%s msg=%s err=%s", session_id, user_message[:40], exc)
         return None
 
 
@@ -234,7 +234,7 @@ def generate_proactive_advice(
             return None
         return text
     except Exception as exc:
-        logger.warning("proactive advice generation failed: %s", exc)
+        logger.warning("proactive advice generation failed session=%s err=%s", session_id, exc)
         return None
 
 
@@ -281,47 +281,15 @@ def generate_profile_pre_advice(
             return None
         return text
     except Exception as exc:
-        logger.warning("profile pre-advice generation failed: %s", exc)
+        logger.warning("profile pre-advice generation failed session=%s err=%s", session_id, exc)
         return None
 
 
 def _fallback_proactive_decision(
     *,
-    user_message: str,
-    recent_events: list[dict],
-    upcoming_todos: list[dict],
     threshold: float,
 ) -> ProactiveAdviceDecision:
-    """当 LLM 决策失败时，使用规则兜底，保证主流程稳定。"""
-
-    score = 0.0
-    reasons: list[str] = []
-    msg = user_message.strip()
-
-    if any(k in msg for k in ["出门", "外出", "开会", "赶路", "饿", "吃", "运动"]):
-        score += 0.25
-        reasons.append("用户输入包含行动/饮食场景")
-
-    if upcoming_todos:
-        score += min(0.35, 0.1 * len(upcoming_todos) + 0.15)
-        reasons.append("未来事项存在提醒价值")
-
-    oil_tags = 0
-    for item in recent_events:
-        tags = item.get("tags") or []
-        if any(t in tags for t in ["油腻", "高糖", "高盐"]):
-            oil_tags += 1
-    if oil_tags > 0:
-        score += min(0.30, 0.08 * oil_tags)
-        reasons.append("近期饮食记录提示需健康提醒")
-
-    score = max(0.0, min(1.0, score))
-    should_add = score >= threshold
-    advice = None
-    if should_add:
-        advice = "你接下来有安排，且近期饮食偏油腻；出门时尽量选择清淡食物并预留行程时间。"
-
-    return ProactiveAdviceDecision(score=score, should_add=should_add, advice=advice, reasons=reasons)
+    return ProactiveAdviceDecision(score=0.0, should_add=False, advice=None, reasons=["fallback: 无有效建议"])
 
 
 def decide_proactive_advice(
@@ -335,25 +303,29 @@ def decide_proactive_advice(
     threshold: float,
     session_id: str | None = None,
 ) -> ProactiveAdviceDecision:
-    """综合用户画像/事件/待办，输出“是否追加建议”的阈值决策。"""
-
     if not recent_events and not upcoming_todos and not profile_context:
         return ProactiveAdviceDecision(score=0.0, should_add=False, advice=None, reasons=["无可用上下文"])
 
     system_prompt = (
-        "你是生活助手的提醒决策器。请根据输入判断是否需要在主回复后追加`补充建议`。\n"
-        "输出必须是严格 JSON，不要解释，不要 Markdown。\n"
-        "schema: {\"score\":0-1数字,\"should_add\":true/false,\"advice\":\"字符串或null\",\"reasons\":[\"...\"]}\n"
-        "规则：\n"
-        "- score 表示提醒必要性；越高越应追加建议。\n"
-        "- 当用户仅致谢/寒暄/结束语且无紧迫风险时，should_add=false。\n"
-        "- should_add=true 时，advice 给 1-2 句可执行建议；否则 advice=null。\n"
-        "- 只基于输入，不编造。"
+        "你是一个严谨的提醒筛选器。判断是否需要追加建议，输出严格 JSON。\n"
+        'schema: {"score":0-1,"should_add":bool,"advice":"str或null","reasons":["str"]}\n'
+        "核心原则：默认 should_add=false，除非：\n"
+        "1. 事件/待办之间存在真实关联（时间冲突、因果关系、健康风险）\n"
+        "2. 能给出明确、可执行的操作建议\n"
+        "3. 不是把两个无关事件强行关联\n\n"
+        "反面案例（should_add=false）：\n"
+        "- 明天预订肯德基 + 后天端午节 -> 无关，不应建议\n"
+        "- 明天去超市 + 下周有会议 -> 无关\n\n"
+        "正面案例（should_add=true）：\n"
+        "- 明天下午3点开会 + 明天下午2点体检 -> 时间冲突，建议调整\n"
+        "- 明天跑10公里 + 膝盖不舒服 -> 健康风险，建议减量\n\n"
+        "输出要求：\n"
+        "- advice 一句话以内，只说直接相关的操作\n"
+        "- 没有真实关联时 should_add=false, advice=null"
     )
 
     payload = {
         "now": now_iso,
-        "threshold": threshold,
         "user_message": user_message,
         "assistant_answer": assistant_answer,
         "profile_context": profile_context,
@@ -372,16 +344,12 @@ def decide_proactive_advice(
         ).strip()
         data = json.loads(text)
         decision = ProactiveAdviceDecision.model_validate(data)
-        # 阈值最终由服务端硬控制，防止模型漂移导致越权追加。
         decision.should_add = bool(decision.advice) and decision.score >= threshold
         if not decision.should_add:
             decision.advice = None
         return decision
     except Exception as exc:
-        logger.warning("proactive advice decision failed, fallback to rules: %s", exc)
-        return _fallback_proactive_decision(
-            user_message=user_message,
-            recent_events=recent_events,
-            upcoming_todos=upcoming_todos,
-            threshold=threshold,
-        )
+        logger.warning("proactive advice decision failed session=%s threshold=%s payload=%s err=%s", session_id, threshold, json.dumps(payload, ensure_ascii=False)[:200], exc)
+        return _fallback_proactive_decision(threshold=threshold)
+
+

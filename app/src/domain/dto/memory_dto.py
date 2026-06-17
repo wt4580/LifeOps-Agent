@@ -4,10 +4,12 @@ from pydantic import BaseModel, Field
 class MemoryItem(BaseModel):
     """单条记忆候选。"""
 
-    kind: str = Field(..., description="meeting|deadline|birthday|todo|event")
+    kind: str = Field(..., description="meeting|deadline|birthday|todo|event|preference|pattern")
     title: str
     occurred_at: str | None = None
     notes: str | None = None
+    confidence: float = Field(default=1.0, ge=0, le=1, description="确信度 0-1")
+    insight_type: str = Field(default="explicit", description="explicit|inferred")
 
 
 class MemoryExtraction(BaseModel):

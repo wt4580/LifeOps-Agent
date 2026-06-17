@@ -31,12 +31,18 @@ class ChatState(TypedDict, total=False):
     hitl_cancelled: bool
     proposal_id: str | None
     proposal: dict[str, Any] | None
+    pending_add_confirmation: bool
+    proposal_confirmed: bool
 
     # 主动决策上下文（用于 postprocess 阶段）
     recent_events: list[dict[str, Any]]
     upcoming_todos: list[dict[str, Any]]
     event_window_start: str | None
     event_window_end: str | None
+
+    # 多步分解（plan-and-execute）
+    plan: list[dict[str, Any]]
+    plan_index: int
 
     # Trace
     citations: list[dict[str, Any]]

@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 
 from ..common.config.db_config import SessionLocal
-from ..domain.entity.models import LifeEvent, UserProfile, MemoryCandidate
+from ..domain.entity import LifeEvent, UserProfile, MemoryCandidate
 
 logger = logging.getLogger(__name__)
 

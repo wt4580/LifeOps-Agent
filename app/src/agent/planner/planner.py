@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, date
 from pydantic import ValidationError
 
 from ...common.config.log_config import logger
-from ..llm.llm_qwen import chat_completion
+from ...common.config.llm_config import chat_completion
 from ..time.time_parser import normalize_date_hint
 from ...domain.dto.planner_dto import PlanItem, PlanProposal
 
@@ -218,6 +218,30 @@ def _dedupe_plan_items(items: list[PlanItem]) -> list[PlanItem]:
     return deduped
 
 
+def _fallback_todo_from_complaint(text: str, fixed_date: str | None) -> PlanItem | None:
+    cleaned = text.strip().rstrip("。，！？,.!?")
+    if not cleaned:
+        return None
+    patterns = [
+        (r"(?:导员|老师|导师|领导|经理|主管)[^，。]*没[有]?回", "跟进{target}回复"),
+        (r"[^，。]*还没[有]?(?:审批|审核|批准|通过)", "跟进{target}审批"),
+        (r"[^，。]*还没[有]?(?:回复|回|处理)", "跟进{target}处理"),
+        (r"[^，。]*?没[有]?(?:到货|发货|来)", "跟进{target}到货"),
+        (r"[^，。]*?(?:未完成|还没做|没做)", "完成{target}"),
+        (r"[^，。]*?(?:待办|任务|工作)[^，。]*", "处理{target}"),
+    ]
+    for pat, tmpl in patterns:
+        m = re.search(pat, cleaned)
+        if m:
+            noun = m.group(0)[:20]
+            title = tmpl.format(target=noun)
+            title = _normalize_title(title)
+            return PlanItem(title=title, due_at=fixed_date)
+    # generic fallback
+    title = _normalize_title(cleaned[:20])
+    return PlanItem(title=title, due_at=fixed_date)
+
+
 def propose_plan(user_input: str) -> tuple[str, PlanProposal]:
     """根据用户输入生成结构化待办草案。
 
@@ -242,9 +266,10 @@ def propose_plan(user_input: str) -> tuple[str, PlanProposal]:
         "schema: {\"items\":[{\"title\":\"...\",\"due_at\":\"ISO或null\"}]}."
         "规则："
         "1) title 必须是动作导向短句（5-22字），不要复述原话，不要包含‘待办/提醒’字样；"
-        "2) 如果内容是同一件事，只输出一条；"
-        "3) due_at 用 ISO8601（YYYY-MM-DD 或 YYYY-MM-DDTHH:MM:SS），无法确定则为 null；"
-        f"4) 今天是 {today}。"
+        "2) 如果用户是在表达困扰/抱怨/未完成的事（如'导员没回报销'、'快递没到'、'作业没交'），推导出对应的跟进动作作为 todo（如'跟进导员报销审批'）；"
+        "3) 如果内容是同一件事，只输出一条；"
+        "4) due_at 用 ISO8601（YYYY-MM-DD 或 YYYY-MM-DDTHH:MM:SS），无法确定则为 null；"
+        f"5) 今天是 {today}。"
         + (f"用户时间表达已解析为 {fixed_date}，请优先使用该日期。" if fixed_date else "")
     )
     messages = [
@@ -256,8 +281,13 @@ def propose_plan(user_input: str) -> tuple[str, PlanProposal]:
         data = json.loads(content)
         proposal = PlanProposal.model_validate(data)
     except (json.JSONDecodeError, ValidationError) as exc:
-        logger.warning("Plan proposal invalid: %s", exc)
+        logger.warning("Plan proposal invalid: %s; raw=%r", exc, content[:200])
         proposal = PlanProposal(items=[])
+
+    if not proposal.items:
+        fallback = _fallback_todo_from_complaint(user_input, fixed_date)
+        if fallback:
+            proposal = PlanProposal(items=[fallback])
 
     # 强制把解析出的日期落到 due_at：
     # - 模型可能只返回 title，但 due_at=null

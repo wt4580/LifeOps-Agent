@@ -181,7 +181,7 @@ function appendAssistantTurn() {
   thoughtToggle.textContent = "收起";
 
   const thoughtDiv = document.createElement("div");
-  thoughtDiv.className = "assistant-thought";
+  thoughtDiv.className = "assistant-thought collapsed";
   setThoughtLines(thoughtDiv, ["正在分析你的问题..."]);
 
   const answerDiv = document.createElement("div");
@@ -189,6 +189,7 @@ function appendAssistantTurn() {
   answerDiv.textContent = "回答：";
 
   let collapsed = true;
+  thoughtToggle.textContent = "展开";
   thoughtToggle.addEventListener("click", () => {
     collapsed = !collapsed;
     thoughtDiv.classList.toggle("collapsed", collapsed);

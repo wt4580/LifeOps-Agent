@@ -2,8 +2,8 @@ import logging
 from fastapi import Request, FastAPI
 from fastapi.responses import JSONResponse
 
-from app.src.common.domain.response import error_response
-from app.src.common.domain.exceptions import (
+from .response import error_response
+from .exceptions import (
     GeneralException,
     ServiceInvocationException,
     DatabaseConnectionException

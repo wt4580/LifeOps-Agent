@@ -79,17 +79,27 @@ def _ensure_todo_columns() -> None:
             conn.execute(text("ALTER TABLE todo_items ADD COLUMN completed_at DATETIME"))
 
 
+def _ensure_memory_columns() -> None:
+    url = settings.database_url
+    if not url.startswith("sqlite:///"):
+        return
+    with engine.begin() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='memory_candidates'")
+        ).fetchone()
+        if not table_exists:
+            return
+        rows = conn.execute(text("PRAGMA table_info(memory_candidates)")).fetchall()
+        existing = {r[1] for r in rows}
+        if "confidence" not in existing:
+            conn.execute(text("ALTER TABLE memory_candidates ADD COLUMN confidence FLOAT NOT NULL DEFAULT 1.0"))
+        if "insight_type" not in existing:
+            conn.execute(text("ALTER TABLE memory_candidates ADD COLUMN insight_type VARCHAR(16) NOT NULL DEFAULT 'explicit'"))
+
+
 def init_db() -> None:
-    """初始化数据库：
-    1) 确保 SQLite 目录存在。
-    2) 导入 models 触发表定义注册。
-    3) create_all 按模型创建缺失表（不会删除已有表）。
-    """
-
     _ensure_sqlite_dir()
-
-    # 仅为触发 ORM 模型注册到 Base.metadata。
     from ...domain.entity import chat_entity  # noqa: F401
-
     Base.metadata.create_all(bind=engine)
     _ensure_todo_columns()
+    _ensure_memory_columns()

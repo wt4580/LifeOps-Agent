@@ -1,7 +1,6 @@
 import uvicorn
 from app.src.common.config.app_config import create_app
 from app.src.common.config.log_config import logger
-import uvicorn
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
@@ -10,7 +9,7 @@ app = create_app()
 # 挂载静态资源（统一管理）
 # --------------------------------------------------------------------------------------
 
-STATIC_DIR = Path(__file__).parent / "static"
+STATIC_DIR = Path(__file__).parent / "common" / "static"
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

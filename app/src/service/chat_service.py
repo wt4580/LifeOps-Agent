@@ -8,14 +8,14 @@ from uuid import uuid4
 from sqlalchemy import select, func, delete
 from ..common.config.db_config import SessionLocal
 from ..common.config.base_config import settings
-import app.src.common.config.app_config as app_cfg
+from ..common.config.chat_graph_holder import get_chat_graph
 from ..domain.entity.chat_entity import (
     ChatMessage, TodoItem, MemoryCandidate,
     ConversationSummary, LifeEvent, UserProfile
 )
-from ..util.llm.llm_qwen import chat_completion
-from ..util.memory.memory_extractor import extract_memory_from_dialogue
-from ..util.memory.personal_memory import (
+from ..common.config.llm_config import chat_completion
+from ..agent.memory.memory_extractor import extract_memory_from_dialogue
+from ..agent.memory.personal_memory import (
     build_profile_context,
     extract_personal_events,
     extract_profile_facts,
@@ -23,7 +23,7 @@ from ..util.memory.personal_memory import (
     parse_event_time,
     decide_proactive_advice,
 )
-from ..util.graph_chat import aload_chat_checkpoint_context, arun_chat_graph, load_chat_checkpoint_context
+from ..agent.graph_chat import aload_chat_checkpoint_context, arun_chat_graph, load_chat_checkpoint_context
 from ..util.retrieval.retrieval import index_documents
 from .plan_service import plan_service
 from ..common.config.log_config import logger
@@ -32,35 +32,45 @@ class ChatService:
     """聊天核心服务"""
 
     def __init__(self):
-        # 服务只保留自身参数，不直接持有 graph；graph 在应用启动阶段统一创建。
         self.summary_refresh_turns = 10
+        self.deep_refresh_interval = 3
+        self.cleanup_interval = 20
+        self._turn_counter: dict[str, int] = {}
+        self._cleanup_counter = 0
 
     # ----------------------------------------------------------------------
     # 主聊天流程
     # ----------------------------------------------------------------------
 
-    async def chat(self, message: str, session_id: str | None = None) -> dict:
+    async def chat(self, message: str, session_id: str | None = None, progress_queue: asyncio.Queue | None = None) -> dict:
         """执行一次完整聊天请求。
 
         这条链路会先保存用户消息，再抽取画像/事件/预建议，
         最后交给 LangGraph 统一做路由、工具调用和 HITL 处理。
         """
+        def _push(msg: str):
+            if progress_queue is not None:
+                progress_queue.put_nowait(msg)
+
         session_id = session_id or str(uuid4())
         # 优先使用 checkpointer 中恢复的上下文，避免只依赖数据库回读。
-        checkpoint_context = await aload_chat_checkpoint_context(app_cfg.chat_graph, session_id) if app_cfg.chat_graph else {}
+        checkpoint_context = await aload_chat_checkpoint_context(get_chat_graph(), session_id) if get_chat_graph() else {}
 
         # A) 用户消息先落库，保证审计链完整。
+        _push("正在保存消息...")
         with SessionLocal() as db:
             db.add(ChatMessage(session_id=session_id, role="user", content=message))
             db.commit()
 
         # B) 前置处理：尽量在进图之前补齐可用上下文。
+        _push("正在分析输入...")
         recent_for_profile = checkpoint_context.get("recent_dialogue") or self._load_recent_dialogue(session_id, limit=12)
         memory_owner_id = self._resolve_memory_owner_id(session_id)
         now_dt = datetime.now()
         now_iso = now_dt.isoformat(timespec="seconds")
 
         # 画像抽取：记录稳定偏好、身高体重、限制条件等信息。
+        _push("正在更新用户画像...")
         profile_patch = extract_profile_facts(
             message, recent_for_profile, now_iso=now_iso, session_id=session_id,
         )
@@ -71,6 +81,7 @@ class ChatService:
         profile_context = build_profile_context(profile)
 
         # 个人事件抽取：把事实性内容存下来，供后续建议与画像分析使用。
+        _push("正在提取生活事件...")
         personal = extract_personal_events(
             message, recent_for_profile, now_iso=now_iso, session_id=session_id,
         )
@@ -81,6 +92,7 @@ class ChatService:
             )
 
         # 近期事件窗口：不要只看固定条数，尽量按时间范围判断上下文。
+        _push("正在整理背景信息...")
         recent_events, event_window_start, event_window_end = self._load_life_events_in_window(
             session_id=memory_owner_id,
             hours=settings.proactive_event_window_hours,
@@ -138,8 +150,13 @@ class ChatService:
             hours=settings.proactive_todo_hours,
         )
         
+        _push("正在思考并查询相关信息...")
+        chat_graph = get_chat_graph()
+        checkpoint_context = await aload_chat_checkpoint_context(chat_graph, session_id) if chat_graph else {}
+        pending_proposal_id = checkpoint_context.get("proposal_id")
+
         state = await arun_chat_graph(
-            compiled_graph=app_cfg.chat_graph,   # ← 用导入的全局实例
+            compiled_graph=chat_graph,
             session_id=session_id,
             user_message=message,
             profile_context=profile_context or None,
@@ -156,8 +173,11 @@ class ChatService:
         if proposal_id and isinstance(proposal_payload, dict):
             items = proposal_payload.get("items") or []
             if isinstance(items, list):
-                # 图里生成的待办草案缓存起来，供确认接口继续使用。
                 plan_service.proposal_cache[proposal_id] = items
+
+        if state.get("proposal_confirmed") and pending_proposal_id:
+            plan_service.confirm_proposal(pending_proposal_id, session_id)
+            proposal_id = None
 
         used_tool = state.get("used_tool")
         citations = state.get("citations") or []
@@ -165,6 +185,7 @@ class ChatService:
 
         
         # D) 保存助手消息：和 user 消息配对入库，方便后续摘要与回放。
+        _push("正在保存对话...")
         with SessionLocal() as db:
             db.add(ChatMessage(session_id=session_id, role="assistant", content=answer))
             db.commit()
@@ -174,9 +195,19 @@ class ChatService:
         self._maybe_prune_chat_history(session_id)
 
         # F) 旁路增强：抽取结构化记忆候选，但不阻塞主响应返回。
-        latest_checkpoint_context = await aload_chat_checkpoint_context(app_cfg.chat_graph, session_id) if app_cfg.chat_graph else {}
+        _push("正在提取记忆...")
+        latest_checkpoint_context = await aload_chat_checkpoint_context(get_chat_graph(), session_id) if get_chat_graph() else {}
         dialogue = latest_checkpoint_context.get("recent_dialogue") or self._load_recent_dialogue(session_id, limit=8)
         extraction = extract_memory_from_dialogue(dialogue)
+
+        # G) 周期性深度反思：分析所有积累数据，推断隐含模式并更新画像。
+        _push("正在分析深层模式...")
+        await self._maybe_deep_reflection(session_id, memory_owner_id)
+
+        # H) 定期清理过时数据，防止表无限膨胀。
+        self._cleanup_counter += 1
+        if self._cleanup_counter % self.cleanup_interval == 0:
+            self._maybe_cleanup_stale_data()
         if extraction:
             with SessionLocal() as db:
                 for item in extraction.items:
@@ -186,6 +217,8 @@ class ChatService:
                             title=item.title,
                             occurred_at=item.occurred_at,
                             notes=item.notes,
+                            confidence=item.confidence,
+                            insight_type=item.insight_type,
                         )
                     )
                 db.commit()
@@ -202,27 +235,22 @@ class ChatService:
         }
 
     async def chat_stream(self, message: str, session_id: str | None = None):
-        """以 SSE 事件流方式返回聊天结果。
+        progress_queue: asyncio.Queue = asyncio.Queue()
+        task = asyncio.create_task(self.chat(message=message, session_id=session_id, progress_queue=progress_queue))
 
-        先持续发送 status 事件，再在主任务完成后按片段输出答案。
-        这样前端看起来更像“流式回复”。
-        """
-
-        # 轮播式提示文案，减少用户等待时的空白感。
-        progress_messages = [
-            "正在分析你的问题...",
-            "正在检索可用信息...",
-            "正在组织回答内容...",
-        ]
-        progress_index = 0
-        task = asyncio.create_task(self.chat(message=message, session_id=session_id))
-
-        # 主任务未结束前，周期性发送状态消息。
+        last_status = ""
         while not task.done():
-            msg = progress_messages[progress_index % len(progress_messages)]
-            progress_index += 1
-            yield f"data: {json.dumps({'type': 'status', 'message': msg}, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.7)
+            drained = False
+            while True:
+                try:
+                    msg = progress_queue.get_nowait()
+                    last_status = msg
+                    yield f"data: {json.dumps({'type': 'status', 'message': msg}, ensure_ascii=False)}\n\n"
+                    drained = True
+                except asyncio.QueueEmpty:
+                    break
+            if not task.done():
+                await asyncio.sleep(0.3 if not drained else 0.05)
 
         # 主任务结束后，把答案拆成更小的片段输出。
         result = await task
@@ -473,6 +501,109 @@ class ChatService:
         
         return [{"title": r.title, "due_at": r.due_at.isoformat() if r.due_at else None} for r in rows]
     
+    async def _maybe_deep_reflection(self, session_id: str, owner_id: str) -> None:
+        turns = self._turn_counter
+        turns[session_id] = turns.get(session_id, 0) + 1
+        if turns[session_id] % self.deep_refresh_interval != 0:
+            return
+
+        with SessionLocal() as db:
+            memories = db.execute(
+                select(MemoryCandidate).order_by(MemoryCandidate.created_at.desc()).limit(30)
+            ).scalars().all()
+            events = db.execute(
+                select(LifeEvent).where(LifeEvent.session_id == owner_id)
+                .order_by(LifeEvent.event_time.desc().nulls_last()).limit(20)
+            ).scalars().all()
+            todos = db.execute(
+                select(TodoItem).where(TodoItem.is_completed == False)
+                .order_by(TodoItem.due_at.asc()).limit(10)
+            ).scalars().all()
+            profile_row = db.execute(
+                select(UserProfile).where(UserProfile.session_id == owner_id).limit(1)
+            ).scalars().first()
+
+        profile_data = {}
+        if profile_row:
+            try:
+                prefs = json.loads(profile_row.preferences_json) if profile_row.preferences_json else []
+            except json.JSONDecodeError:
+                prefs = []
+            try:
+                conds = json.loads(profile_row.conditions_json) if profile_row.conditions_json else []
+            except json.JSONDecodeError:
+                conds = []
+            profile_data = {"preferences": prefs, "conditions": conds, "notes": profile_row.notes}
+
+        payload = {
+            "memories": [{"kind": m.kind, "title": m.title, "notes": m.notes, "confidence": m.confidence, "insight_type": m.insight_type} for m in memories],
+            "life_events": [{"title": e.title, "category": e.category, "tags": e.tags_json} for e in events],
+            "pending_todos": [{"title": t.title, "due_at": str(t.due_at)} for t in todos],
+            "current_profile": profile_data,
+        }
+
+        system_prompt = (
+            "你是深度分析器。分析用户积累数据，推断隐含模式、偏好和习惯，更新画像。\n"
+            "输出严格 JSON，不要解释。\n"
+            'schema: {"inferred_preferences":[{"name":"...","reason":"...","confidence":0-1}],'
+            '"inferred_conditions":[{"name":"...","reason":"...","confidence":0-1}],'
+            '"notes":"...或null"}\n'
+            "规则：\n"
+            "- 只提炼有足够证据支撑的推断（比如多次同类型事件）；\n"
+            "- confidence 反映证据强度；\n"
+            "- 已有画像中已确认的事实不要重复输出；\n"
+            "- 若没有新推断，返回空列表。"
+        )
+
+        try:
+            text = chat_completion(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                ],
+                temperature=0.3,
+                runtime_context={"scenario": "deep_reflection", "session_id": session_id},
+            )
+            data = json.loads(text)
+            new_prefs = [f"[推断:{p['confidence']}] {p['name']}（{p['reason']}）" for p in data.get("inferred_preferences") or []]
+            new_conds = [f"[推断:{c['confidence']}] {c['name']}（{c['reason']}）" for c in data.get("inferred_conditions") or []]
+            notes = data.get("notes") or ""
+
+            if new_prefs or new_conds or notes:
+                with SessionLocal() as db:
+                    row = db.execute(
+                        select(UserProfile).where(UserProfile.session_id == owner_id).limit(1)
+                    ).scalars().first()
+                    if row:
+                        changed = False
+                        if new_prefs:
+                            try:
+                                cur = json.loads(row.preferences_json) if row.preferences_json else []
+                            except json.JSONDecodeError:
+                                cur = []
+                            merged = self._merge_unique(cur, new_prefs)
+                            if merged != cur:
+                                row.preferences_json = json.dumps(merged, ensure_ascii=False)
+                                changed = True
+                        if new_conds:
+                            try:
+                                cur = json.loads(row.conditions_json) if row.conditions_json else []
+                            except json.JSONDecodeError:
+                                cur = []
+                            merged_conds = self._merge_unique(cur, new_conds)
+                            if merged_conds != cur:
+                                row.conditions_json = json.dumps(merged_conds, ensure_ascii=False)
+                                changed = True
+                        if notes:
+                            current_notes = (row.notes or "") + f"\n[深度反思] {notes}" if row.notes else f"[深度反思] {notes}"
+                            row.notes = current_notes.strip()
+                            changed = True
+                        if changed:
+                            db.commit()
+                            logger.info("Deep reflection updated profile for session=%s", session_id)
+        except Exception as exc:
+            logger.warning("Deep reflection failed session=%s err=%s", session_id, exc)
+
     def _get_summary(self, session_id: str) -> str | None:
         """获取最近一条会话摘要。"""
         with SessionLocal() as db:
@@ -487,11 +618,32 @@ class ChatService:
                 .first()
             )
         return row.summary_text if row else None
-    
+
+    def _maybe_cleanup_stale_data(self) -> None:
+        try:
+            cutoff = datetime.utcnow() - timedelta(days=30)
+            with SessionLocal() as db:
+                deleted_candidates = db.execute(
+                    delete(MemoryCandidate).where(MemoryCandidate.created_at < cutoff)
+                ).rowcount
+                deleted_events = db.execute(
+                    delete(LifeEvent).where(LifeEvent.created_at < cutoff)
+                ).rowcount
+            if deleted_candidates or deleted_events:
+                logger.info("Cleaned up stale data: memory_candidates=%s life_events=%s", deleted_candidates, deleted_events)
+        except Exception as exc:
+            logger.warning("Stale data cleanup failed: %s", exc)
+
     def _save_summary(self, session_id: str, summary_text: str) -> None:
-        """保存会话摘要。"""
         with SessionLocal() as db:
-            db.add(ConversationSummary(session_id=session_id, summary_text=summary_text))
+            row = db.execute(
+                select(ConversationSummary).where(ConversationSummary.session_id == session_id).limit(1)
+            ).scalars().first()
+            if row:
+                row.summary_text = summary_text
+                row.updated_at = datetime.utcnow()
+            else:
+                db.add(ConversationSummary(session_id=session_id, summary_text=summary_text))
             db.commit()
     
     async def _maybe_update_summary(self, session_id: str) -> None:
@@ -502,8 +654,8 @@ class ChatService:
             ).scalar_one()
         
         if count > 0 and count % self.summary_refresh_turns == 0:
-            # 使用异步版本加载 checkpoint 上下文
-            checkpoint_context = await aload_chat_checkpoint_context(app_cfg.chat_graph, session_id) if app_cfg.chat_graph else {}
+            g = get_chat_graph()
+            checkpoint_context = await aload_chat_checkpoint_context(g, session_id) if g else {}
             recent = checkpoint_context.get("recent_dialogue") or self._load_recent_dialogue(
                 session_id, limit=self.summary_refresh_turns * 2
             )
@@ -573,7 +725,7 @@ class ChatService:
                 temperature=0.2,
             )
         except Exception as exc:
-            logger.warning("Chat prune summary failed: %s", exc)
+            logger.warning("Chat prune summary failed session=%s total=%s err=%s", session_id, total, exc)
         
         if summary_text.strip():
             self._save_summary(session_id, f"[rolling-prune] {summary_text.strip()}")
