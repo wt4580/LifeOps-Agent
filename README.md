@@ -172,6 +172,23 @@ python -m app.src
 | POST | `/api/index` | 知识库索引（含块摘要生成） |
 | POST | `/api/ask` | 知识库问答 |
 
+## 测试
+
+```powershell
+python -m pytest tests/ -v
+```
+
+测试覆盖 planner、agent_router、graph_chat、memory、time_parser 的核心逻辑及所有 DTO 校验，共 120+ 项测试。LLM 调用在 conftest 中自动 mock，运行测试无需 API Key 或网络。
+
+- `tests/conftest.py` — 全局 mock 所有 `chat_completion` 调用，隔离外部依赖
+- `tests/test_planner.py` — 意图检测、确认/拒绝识别、日期解析、标题归一化、草案生成
+- `tests/test_graph_chat.py` — 简单查询判断、纯确认文本、相对日期、主动建议决策
+- `tests/test_agent_router.py` — RouteContext 构建、路由决策正常/回退路径
+- `tests/test_memory.py` — 事件/画像抽取、主动建议决策、对话记忆提取
+- `tests/test_time_parser.py` — 日期上下文构建、自然语言日期解析
+- `tests/test_chinese_holidays.py` — 中国传统节日离线计算
+- `tests/test_dtos.py` — 所有 DTO 的字段校验、默认值、边界条件
+
 ## 开发说明
 
 - **新增模型**：在 `common/config/base_config.py` 加配置项，`llm_config.py` 统一调用

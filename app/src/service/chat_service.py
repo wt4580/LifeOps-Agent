@@ -27,6 +27,7 @@ from ..agent.graph_chat import aload_chat_checkpoint_context, arun_chat_graph, l
 from ..util.retrieval.retrieval import index_documents
 from .plan_service import plan_service
 from ..common.config.log_config import logger
+from .todo_service import reminder_service
 
 class ChatService:
     """聊天核心服务"""
@@ -98,6 +99,9 @@ class ChatService:
             hours=settings.proactive_event_window_hours,
             now_dt=now_dt,
         )
+        # 加载待提醒事项（DB 持久化的提醒，按时间退避）。
+        pending_reminders = reminder_service.load_pending_reminders(memory_owner_id)
+
         # 基于画像与近期事件生成一个前置建议，交给 Graph 作为软提示。
         pre_advice = generate_profile_pre_advice(
             user_message=message,
@@ -141,6 +145,15 @@ class ChatService:
                     "source": "profile+life_events",
                 },
             },
+            {
+                "type": "preprocess",
+                "name": "pending_reminders",
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "output": {
+                    "count": len(pending_reminders),
+                    "reminders": pending_reminders,
+                },
+            },
         ]
 
           # C) 执行状态机：统一交给 LangGraph 处理路由、工具调用、HITL 和主动建议。
@@ -164,6 +177,7 @@ class ChatService:
             pre_steps=pre_steps,
             recent_events=recent_events,
             upcoming_todos=upcoming_todos,
+            pending_reminders=pending_reminders,
             event_window_start=event_window_start,
             event_window_end=event_window_end,
         )
@@ -183,7 +197,12 @@ class ChatService:
         citations = state.get("citations") or []
         trace = state.get("trace")
 
-        
+        # C.5) 从回答中提取"补充建议"并持久化为提醒（DB 时间退避）。
+        if answer:
+            advice_section = self._extract_advice_from_answer(answer)
+            if advice_section:
+                reminder_service.upsert_reminder(memory_owner_id, advice_section)
+
         # D) 保存助手消息：和 user 消息配对入库，方便后续摘要与回放。
         _push("正在保存对话...")
         with SessionLocal() as db:
@@ -283,6 +302,18 @@ class ChatService:
         if buffer:
             chunks.append(buffer)
         return chunks
+
+    @staticmethod
+    def _extract_advice_from_answer(answer: str) -> str | None:
+        """从回答中提取"补充建议"文本，若无则返回 None。"""
+        marker = "补充建议："
+        if marker not in answer:
+            return None
+        idx = answer.rfind(marker)
+        text = answer[idx + len(marker):].strip()
+        if not text:
+            return None
+        return text
 
     def _load_recent_dialogue(self, session_id: str, limit: int = 12) -> list[dict]:
         """读取最近 N 条对话消息。"""
@@ -402,16 +433,36 @@ class ChatService:
         return changed
     
     def _merge_unique(self, base: list[str], patch: list[str]) -> list[str]:
-        """合并列表并去重，尽量保留原顺序。"""
+        """合并列表并去重，尽量保留原顺序。
+
+        也会处理偏好冲突：如果新增了"不喜欢X"，自动移除对应的"喜欢X"。
+        """
         seen = {x.strip() for x in base if x and x.strip()}
         out = [x for x in base if x and x.strip()]
         for item in patch:
             t = (item or "").strip()
             if not t or t in seen:
                 continue
+            contradiction = self._find_contradiction(t, out)
+            if contradiction:
+                out = [x for x in out if x != contradiction]
+                seen.discard(contradiction)
             seen.add(t)
             out.append(t)
         return out
+
+    @staticmethod
+    def _find_contradiction(new_pref: str, existing: list[str]) -> str | None:
+        """检测新增偏好与已有偏好是否矛盾，返回需移除的旧条目。"""
+        new_clean = new_pref.replace("不喜欢", "").replace("讨厌", "").replace("不爱", "").replace("不吃", "").strip()
+        if new_clean and new_pref != new_clean:
+            for old in existing:
+                old_clean = old.replace("喜欢", "").replace("爱吃", "").replace("爱", "").strip()
+                if old_clean and old_clean == new_clean:
+                    return old
+                if new_clean in old or old_clean in new_pref:
+                    return old
+        return None
     
     def _store_personal_events(self, session_id: str, source_text: str, events: list[dict]) -> int:
         """存储个人事件候选，供后续主动建议与画像分析复用。"""

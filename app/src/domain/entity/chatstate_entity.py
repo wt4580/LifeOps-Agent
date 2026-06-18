@@ -37,12 +37,17 @@ class ChatState(TypedDict, total=False):
     # 主动决策上下文（用于 postprocess 阶段）
     recent_events: list[dict[str, Any]]
     upcoming_todos: list[dict[str, Any]]
+    pending_reminders: list[dict[str, Any]]
     event_window_start: str | None
     event_window_end: str | None
 
     # 多步分解（plan-and-execute）
     plan: list[dict[str, Any]]
     plan_index: int
+
+    # 建议频率控制（指数退避）
+    turn_number: int
+    suggestion_cooldowns: dict[str, Any]
 
     # Trace
     citations: list[dict[str, Any]]

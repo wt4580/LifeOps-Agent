@@ -1,4 +1,4 @@
-"""基于 LangGraph 的聊天状态机编排。
+﻿"""基于 LangGraph 的聊天状态机编排。
 
 Chat -> (LLM decide) -> Tool -> Update state -> (maybe HITL) -> Final answer -> (proactive advice)
 """
@@ -28,29 +28,7 @@ from ..service.weather_service import weather_service, WeatherServiceError
 from ..domain.entity.chatstate_entity import ChatState
 
 # 范围查询待办：当用户问“未来几天安排”时使用。
-def _query_upcoming_todos(range_days: int) -> list[dict[str, Any]]:
-    now = datetime.now()
-    end = now + timedelta(days=range_days)
-    with SessionLocal() as db:
-        rows = (
-            db.execute(
-                select(TodoItem)
-                .where(TodoItem.due_at != None)
-                .where(TodoItem.due_at >= now)
-                .where(TodoItem.due_at < end)
-                .order_by(TodoItem.due_at.asc())
-            )
-            .scalars()
-            .all()
-        )
-    return [{"title": r.title, "due_at": r.due_at.isoformat() if r.due_at else None} for r in rows]
-
-
-# 单天查询待办：当用户消息可解析为具体日期（如“后天”）时优先使用。
-def _query_todos_for_date(target_date_iso: str) -> list[dict[str, Any]]:
-    target = datetime.fromisoformat(target_date_iso).date()
-    start = datetime.combine(target, datetime.min.time())
-    end = start + timedelta(days=1)
+def _query_todos(*, start: datetime, end: datetime) -> list[dict[str, Any]]:
     with SessionLocal() as db:
         rows = (
             db.execute(
@@ -462,6 +440,15 @@ def _build_normal_chat_answer(
                 todo_lines.append(f"  {title}")
         context_parts.append("待办事项：\n" + "\n".join(todo_lines))
 
+    pending_reminders = state.get("pending_reminders") or []
+    if pending_reminders:
+        reminder_lines = []
+        for rem in pending_reminders[:4]:
+            title = rem.get("title", "")
+            count = rem.get("remind_count", 0)
+            reminder_lines.append(f"  {title}（已提醒{count}次）")
+        context_parts.append("待提醒事项（AI 检测到需关注但未确认）：\n" + "\n".join(reminder_lines))
+
     if context_parts:
         messages.append({"role": "system", "content": "用户相关背景：\n" + "\n\n".join(context_parts)})
     messages.extend(state.get("recent_dialogue", []))
@@ -480,11 +467,14 @@ def _node_run_tool(state: ChatState) -> ChatState:
         date_hint = normalize_date_hint(state["user_message"])
 
         if date_hint:
-            items = _query_todos_for_date(date_hint)
+            target = datetime.fromisoformat(date_hint).date()
+            day_start = datetime.combine(target, datetime.min.time())
+            items = _query_todos(start=day_start, end=day_start + timedelta(days=1))
             query_input = {"target_date": date_hint}
         else:
             range_days = int(args.get("range_days", 7) or 7)
-            items = _query_upcoming_todos(range_days)
+            now = datetime.now()
+            items = _query_todos(start=now, end=now + timedelta(days=range_days))
             query_input = {"range_days": range_days}
 
         state["used_tool"] = "query_todos"
@@ -780,12 +770,30 @@ def _node_run_tool(state: ChatState) -> ChatState:
 
 
 # 主动决策节点：基于近期事件/待办/画像，决定是否追加主动建议。
+# 指数退避：同一个话题提醒后间隔逐步拉长（2轮 → 4轮 → 8轮 → 16轮 → 32轮封顶）。
 def _node_proactive_decision(state: ChatState) -> ChatState:
     recent_events = state.get("recent_events", [])
     upcoming_todos = state.get("upcoming_todos", [])
+    pending_reminders = state.get("pending_reminders", [])
     profile_context = state.get("profile_context") or ""
+    turn_number = state.get("turn_number", 0)
+    cooldowns = dict(state.get("suggestion_cooldowns") or {})
 
     if not recent_events and not upcoming_todos:
+        return state
+
+    filtered_todos = []
+    for todo in upcoming_todos:
+        key = (todo.get("title") or "").strip().lower()
+        if not key:
+            filtered_todos.append(todo)
+            continue
+        cd = cooldowns.get(key)
+        if cd and cd.get("cooldown_until", 0) > turn_number:
+            continue
+        filtered_todos.append(todo)
+
+    if not recent_events and not filtered_todos:
         return state
 
     now_iso = datetime.now().isoformat(timespec="seconds")
@@ -793,22 +801,34 @@ def _node_proactive_decision(state: ChatState) -> ChatState:
         user_message=state["user_message"],
         assistant_answer=state.get("answer", ""),
         recent_events=recent_events,
-        upcoming_todos=upcoming_todos,
+        upcoming_todos=filtered_todos,
+        pending_reminders=pending_reminders,
         profile_context=profile_context,
         now_iso=now_iso,
         threshold=settings.proactive_advice_threshold,
         session_id=state["session_id"],
     )
-    
-    # 3. 如果需要追加建议，修改 answer
+
     advice_added = False
     if decision.should_add and decision.advice:
         current_answer = state.get("answer", "")
         if decision.advice not in current_answer:
             state["answer"] = f"{current_answer}\n\n补充建议：{decision.advice}".strip()
             advice_added = True
-    
-    # 4. 记录 trace（自动进入 checkpoint）
+
+            advice_lower = decision.advice.lower()
+            for todo in filtered_todos:
+                key = (todo.get("title") or "").strip().lower()
+                if not key:
+                    continue
+                if key in advice_lower:
+                    cd = cooldowns.get(key, {"count": 0, "cooldown_until": 0})
+                    cd["count"] = cd.get("count", 0) + 1
+                    base = 2
+                    cd["cooldown_until"] = turn_number + min(base * (2 ** cd["count"]), 32)
+                    cooldowns[key] = cd
+            state["suggestion_cooldowns"] = cooldowns
+
     _append_trace(
         state,
         _trace_step(
@@ -820,23 +840,25 @@ def _node_proactive_decision(state: ChatState) -> ChatState:
                 "added": advice_added,
                 "reasons": decision.reasons,
                 "events_used": len(recent_events),
-                "upcoming_todos_used": len(upcoming_todos),
+                "upcoming_todos_total": len(upcoming_todos),
+                "upcoming_todos_filtered": len(filtered_todos),
+                "pending_reminders": len(pending_reminders),
                 "now_iso": now_iso,
                 "event_window_start": state.get("event_window_start"),
                 "event_window_end": state.get("event_window_end"),
+                "cooldowns": cooldowns,
             }
         )
     )
-    
+
     logger.info(
-        "proactive advice decision score=%.3f threshold=%.3f added=%s events=%s todos=%s",
+        "proactive advice decision score=%.3f threshold=%.3f added=%s cooldowns=%s",
         decision.score,
         settings.proactive_advice_threshold,
         advice_added,
-        len(recent_events),
-        len(upcoming_todos),
+        {k: v for k, v in cooldowns.items() if v.get("cooldown_until", 0) > turn_number},
     )
-    
+
     return state
 
 
@@ -944,6 +966,9 @@ def _build_checkpoint_context(values: dict) -> dict:
         "proposal": values.get("proposal"),
         "pending_add_confirmation": values.get("pending_add_confirmation"),
         "proposal_confirmed": values.get("proposal_confirmed"),
+        "turn_number": values.get("turn_number", 0),
+        "suggestion_cooldowns": values.get("suggestion_cooldowns", {}),
+        "pending_reminders": values.get("pending_reminders", []),
     }
 
 
@@ -959,6 +984,7 @@ def _build_initial_state(
     forced_args: dict | None = None,
     recent_events: list[dict] | None = None,
     upcoming_todos: list[dict] | None = None,
+    pending_reminders: list[dict] | None = None,
     event_window_start: str | None = None,
     event_window_end: str | None = None,
 ) -> ChatState:
@@ -996,8 +1022,11 @@ def _build_initial_state(
         "plan_index": 0,
         "recent_events": recent_events or [],
         "upcoming_todos": upcoming_todos or [],
+        "pending_reminders": pending_reminders or [],
         "event_window_start": event_window_start,
         "event_window_end": event_window_end,
+        "turn_number": checkpoint_context.get("turn_number", 0) + 1,
+        "suggestion_cooldowns": checkpoint_context.get("suggestion_cooldowns", {}),
     }
 
 

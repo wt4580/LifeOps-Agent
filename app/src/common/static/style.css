@@ -816,6 +816,93 @@ body {
 }
 
 /* ========================================
+   Reminder List (below todos)
+   ======================================== */
+.reminders-list {
+  margin-top: var(--space-3);
+  min-height: 20px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.reminder-group-title {
+  margin: var(--space-3) 0 var(--space-2);
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0 var(--space-2);
+}
+
+.reminder-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  padding: var(--space-2) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: all var(--duration-fast) var(--ease);
+  margin-bottom: 2px;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-subtle);
+}
+
+.reminder-row:hover {
+  background: rgba(212, 133, 74, 0.15);
+}
+
+.reminder-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.reminder-title {
+  font-size: 12px;
+  color: var(--fg);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.reminder-meta {
+  font-size: 10px;
+  color: var(--fg-muted);
+  letter-spacing: 0.01em;
+}
+
+.reminder-dismiss {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  background: transparent;
+  border: none;
+  font-size: 14px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: all var(--duration-fast) var(--ease);
+  line-height: 1;
+  margin-top: 1px;
+}
+
+.reminder-dismiss:hover {
+  background: var(--bg-muted);
+  color: var(--fg);
+}
+
+.reminder-empty {
+  font-size: 11px;
+  color: var(--fg-muted);
+  padding: var(--space-2) var(--space-2);
+  text-align: center;
+}
+
+/* ========================================
    RAG / Knowledge Base Section
    ======================================== */
 .rag-section {

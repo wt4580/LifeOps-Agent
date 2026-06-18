@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException
 
 from ..common.domain.response import success_response
-from ..service.todo_service import todo_service
+from ..service.todo_service import todo_service, reminder_service
 from ..domain.dto.todo_dto import TodoStatusUpdateRequest
 
 router = APIRouter()
@@ -40,6 +40,28 @@ def get_upcoming_todos(hours: int | None = None, days: int | None = None, sessio
             hours=effective_hours
         )
         return success_response(data={"todos": todos, "hours": effective_hours})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/reminders/pending")
+def get_pending_reminders(session_id: str = "default"):
+    try:
+        result = reminder_service.load_pending_reminders(session_id=session_id)
+        return success_response(data={"reminders": result})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/reminders/{reminder_id}/dismiss")
+def dismiss_reminder(reminder_id: int):
+    try:
+        ok = reminder_service.dismiss_reminder(reminder_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="提醒不存在")
+        return success_response(data={"id": reminder_id})
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

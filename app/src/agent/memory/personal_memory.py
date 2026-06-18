@@ -48,16 +48,18 @@ def extract_personal_events(
     """从用户输入（可参考最近对话）提取结构化个人事件，并补齐事件时间。"""
 
     system_prompt = (
-        "你是个人生活事件抽取器。请从用户消息中抽取可长期记忆的事实，并返回严格 JSON。\n"
+        "你是个人生活事件抽取器。请从用户消息中抽取已发生的事实事件，返回严格 JSON。\n"
         "只输出 JSON，不要解释。\n"
         "schema: {\"items\":[{\"category\":\"diet|activity|research|finance|schedule|health|other\","
         "\"title\":\"...\",\"event_time\":\"ISO或null\",\"amount\":数字或null,"
         "\"amount_unit\":\"...或null\",\"tags\":[\"...\"],\"notes\":\"...或null\"}]}\n"
         "规则：\n"
-        "- 只抽取用户明确表达或高置信推断的事实；不确定就不抽取。\n"
+        "- 只抽取已发生的事件（过去时/完成时），不要抽取未来的计划或承诺。\n"
+        "- 明确的否定事实也不必抽取（如'没吃饭'不是事件）。\n"
         "- event_time 必须尽量填写；若只知道日期则用 YYYY-MM-DDT00:00:00。\n"
         "- 若用户未给具体时间，允许输出 null，服务端会回填当前时间。\n"
         "- 饮食类尽量标注 tags（如 油腻/高糖/高盐/蛋白质）。\n"
+        "- 未来计划、待办、提醒等请留空，不要在 life event 中记录。\n"
         "- 若本句无可记忆事件，返回 {\"items\":[]}。"
     )
 
@@ -110,9 +112,10 @@ def extract_profile_facts(
         "规则：\n"
         "- 只提取用户明确表达的信息；不确定则置空或不填。\n"
         "- 身高统一厘米，体重统一千克。\n"
-        "- preferences 适合放饮食偏好、运动偏好、作息偏好。\n"
+        "- preferences 包含喜好和反感（如'喜欢跑步'、'不吃辣'、'不爱运动'、'讨厌油腻'）。\n"
         "- conditions 适合放疾病/慢性病/禁忌。\n"
-        "- 如果本句没有画像信息，返回空补丁：{\"height_cm\":null,\"weight_kg\":null,\"preferences\":[],\"conditions\":[],\"notes\":null}。"
+        "- 用户明确表达否定（不喜欢/讨厌/不吃等）一定要提取，不要忽略。\n"
+        "- 如果本句没有画像信息，返回空补丁：{\"height_cm\":null,\"weight_kg\":null,\"preferences\":[],\"conditions\":[],\"notes\":null}。\n"
     )
 
     payload = {
@@ -298,12 +301,13 @@ def decide_proactive_advice(
     assistant_answer: str,
     recent_events: list[dict],
     upcoming_todos: list[dict],
+    pending_reminders: list[dict] | None = None,
     profile_context: str,
     now_iso: str,
     threshold: float,
     session_id: str | None = None,
 ) -> ProactiveAdviceDecision:
-    if not recent_events and not upcoming_todos and not profile_context:
+    if not recent_events and not upcoming_todos and not profile_context and not pending_reminders:
         return ProactiveAdviceDecision(score=0.0, should_add=False, advice=None, reasons=["无可用上下文"])
 
     system_prompt = (
@@ -331,6 +335,7 @@ def decide_proactive_advice(
         "profile_context": profile_context,
         "recent_events": recent_events,
         "upcoming_todos": upcoming_todos,
+        "pending_reminders": pending_reminders or [],
     }
 
     try:

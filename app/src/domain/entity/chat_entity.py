@@ -87,6 +87,20 @@ class ConversationSummary(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class ReminderItem(Base):
+    __tablename__ = "reminder_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    title: Mapped[str] = mapped_column(String(255))
+    source: Mapped[str] = mapped_column(String(64), default="proactive")
+    remind_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_remind_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_remind_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    is_dismissed: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class CalendarEvent(Base):
     __tablename__ = "calendar_events"
 
