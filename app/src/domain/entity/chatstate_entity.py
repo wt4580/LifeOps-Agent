@@ -45,9 +45,7 @@ class ChatState(TypedDict, total=False):
     plan: list[dict[str, Any]]
     plan_index: int
 
-    # 建议频率控制（指数退避）
-    turn_number: int
-    suggestion_cooldowns: dict[str, Any]
+    # 建议频率控制（由 ReminderItem 持久化替代，此字段已废弃）
 
     # Trace
     citations: list[dict[str, Any]]

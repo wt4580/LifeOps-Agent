@@ -98,6 +98,22 @@ class TodoService:
 
         return [self._serialize_todo(row) for row in rows]
 
+    def get_all_todos(self, session_id: str) -> dict:
+        """获取全部待办事项（只显示未完成且未过期的）。"""
+        now = datetime.now()
+        with SessionLocal() as db:
+            stmt = (
+                select(TodoItem)
+                .where(TodoItem.due_at != None)
+                .where(TodoItem.due_at >= now)
+                .where(TodoItem.is_completed == False)
+                .order_by(TodoItem.due_at.asc())
+            )
+            stmt = self._apply_scope_filter(stmt, session_id)
+            rows = db.execute(stmt).scalars().all()
+
+        return {"pending": [self._serialize_todo(row) for row in rows], "completed": []}
+
     def update_todo_status(self, todo_id: int, completed: bool, session_id: str | None = None) -> dict | None:
         with SessionLocal() as db:
             stmt = select(TodoItem).where(TodoItem.id == todo_id)

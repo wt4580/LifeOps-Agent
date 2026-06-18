@@ -25,6 +25,7 @@ from .time.time_parser import normalize_date_hint
 from .memory.personal_memory import decide_proactive_advice
 from ..service.calendar_service import CalendarService, CalendarServiceError
 from ..service.weather_service import weather_service, WeatherServiceError
+from ..util.retrieval.retrieval import get_available_knowledge_topics
 from ..domain.entity.chatstate_entity import ChatState
 
 # 范围查询待办：当用户问“未来几天安排”时使用。
@@ -215,43 +216,39 @@ def _node_load_context(state: ChatState) -> ChatState:
     return state
 
 
-def _is_simple_query(text: str) -> bool:
-    t = text.strip()
-    if len(t) < 8:
-        return True
-    multi_intent = re.search(r"(并且|还有|同时|再加|再|还|顺便|也)", t)
-    if not multi_intent:
-        return True
-    return False
-
-
 def _node_decompose(state: ChatState) -> ChatState:
     user_msg = state.get("user_message", "")
+    recent_dialogue = state.get("recent_dialogue") or []
 
-    if _is_simple_query(user_msg):
-        state["plan"] = []
-        state["plan_index"] = 0
-        _append_trace(state, _trace_step(step_type="graph_node", name="decompose",
-            output={"plan": [], "fast_path": True}))
-        return state
+    try:
+        available_topics = get_available_knowledge_topics()
+    except Exception:
+        available_topics = []
 
     system = (
         "你是一个任务分解器。判断用户请求是否需要拆成多个子步骤执行。\n"
-        "如果一句话就能回答（如问候、问日期、问单个事件），不需要分解。\n"
-        "如果需要查多个不同信息（天气+日程、日程+待办）或多个步骤才能给出完整回答，才需要分解。\n\n"
-        "可用工具：\n"
-        "- query_calendar: 查日历事件（节日、日程）\n"
-        "- query_todos: 查待办事项\n"
-        "- query_weather: 查天气\n"
-        "- query_knowledge: 查知识库文档\n"
-        "- normal_chat: 普通对话 / 综合回答\n"
-        "- propose_todo: 生成待办草案\n\n"
+        "如果一轮就能回答（如问候、问日期、问单个事件），输出 needs_plan=false。\n"
+        "如果用户回复了确认词（如'都干'/'都做'/'都要'/'全做'/'一起做'），说明想同时执行上一条助手消息中提到的多个操作，需要分解成多步。\n"
+        "如果需要查多个不同信息（天气+日程、日程+待办）或多个步骤才能给出完整回答，也需要分解。\n\n"
+        "可用工具的 args 字段名必须严格按以下说明：\n"
+        "- query_weather: args={\"city\": \"城市名，如成都\"}\n"
+        "- query_todos: args={\"range_days\": 7}\n"
+        "- query_calendar: args={\"start_date\": \"YYYY-MM-DD\", \"end_date\": \"YYYY-MM-DD\"}\n"
+        "- query_knowledge: args={\"question\": \"搜索问题\", \"top_k\": 5}\n"
+        "- propose_todo: args={\"text\": \"用户输入原文\"}\n"
+        "- normal_chat: args={}\n\n"
+        "注意：仅当 available_topics 中存在与用户问题明确相关的文件时才使用 query_knowledge，否则不要使用。\n\n"
         "输出严格 JSON，不要 Markdown：\n"
         '{"needs_plan": false}\n'
         '或 {"needs_plan": true, "steps": [{"action":"...","args":{...},"purpose":"..."}]}'
     )
+    payload = {
+        "user_message": user_msg,
+        "recent_dialogue": recent_dialogue[-6:],
+        "available_topics": available_topics or [],
+    }
     raw = chat_completion(
-        [{"role": "system", "content": system}, {"role": "user", "content": user_msg}],
+        [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
         temperature=0.0,
         runtime_context={"scenario": "decompose", "session_id": state.get("session_id")},
     )
@@ -580,7 +577,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
         return state
 
     if action == "query_weather":
-        city_arg = (args.get("city") or "").strip() if isinstance(args, dict) else ""
+        city_arg = (args.get("city") or args.get("location") or "").strip() if isinstance(args, dict) else ""
         profile_ctx = state.get("profile_context") or ""
         query_input: dict[str, Any] = {"city": city_arg or None, "has_profile_city": bool(profile_ctx)}
         try:
@@ -770,30 +767,13 @@ def _node_run_tool(state: ChatState) -> ChatState:
 
 
 # 主动决策节点：基于近期事件/待办/画像，决定是否追加主动建议。
-# 指数退避：同一个话题提醒后间隔逐步拉长（2轮 → 4轮 → 8轮 → 16轮 → 32轮封顶）。
 def _node_proactive_decision(state: ChatState) -> ChatState:
     recent_events = state.get("recent_events", [])
     upcoming_todos = state.get("upcoming_todos", [])
     pending_reminders = state.get("pending_reminders", [])
     profile_context = state.get("profile_context") or ""
-    turn_number = state.get("turn_number", 0)
-    cooldowns = dict(state.get("suggestion_cooldowns") or {})
 
     if not recent_events and not upcoming_todos:
-        return state
-
-    filtered_todos = []
-    for todo in upcoming_todos:
-        key = (todo.get("title") or "").strip().lower()
-        if not key:
-            filtered_todos.append(todo)
-            continue
-        cd = cooldowns.get(key)
-        if cd and cd.get("cooldown_until", 0) > turn_number:
-            continue
-        filtered_todos.append(todo)
-
-    if not recent_events and not filtered_todos:
         return state
 
     now_iso = datetime.now().isoformat(timespec="seconds")
@@ -801,7 +781,7 @@ def _node_proactive_decision(state: ChatState) -> ChatState:
         user_message=state["user_message"],
         assistant_answer=state.get("answer", ""),
         recent_events=recent_events,
-        upcoming_todos=filtered_todos,
+        upcoming_todos=upcoming_todos,
         pending_reminders=pending_reminders,
         profile_context=profile_context,
         now_iso=now_iso,
@@ -816,19 +796,6 @@ def _node_proactive_decision(state: ChatState) -> ChatState:
             state["answer"] = f"{current_answer}\n\n补充建议：{decision.advice}".strip()
             advice_added = True
 
-            advice_lower = decision.advice.lower()
-            for todo in filtered_todos:
-                key = (todo.get("title") or "").strip().lower()
-                if not key:
-                    continue
-                if key in advice_lower:
-                    cd = cooldowns.get(key, {"count": 0, "cooldown_until": 0})
-                    cd["count"] = cd.get("count", 0) + 1
-                    base = 2
-                    cd["cooldown_until"] = turn_number + min(base * (2 ** cd["count"]), 32)
-                    cooldowns[key] = cd
-            state["suggestion_cooldowns"] = cooldowns
-
     _append_trace(
         state,
         _trace_step(
@@ -841,22 +808,19 @@ def _node_proactive_decision(state: ChatState) -> ChatState:
                 "reasons": decision.reasons,
                 "events_used": len(recent_events),
                 "upcoming_todos_total": len(upcoming_todos),
-                "upcoming_todos_filtered": len(filtered_todos),
                 "pending_reminders": len(pending_reminders),
                 "now_iso": now_iso,
                 "event_window_start": state.get("event_window_start"),
                 "event_window_end": state.get("event_window_end"),
-                "cooldowns": cooldowns,
             }
         )
     )
 
     logger.info(
-        "proactive advice decision score=%.3f threshold=%.3f added=%s cooldowns=%s",
+        "proactive advice decision score=%.3f threshold=%.3f added=%s",
         decision.score,
         settings.proactive_advice_threshold,
         advice_added,
-        {k: v for k, v in cooldowns.items() if v.get("cooldown_until", 0) > turn_number},
     )
 
     return state
@@ -864,6 +828,29 @@ def _node_proactive_decision(state: ChatState) -> ChatState:
 
 # 收口节点：保证每条路径都有 answer，并记录最终 used_tool / has_proposal。
 def _node_finalize(state: ChatState) -> ChatState:
+    # 多步计划：把各 step 结果汇总成一个连贯回答。
+    plan = state.get("plan") or []
+    completed_steps = [s for s in plan if s.get("result")]
+    if len(completed_steps) >= 2:
+        parts = []
+        for i, step in enumerate(completed_steps):
+            result = (step.get("result") or "").strip()
+            if result:
+                parts.append(f"【{step.get('purpose', f'步骤{i+1}')}】\n{result}")
+        if parts:
+            combined = "\n\n".join(parts)
+            try:
+                summary = chat_completion(
+                    [
+                        {"role": "system", "content": "你是生活助理。请把下面几个步骤的结果合并成一段连贯、自然的中文回复。按主次顺序排列信息，不要编造。输出纯文本。"},
+                        {"role": "user", "content": combined},
+                    ],
+                    temperature=0.2,
+                )
+                state["answer"] = summary.strip()
+            except Exception:
+                state["answer"] = combined
+
     # 兜底，避免异常路径没有 answer
     if not state.get("answer"):
         state["answer"] = "抱歉，我刚刚没有处理好。你可以再说一次。"
@@ -966,8 +953,6 @@ def _build_checkpoint_context(values: dict) -> dict:
         "proposal": values.get("proposal"),
         "pending_add_confirmation": values.get("pending_add_confirmation"),
         "proposal_confirmed": values.get("proposal_confirmed"),
-        "turn_number": values.get("turn_number", 0),
-        "suggestion_cooldowns": values.get("suggestion_cooldowns", {}),
         "pending_reminders": values.get("pending_reminders", []),
     }
 
@@ -1025,8 +1010,7 @@ def _build_initial_state(
         "pending_reminders": pending_reminders or [],
         "event_window_start": event_window_start,
         "event_window_end": event_window_end,
-        "turn_number": checkpoint_context.get("turn_number", 0) + 1,
-        "suggestion_cooldowns": checkpoint_context.get("suggestion_cooldowns", {}),
+
     }
 
 

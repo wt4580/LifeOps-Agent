@@ -7,6 +7,7 @@ const chatSend = document.getElementById("chat-send");
 
 const todosToday = document.getElementById("todos-today");
 const todosUpcoming = document.getElementById("todos-upcoming");
+const todosAll = document.getElementById("todos-all");
 const todosOutput = document.getElementById("todos-output");
 
 // 待办草案相关元素
@@ -70,57 +71,93 @@ function _fmtDetail(obj, maxLen = 220) {
   return out.length > maxLen ? out.slice(0, maxLen - 1) + "…" : out;
 }
 
+function _stepSummary(step) {
+  const name = step.name || "?";
+  if (step.error) return `[${name}] 失败: ${_fmtValue(step.error, 100)}`;
+  if (name === "query_weather") {
+    const city = step.output?.city || step.input?.resolved_city || step.input?.city || "?";
+    const cached = step.output?.cached ? " (缓存)" : "";
+    return `[天气] ${city}${cached}`;
+  }
+  if (name === "weather_summarize") {
+    return `[天气总结] ${_fmtValue(step.output, 140)}`;
+  }
+  if (name === "query_knowledge") {
+    const hits = step.output?.hits;
+    if (hits === 0) return "[知识库] 无匹配";
+    return `[知识库] ${hits}条匹配`;
+  }
+  if (name === "rag_answer" || name === "normal_chat") {
+    return `[回答] ${_fmtValue(step.output, 140)}`;
+  }
+  if (name === "normal_chat_fallback") {
+    return `[降级回答] ${_fmtValue(step.output?.answer || step.output, 140)}`;
+  }
+  if (name === "schedule_summarize") {
+    return `[日程总结] ${_fmtValue(step.output, 140)}`;
+  }
+  if (name === "query_calendar") {
+    const cnt = step.output?.events_count;
+    return `[日历] ${cnt != null ? cnt + "条事件" : "完成"}`;
+  }
+  if (name === "query_todos") {
+    const items = step.output;
+    const count = Array.isArray(items) ? items.length : 0;
+    return `[待办] ${count}条`;
+  }
+  if (name === "propose_from_text" || name === "propose_from_pending") {
+    const items = step.output?.items;
+    const count = Array.isArray(items) ? items.length : 0;
+    return `[待办草案] ${count}项`;
+  }
+  if (name === "decompose") {
+    const plan = step.output?.plan;
+    const count = Array.isArray(plan) ? plan.length : 0;
+    if (count === 0) return "[分解] 单步可完成";
+    const actions = plan.map(s => s.action).join(" → ");
+    return `[分解] ${count}步: ${actions}`;
+  }
+  if (name === "plan_step") {
+    const action = step.output?.action || step.input?.step?.action || "";
+    return `[执行计划] ${action}`;
+  }
+  if (name === "proactive_advice_decision") {
+    const added = step.output?.added;
+    const score = step.output?.score;
+    return `[主动建议] score=${score} ${added ? "已追加" : "不追加"}`;
+  }
+  if (name === "router_decision") {
+    return `[路由] ${step.output?.action || "?"}`;
+  }
+  const out = _fmtValue(step.output, 80);
+  if (out) return `[${name}] ${out}`;
+  return `[${name}]`;
+}
+
 function buildThoughtLines(trace, result) {
   const steps = Array.isArray(trace?.steps) ? trace.steps : [];
-  const routeStep = steps.find((step) =>
-    ["router", "knowledge_query_guard", "bare_confirmation_guard"].includes(step.name)
-  );
-  const toolStep = [...steps].reverse().find((step) => step.type === "tool");
-  const reasoning = [];
+  const lines = [];
 
-  if (routeStep?.output?.action) {
-    reasoning.push(`我先判断这句更适合走「${routeStep.output.action}」流程。`);
+  // 第一步：紧凑且有信息量的步骤总结
+  const summaryLines = [];
+  steps.forEach((step, idx) => {
+    const label = step.ts ? step.ts.slice(11, 19) : "";
+    summaryLines.push(`${label} ${_stepSummary(step)}`);
+  });
+
+  // 引用信息
+  const citeCount = Array.isArray(result?.citations) ? result.citations.length : 0;
+  if (citeCount > 0) {
+    summaryLines.push(`📎 ${citeCount}条引用`);
   }
 
-  if (toolStep?.name === "query_knowledge") {
-    const hitInfo = toolStep.output;
-    if (hitInfo?.hits > 0) {
-      reasoning.push(`我在知识库检索到了 ${hitInfo.hits} 条相关证据。`);
-    } else {
-      reasoning.push("知识库没有命中直接证据，我改用通用建议来回答。")
-    }
-  } else if (toolStep?.name === "propose_from_pending") {
-    reasoning.push("我已根据你的确认生成待办草案，等你确认入库。")
-  } else if (toolStep?.name === "query_weather") {
-    const city = toolStep.output?.city || toolStep.input?.resolved_city || toolStep.input?.city || "未知城市";
-    const cached = toolStep.output?.cached ? "（命中缓存）" : "";
-    if (toolStep.error) {
-      reasoning.push(`查询${city}的高德天气失败：${toolStep.error}。`);
-    } else {
-      reasoning.push(`我查询了${city}的高德天气实况与预报${cached}。`);
-    }
-  } else if (toolStep?.name === "query_calendar") {
-    const eventsCount = toolStep.output?.events_count;
-    if (toolStep.error) {
-      reasoning.push(`查询 Google Calendar 失败：${toolStep.error}。`);
-    } else if (eventsCount === 0) {
-      reasoning.push("我从 Google Calendar 查了这段时间，没有事件。");
-    } else if (typeof eventsCount === "number") {
-      reasoning.push(`我从 Google Calendar 拉取了 ${eventsCount} 条事件。`);
-    } else {
-      reasoning.push("我从 Google Calendar 拉取了这段时间的事件。");
-    }
-  } else if (toolStep?.name) {
-    reasoning.push(`本轮执行了「${toolStep.name}」步骤。`);
+  if (summaryLines.length > 0) {
+    summaryLines.forEach(s => lines.push({ text: s, className: "" }));
+  } else {
+    lines.push({ text: "我已完成意图判断并生成本轮回答。", className: "" });
   }
 
-  if (Array.isArray(result?.citations) && result.citations.length > 0) {
-    reasoning.push(`答案引用了 ${result.citations.length} 条知识库片段。`);
-  }
-
-  const summary = reasoning.length > 0 ? reasoning : ["我已完成意图判断并生成本轮回答。"];
-  const lines = summary.map((text) => ({ text, className: "" }));
-
+  // 第二步：完整过程详情（默认折叠）
   if (steps.length > 0) {
     lines.push({ text: `—— 完整过程（共 ${steps.length} 步） ——`, className: "separator" });
     steps.forEach((step, idx) => {
@@ -650,6 +687,58 @@ function renderTodayTodos(pending, completed) {
   renderTodoItems(completed, { emptyText: "今日暂无已完成待办" });
 }
 
+function renderGroupedTodos(pending) {
+  if (!todosOutput) return;
+  todosOutput.innerHTML = "";
+
+  const now = new Date();
+  const pendingHeader = document.createElement("div");
+  pendingHeader.className = "todo-group-title";
+  pendingHeader.textContent = "待完成";
+  todosOutput.appendChild(pendingHeader);
+
+  if (!pending || pending.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "todo-empty";
+    empty.textContent = "暂无待办";
+    todosOutput.appendChild(empty);
+    return;
+  }
+
+  const groups = {};
+  pending.forEach(t => {
+    const d = t.due_at ? new Date(t.due_at) : null;
+    let label = "未设置日期";
+    if (d) {
+      const month = d.getMonth() + 1;
+      const day = d.getDate();
+      const weekday = ["日", "一", "二", "三", "四", "五", "六"][d.getDay()];
+      const diff = Math.floor((d - now) / 86400000);
+      if (diff < 1 && d.toDateString() === now.toDateString()) label = "今天";
+      else if (diff < 2 && d.toDateString() === new Date(now.getTime() + 86400000).toDateString()) label = "明天";
+      else label = `${month}月${day}日 周${weekday}`;
+    }
+    if (!groups[label]) groups[label] = [];
+    groups[label].push(t);
+  });
+  const sortedLabels = Object.keys(groups).sort((a, b) => {
+    if (a === "今天") return -1;
+    if (b === "今天") return 1;
+    if (a === "明天") return -1;
+    if (b === "明天") return 1;
+    if (a === "未设置日期") return 1;
+    if (b === "未设置日期") return -1;
+    return a.localeCompare(b, "zh");
+  });
+  sortedLabels.forEach(label => {
+    const groupHeader = document.createElement("div");
+    groupHeader.className = "todo-group-title";
+    groupHeader.textContent = label;
+    todosOutput.appendChild(groupHeader);
+    renderTodoItems(groups[label], { canToggle: true });
+  });
+}
+
 async function loadTodos(url) {
   try {
     // 添加session_id参数
@@ -665,6 +754,9 @@ async function loadTodos(url) {
       const pending = result.pending || [];
       const completed = result.completed || [];
       renderTodayTodos(pending, completed);
+    } else if (url.includes("/api/todos/all")) {
+      currentTodoView = "all";
+      renderGroupedTodos(result.pending || []);
     } else {
       currentTodoView = "upcoming";
       const todos = result.todos || data.items || [];
@@ -776,21 +868,34 @@ loadTodos = function(url) {
 };
 
 // 初始加载
+if (todosUpcoming) todosUpcoming.classList.add("active");
 loadTodos("/api/todos/upcoming?days=7");
+
+function _setActiveTab(activeBtn) {
+  [todosToday, todosUpcoming, todosAll].forEach(btn => {
+    if (btn) btn.classList.remove("active");
+  });
+  if (activeBtn) activeBtn.classList.add("active");
+}
 
 if (todosToday) {
   todosToday.addEventListener("click", () => {
-    todosToday.classList.add("active");
-    if (todosUpcoming) todosUpcoming.classList.remove("active");
+    _setActiveTab(todosToday);
     loadTodos("/api/todos/today");
   });
 }
 
 if (todosUpcoming) {
   todosUpcoming.addEventListener("click", () => {
-    todosUpcoming.classList.add("active");
-    if (todosToday) todosToday.classList.remove("active");
+    _setActiveTab(todosUpcoming);
     loadTodos("/api/todos/upcoming?days=7");
+  });
+}
+
+if (todosAll) {
+  todosAll.addEventListener("click", () => {
+    _setActiveTab(todosAll);
+    loadTodos("/api/todos/all");
   });
 }
 

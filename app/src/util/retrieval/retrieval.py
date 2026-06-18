@@ -439,9 +439,11 @@ def _bm25_recall(rows: list[DocumentChunk], query: str, top_k: int, reason: str)
     bm25 = BM25Okapi(corpus_tokens)
     scores = bm25.get_scores(tokens)
 
+    min_score = getattr(settings, "rag_evidence_min_score", 0.02)
+
     citations: list[Citation] = []
     for r, s in zip(rows, scores):
-        if s <= 0:
+        if s < min_score:
             continue
         citations.append(
             Citation(

@@ -7,34 +7,9 @@ import pytest
 from app.src.agent.graph_chat import (
     _is_bare_confirmation_text,
     _is_prev_todo_query,
-    _is_simple_query,
     _resolve_relative_dates,
     _should_check_proactive,
 )
-
-
-class TestIsSimpleQuery:
-    def test_short_text_is_simple(self):
-        assert _is_simple_query("hi")
-        assert _is_simple_query("你好")
-        assert _is_simple_query("天气")
-
-    def test_long_text_without_multi_intent_is_simple(self):
-        text = "今天天气怎么样，我想出去走走"
-        assert _is_simple_query(text)
-
-    def test_long_text_with_multi_intent_is_not_simple(self):
-        text = "查一下今天天气并且看看我有什么安排"
-        assert not _is_simple_query(text)
-
-    def test_multi_intent_keywords_trigger(self):
-        for kw in ["并且", "还有", "顺便"]:
-            text = f"查天气{kw}查日程"
-            assert not _is_simple_query(text), f"Failed for keyword: {kw}"
-
-    def test_empty_text(self):
-        assert _is_simple_query("")
-        assert _is_simple_query("  ")
 
 
 class TestIsBareConfirmationText:

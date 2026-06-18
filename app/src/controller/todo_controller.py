@@ -66,6 +66,15 @@ def dismiss_reminder(reminder_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/api/todos/all")
+def get_all_todos(session_id: str | None = None):
+    try:
+        result = todo_service.get_all_todos(session_id=session_id or "default")
+        return success_response(data=result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/api/todos/{todo_id}/status")
 def update_todo_status(todo_id: int, req: TodoStatusUpdateRequest):
     """更新待办完成状态。"""
