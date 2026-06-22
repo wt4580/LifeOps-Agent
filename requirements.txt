@@ -28,3 +28,4 @@ google-api-python-client>=2.130.0,<3
 google-auth-httplib2>=0.2.0,<1
 google-auth-oauthlib>=1.2.0,<2
 cnlunar>=0.1.5
+apscheduler>=3.10.4,<4

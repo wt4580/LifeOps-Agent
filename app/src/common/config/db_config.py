@@ -79,6 +79,37 @@ def _ensure_todo_columns() -> None:
             conn.execute(text("ALTER TABLE todo_items ADD COLUMN completed_at DATETIME"))
 
 
+def _ensure_user_profile_columns() -> None:
+    """为现有 user_profiles 表补齐新增列。"""
+    url = settings.database_url
+    if not url.startswith("sqlite:///"):
+        return
+    with engine.begin() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='user_profiles'")
+        ).fetchone()
+        if not table_exists:
+            return
+        rows = conn.execute(text("PRAGMA table_info(user_profiles)")).fetchall()
+        existing = {r[1] for r in rows}
+        new_columns = {
+            "age": "INTEGER",
+            "gender": "VARCHAR(16)",
+            "occupation": "VARCHAR(128)",
+            "city": "VARCHAR(64)",
+            "diet_json": "TEXT",
+            "allergies_json": "TEXT",
+            "sleep_schedule": "VARCHAR(64)",
+            "exercise_habits": "VARCHAR(128)",
+            "work_hours": "VARCHAR(32)",
+            "family_status": "VARCHAR(32)",
+            "goals_json": "TEXT",
+        }
+        for col, col_type in new_columns.items():
+            if col not in existing:
+                conn.execute(text(f"ALTER TABLE user_profiles ADD COLUMN {col} {col_type}"))
+
+
 def _ensure_memory_columns() -> None:
     url = settings.database_url
     if not url.startswith("sqlite:///"):
@@ -103,3 +134,4 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_todo_columns()
     _ensure_memory_columns()
+    _ensure_user_profile_columns()

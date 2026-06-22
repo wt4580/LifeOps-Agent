@@ -156,7 +156,7 @@ class TestDecideProactiveAdvice:
             assert decision.should_add
             assert decision.advice
 
-    def test_fallback_on_invalid_llm(self):
+    def test_llm_invalid_json_returns_graceful(self):
         with patch(
             "app.src.agent.memory.personal_memory.chat_completion",
             return_value="not json",
@@ -164,8 +164,8 @@ class TestDecideProactiveAdvice:
             decision = decide_proactive_advice(
                 user_message="你好",
                 assistant_answer="你好",
-                recent_events=[],
-                upcoming_todos=[],
+                recent_events=[{"title": "吃了米饭", "category": "diet", "event_time": "2026-06-17"}],
+                upcoming_todos=[{"title": "交报表", "due_at": "2026-06-20"}],
                 profile_context="",
                 now_iso="2026-06-18T12:00:00",
                 threshold=0.62,

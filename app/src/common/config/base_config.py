@@ -116,6 +116,23 @@ class Settings(BaseSettings):
     # 天气查询结果内存缓存秒数（节省免费额度）
     weather_cache_ttl_seconds: int = Field(default=300, alias="WEATHER_CACHE_TTL_SECONDS")
 
+    # -------------------------
+    # 主动推送配置
+    # -------------------------
+    # Server酱：https://sct.ftqq.com 申请 SendKey
+    serverchan_key: str = Field(default="", alias="SERVERCHAN_KEY")
+    # Pushover：https://pushover.net （备选推送渠道）
+    pushover_user_key: str = Field(default="", alias="PUSHOVER_USER_KEY")
+    pushover_api_token: str = Field(default="", alias="PUSHOVER_API_TOKEN")
+
+    # -------------------------
+    # 定时推送计划
+    # -------------------------
+    # 晨间简报推送时间（HH:MM），空字符串表示不启用
+    schedule_morning_briefing: str = Field(default="08:00", alias="SCHEDULE_MORNING_BRIEFING")
+    # 晚间复盘推送时间（HH:MM），空字符串表示不启用
+    schedule_daily_review: str = Field(default="21:00", alias="SCHEDULE_DAILY_REVIEW")
+
     model_config = SettingsConfigDict(
         env_file=str(env_path),
         env_file_encoding="utf-8",

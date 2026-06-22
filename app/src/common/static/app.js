@@ -117,10 +117,14 @@ function _stepSummary(step) {
     const actions = plan.map(s => s.action).join(" → ");
     return `[分解] ${count}步: ${actions}`;
   }
-  if (name === "plan_step") {
-    const action = step.output?.action || step.input?.step?.action || "";
-    return `[执行计划] ${action}`;
-  }
+  if (name === "load_context") return `[加载] 已加载上下文`;
+  if (name === "profile_context") return `[画像] ${step.output?.profile_changed ? "已变更" : "无变更"}`;
+  if (name === "personal_events") return `[事件] ${step.output?.inserted || 0}条新增`;
+  if (name === "pre_graph_hint") return `[预分析] 完成`;
+  if (name === "pending_reminders") return `[提醒] ${step.output?.count || 0}条待提醒`;
+  if (name === "finalize") return `[汇总] 已生成最终回答`;
+  if (name === "quality_gate") return `[质量审查] ${step.output?.passed ? "通过" : "已修正"}`;
+  if (name === "verify_step") return `[执行审查] ${step.output?.passed ? "通过" : "未通过"}`;
   if (name === "proactive_advice_decision") {
     const added = step.output?.added;
     const score = step.output?.score;
@@ -129,8 +133,10 @@ function _stepSummary(step) {
   if (name === "router_decision") {
     return `[路由] ${step.output?.action || "?"}`;
   }
-  const out = _fmtValue(step.output, 80);
-  if (out) return `[${name}] ${out}`;
+  if (name === "plan_step") {
+    const action = step.output?.action || step.input?.step?.action || "";
+    return `[执行计划] ${action}`;
+  }
   return `[${name}]`;
 }
 
@@ -223,7 +229,7 @@ function appendAssistantTurn() {
 
   const answerDiv = document.createElement("div");
   answerDiv.className = "assistant-answer";
-  answerDiv.textContent = "回答：";
+  answerDiv.textContent = "回答：正在生成中...";
 
   let collapsed = true;
   thoughtToggle.textContent = "展开";
@@ -541,6 +547,21 @@ if (chatSend) {
                 setThoughtLines(assistantTurn.thoughtDiv, [payload.message || "正在思考..."]);
               } else {
                 firstLine.textContent = payload.message || "正在思考...";
+              }
+            }
+          } else if (payload.type === "step") {
+            if (assistantTurn?.thoughtDiv) {
+              const lines = assistantTurn.thoughtDiv.querySelectorAll(".thought-line");
+              const lastLine = lines[lines.length - 1];
+              const text = payload.message || "";
+              if (lastLine && lastLine.textContent === text) continue;
+              const newLine = document.createElement("div");
+              newLine.className = "thought-line";
+              newLine.textContent = text;
+              if (lastLine && lastLine.textContent.startsWith("正在")) {
+                lastLine.textContent = text;
+              } else {
+                assistantTurn.thoughtDiv.appendChild(newLine);
               }
             }
           } else if (payload.type === "final") {

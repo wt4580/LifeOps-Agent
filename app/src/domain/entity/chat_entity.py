@@ -77,6 +77,18 @@ class UserProfile(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gender: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    occupation: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    diet_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    allergies_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sleep_schedule: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    exercise_habits: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    work_hours: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    family_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    goals_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
 
 class ConversationSummary(Base):
     __tablename__ = "conversation_summaries"
@@ -99,6 +111,23 @@ class ReminderItem(Base):
     next_remind_at: Mapped[datetime] = mapped_column(DateTime, index=True)
     is_dismissed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class GoalItem(Base):
+    __tablename__ = "goal_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    title: Mapped[str] = mapped_column(String(255))
+    category: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    target_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    progress_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    sub_goals_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    milestones_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class CalendarEvent(Base):

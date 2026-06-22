@@ -45,6 +45,51 @@ class ProfileFactPatch(BaseModel):
     conditions: list[str] = Field(default_factory=list)
     notes: str | None = None
 
+    # 新增字段
+    age: int | None = None
+    gender: str | None = None
+    occupation: str | None = None
+    city: str | None = None
+    diet: list[str] = Field(default_factory=list, description="饮食偏好，如 素食/低糖/低碳水")
+    allergies: list[str] = Field(default_factory=list, description="过敏/忌口，如 海鲜过敏/不吃辣")
+    sleep_schedule: str | None = Field(default=None, description="作息规律，如 早睡早起/夜猫子/7点起12点睡")
+    exercise_habits: str | None = Field(default=None, description="运动习惯，如 每周跑步3次")
+    work_hours: str | None = Field(default=None, description="工作时间段，如 9-18")
+    family_status: str | None = Field(default=None, description="家庭状况，如 独居/已婚有娃/和父母住")
+    goals: list[str] = Field(default_factory=list, description="短期目标/优先事项，如 减肥/攒钱/学英语")
+
+
+class SubGoalItem(BaseModel):
+    """目标拆解的子步骤。"""
+
+    title: str = Field(..., description="子目标标题")
+    target_date: str | None = Field(default=None, description="预计完成时间，ISO 日期或人性化描述")
+
+
+class MilestoneItem(BaseModel):
+    """里程碑节点。"""
+
+    title: str = Field(..., description="里程碑描述")
+    target_date: str | None = Field(default=None, description="预计达成时间")
+    is_completed: bool = False
+
+
+class GoalPatch(BaseModel):
+    """从对话中提取的目标信息。"""
+
+    title: str = Field(..., description="目标标题，如'今年减肥20斤'")
+    category: str | None = Field(default=None, description="health|career|finance|learning|lifestyle|other")
+    target_date: str | None = Field(default=None, description="目标截止日期（ISO）")
+    sub_goals: list[SubGoalItem] = Field(default_factory=list, description="拆解出的子步骤")
+    milestones: list[MilestoneItem] = Field(default_factory=list, description="里程碑节点")
+    notes: str | None = Field(default=None, description="补充说明")
+
+
+class GoalExtraction(BaseModel):
+    """目标抽取结果容器。"""
+
+    items: list[GoalPatch] = Field(default_factory=list)
+
 
 class ProactiveAdviceDecision(BaseModel):
     """是否追加建议的决策结果。"""

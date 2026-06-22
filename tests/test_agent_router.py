@@ -86,7 +86,7 @@ class TestRouteDecision:
             assert isinstance(decision, RouterDecision)
             assert decision.action == "query_weather"
 
-    def test_fallback_on_invalid_json(self):
+    def test_invalid_json_raises(self):
         ctx = RouteContext(
             session_id="s1",
             user_message="hello",
@@ -94,11 +94,10 @@ class TestRouteDecision:
             summary=None,
         )
         with patch("app.src.agent.agent_router.chat_completion", return_value="not json"):
-            decision = route_decision(ctx)
-            assert decision.action == "normal_chat"
-            assert decision.trace.intent == "fallback"
+            with pytest.raises(Exception):
+                route_decision(ctx)
 
-    def test_fallback_on_empty_response(self):
+    def test_empty_response_raises(self):
         ctx = RouteContext(
             session_id="s1",
             user_message="hello",
@@ -106,8 +105,8 @@ class TestRouteDecision:
             summary=None,
         )
         with patch("app.src.agent.agent_router.chat_completion", return_value=""):
-            decision = route_decision(ctx)
-            assert decision.action == "normal_chat"
+            with pytest.raises(Exception):
+                route_decision(ctx)
 
     def test_code_block_cleaned(self):
         ctx = RouteContext(

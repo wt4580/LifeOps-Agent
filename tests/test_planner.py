@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+import json
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from app.src.agent.planner.planner import (
     _apply_fixed_date,
     _dedupe_plan_items,
-    _fallback_todo_from_complaint,
-    _next_or_same_weekday,
-    _next_week_weekday,
     _normalize_title,
-    _resolve_relative_day_date,
-    _resolve_weekday_date,
     detect_affirmation,
     detect_plan_intent,
     detect_rejection,
@@ -68,80 +64,6 @@ class TestDetectRejection:
 
     def test_empty_string(self):
         assert not detect_rejection("")
-
-
-class TestNextOrSameWeekday:
-    def test_same_day(self):
-        wed = date(2026, 6, 17)
-        assert _next_or_same_weekday(wed, 2) == wed
-
-    def test_next_week(self):
-        sat = date(2026, 6, 13)
-        next_mon = date(2026, 6, 15)
-        assert _next_or_same_weekday(sat, 0) == next_mon
-
-    def test_wrap_around(self):
-        sun = date(2026, 6, 14)
-        next_mon = date(2026, 6, 15)
-        assert _next_or_same_weekday(sun, 0) == next_mon
-
-
-class TestNextWeekWeekday:
-    def test_next_week_monday(self):
-        wed = date(2026, 6, 17)
-        expected = date(2026, 6, 22)
-        assert _next_week_weekday(wed, 0) == expected
-
-    def test_next_week_wednesday(self):
-        tue = date(2026, 6, 16)
-        expected = date(2026, 6, 24)
-        assert _next_week_weekday(tue, 2) == expected
-
-
-class TestResolveWeekdayDate:
-    def test_this_week_wednesday(self):
-        with patch("app.src.agent.planner.planner.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2026, 6, 15)
-            mock_dt.combine = datetime.combine
-            mock_dt.min.time = staticmethod(lambda: datetime.min.time())
-            result = _resolve_weekday_date("周三开会")
-            assert result == "2026-06-17"
-
-    def test_next_week_wednesday(self):
-        with patch("app.src.agent.planner.planner.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2026, 6, 15)
-            result = _resolve_weekday_date("下周三开会")
-            assert result == "2026-06-24"
-
-    def test_no_weekday(self):
-        with patch("app.src.agent.planner.planner.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2026, 6, 15)
-            assert _resolve_weekday_date("随便哪天") is None
-
-
-class TestResolveRelativeDayDate:
-    def test_today(self):
-        with patch("app.src.agent.planner.planner.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2026, 6, 18)
-            result = _resolve_relative_day_date("今天开会")
-            assert result == "2026-06-18"
-
-    def test_tomorrow(self):
-        with patch("app.src.agent.planner.planner.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2026, 6, 18)
-            result = _resolve_relative_day_date("明天去超市")
-            assert result == "2026-06-19"
-
-    def test_day_after_tomorrow(self):
-        with patch("app.src.agent.planner.planner.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2026, 6, 18)
-            result = _resolve_relative_day_date("后天考试")
-            assert result == "2026-06-20"
-
-    def test_no_match(self):
-        with patch("app.src.agent.planner.planner.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2026, 6, 18)
-            assert _resolve_relative_day_date("下周") is None
 
 
 class TestNormalizeTitle:
@@ -206,45 +128,29 @@ class TestApplyFixedDate:
         assert _apply_fixed_date("2026-06-18", "2026-06-20T14:30:00") == "2026-06-18T14:30:00"
 
 
-class TestFallbackTodoFromComplaint:
-    def test_teacher_not_reply(self):
-        result = _fallback_todo_from_complaint("导员没有回我关于报销的事", None)
-        assert result is not None
-        assert "导员" in result.title or "跟进" in result.title
-
-    def test_no_complaint_pattern(self):
-        result = _fallback_todo_from_complaint("今天天气不错", None)
-        assert result is not None
-        assert result.title
-
-    def test_empty_text(self):
-        assert _fallback_todo_from_complaint("", None) is None
-
-
 class TestProposePlan:
     def test_returns_proposal_with_mocked_llm(self):
         with patch(
             "app.src.agent.planner.planner.chat_completion",
-            return_value='{"items": [{"title": "跟进报销审批", "due_at": null}]}',
+            return_value='{"items": [{"title": "跟进审批", "due_at": null}]}',
         ):
-            proposal_id, proposal = propose_plan("导员没回报销")
+            proposal_id, proposal = propose_plan("审批还没过")
             assert proposal_id
             assert len(proposal.items) == 1
             assert proposal.items[0].title
 
-    def test_llm_returns_empty_fallback_to_rule(self):
+    def test_llm_returns_empty_items(self):
         with patch(
             "app.src.agent.planner.planner.chat_completion",
             return_value='{"items": []}',
         ):
-            proposal_id, proposal = propose_plan("导员没有回我关于报销的事")
-            assert len(proposal.items) >= 1
+            proposal_id, proposal = propose_plan("审批还没过")
+            assert len(proposal.items) == 0
 
     def test_llm_returns_invalid_json(self):
         with patch(
             "app.src.agent.planner.planner.chat_completion",
             return_value="not json at all",
         ):
-            proposal_id, proposal = propose_plan("明天开会")
-            assert proposal_id
-            assert isinstance(proposal, PlanProposal)
+            with pytest.raises((json.JSONDecodeError, ValidationError)):
+                propose_plan("明天开会")

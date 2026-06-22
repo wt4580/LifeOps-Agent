@@ -89,6 +89,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         await init_resources()
 
+        # 启动后台定时任务（APScheduler）
+        from ...service.scheduler import start_scheduler
+        start_scheduler()
+
         logger.info("LifeOps-Agent started successfully")
     except Exception as e:
         logger.error(f"Application startup failed: {e}")
@@ -99,6 +103,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     finally:
         # 关闭时执行
         global resource_stack
+
+        from ..service.scheduler import stop_scheduler
+        stop_scheduler()
+
         if resource_stack is not None:
             await resource_stack.aclose()
             resource_stack = None

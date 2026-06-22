@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import logging
+import unicodedata
 from datetime import datetime, timezone
 from functools import lru_cache
 
@@ -11,6 +12,36 @@ from .base_config import settings
 
 
 logger = logging.getLogger(__name__)
+
+# 抑制 httpx 的 HTTP 请求/响应日志（太嘈杂）
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+def normalize_llm_output(text: str | None) -> str:
+    """LLM 输出标准化工具。
+
+    作用：统一格式化 LLM 原始返回内容，确保下游可靠解析。
+    处理：
+    - None → 空字符串
+    - 去除首尾空白
+    - 去除 markdown 代码块包装（```json ... ``` / ``` ... ```）
+    - 移除 Unicode 格式控制字符（零宽空格 U+200B、BOM U+FEFF 等 Cf 类）
+    """
+    if text is None:
+        return ""
+    text = text.strip()
+    # 去除 markdown 代码块包装 ```json ... ``` 或 ``` ... ```
+    if text.startswith("```"):
+        first_newline = text.find("\n")
+        if first_newline != -1:
+            text = text[first_newline + 1:]
+        text = text.strip()
+        if text.endswith("```"):
+            text = text[:-3].rstrip()
+        text = text.strip()
+    # 移除 Unicode Cf 类（格式控制字符）
+    text = "".join(c for c in text if unicodedata.category(c) != "Cf")
+    return text.strip()
 
 
 @lru_cache()
@@ -67,11 +98,18 @@ def chat_completion(messages: list[dict], temperature: float = 0.2, runtime_cont
     )
 
     elapsed = time.time() - start
+    finish_reason = response.choices[0].finish_reason
+    raw = response.choices[0].message.content
+    cleaned = normalize_llm_output(raw)
+    preview = (cleaned[:120] + "...") if cleaned and len(cleaned) > 120 else (cleaned or "(empty)")
+    if not cleaned and raw:
+        logger.warning(
+            "LLM 返回仅含不可见字符 finish=%s scenario=%s len=%d",
+            finish_reason, ctx.get("scenario", "unknown"), len(raw) if raw else 0,
+        )
     logger.info(
-        "LLM 调用完成，耗时 %.2f 秒, scenario=%s session_id=%s",
-        elapsed,
-        ctx.get("scenario", "unknown"),
-        ctx.get("session_id", "unknown"),
+        "LLM %s %.2fs %s preview=%s",
+        ctx.get("scenario", "?"), elapsed, finish_reason, preview,
     )
 
-    return response.choices[0].message.content.strip()
+    return cleaned

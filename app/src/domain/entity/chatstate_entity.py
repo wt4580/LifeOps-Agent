@@ -26,6 +26,9 @@ class ChatState(TypedDict, total=False):
     answer: str
     used_tool: str | None
 
+    # 反问/澄清上下文（记录原始意图，下一轮继续执行）
+    pending_clarification: dict | None
+
     # 提案/HITL（由 checkpoint 持久化）
     pending_text: str | None
     hitl_cancelled: bool
@@ -40,6 +43,13 @@ class ChatState(TypedDict, total=False):
     pending_reminders: list[dict[str, Any]]
     event_window_start: str | None
     event_window_end: str | None
+
+    # 目标列表（供 normal_chat context 使用）
+    goals: list[dict[str, Any]]
+
+    # 执行验证 + 重试
+    retry_info: dict[str, Any] | None
+    retry_count: int
 
     # 多步分解（plan-and-execute）
     plan: list[dict[str, Any]]

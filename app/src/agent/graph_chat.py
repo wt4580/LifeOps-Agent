@@ -23,6 +23,10 @@ from .planner.planner import detect_affirmation, detect_rejection, propose_plan
 from ..util.retrieval.retrieval import rag_answer, search_chunks
 from .time.time_parser import normalize_date_hint
 from .memory.personal_memory import decide_proactive_advice
+from ..domain.dto.memory_dto import ProactiveAdviceDecision
+
+# 流式推送：session_id → asyncio.Queue，图节点执行时实时推送，不入 checkpoint
+_progress_queues: dict[str, Any] = {}
 from ..service.calendar_service import CalendarService, CalendarServiceError
 from ..service.weather_service import weather_service, WeatherServiceError
 from ..util.retrieval.retrieval import get_available_knowledge_topics
@@ -43,6 +47,13 @@ def _query_todos(*, start: datetime, end: datetime) -> list[dict[str, Any]]:
             .all()
         )
     return [{"title": r.title, "due_at": r.due_at.isoformat() if r.due_at else None} for r in rows]
+
+
+def _resolve_memory_owner_id(session_id: str) -> str:
+    scope = (settings.personal_memory_scope or "global").strip().lower()
+    if scope == "session":
+        return session_id
+    return "global"
 
 
 def _get_summary(session_id: str) -> str | None:
@@ -106,6 +117,24 @@ def _build_effective_message(user_message: str, profile_context: str | None, pre
     return "\n".join(parts)
 
 
+def _push_progress(state: ChatState, msg: str, detail: dict | None = None):
+    q = _progress_queues.get(state.get("session_id", ""))
+    if q is not None:
+        try:
+            q.put_nowait({"type": "step", "message": msg, "detail": detail or {}})
+        except Exception:
+            pass
+
+
+def _set_progress_queue(session_id: str, q: Any):
+    if q is not None:
+        _progress_queues[session_id] = q
+
+
+def _clear_progress_queue(session_id: str):
+    _progress_queues.pop(session_id, None)
+
+
 def _is_bare_confirmation_text(text: str) -> bool:
     """识别单独的确认/取消短句，避免把它们误当成新的待办意图。"""
 
@@ -115,6 +144,7 @@ def _is_bare_confirmation_text(text: str) -> bool:
 
 def _node_handle_pending_confirmation(state: ChatState) -> ChatState:
     """如果上一轮留下了待确认草案，这里优先消化用户的确认/取消回复。"""
+    _push_progress(state, "正在检查待确认项...")
 
     pending_text = state.get("pending_text")
     if not pending_text:
@@ -188,6 +218,7 @@ def _node_handle_pending_confirmation(state: ChatState) -> ChatState:
 # 第一个节点：加载上下文。
 # 顺序上它永远先于 hitl_check/decide，因为后续节点都可能依赖 checkpoint 里恢复出来的 history/summary。
 def _node_load_context(state: ChatState) -> ChatState:
+    _push_progress(state, "正在加载上下文...")
     history = list(state.get("history") or [])
     state["history"] = history
     state["recent_dialogue"] = history[-16:]
@@ -205,6 +236,14 @@ def _node_load_context(state: ChatState) -> ChatState:
     state["hitl_cancelled"] = False
     state["plan"] = []
     state["plan_index"] = 0
+    try:
+        from ..service.goal_service import goal_service
+        session_id = state["session_id"]
+        memory_owner = _resolve_memory_owner_id(session_id)
+        state["goals"] = goal_service.get_active_goals(memory_owner)
+    except Exception as exc:
+        logger.warning("load goals failed: %s", exc)
+        state["goals"] = []
     _append_trace(
         state,
         _trace_step(
@@ -217,8 +256,21 @@ def _node_load_context(state: ChatState) -> ChatState:
 
 
 def _node_decompose(state: ChatState) -> ChatState:
-    user_msg = state.get("user_message", "")
+    # 如果待办确认尚未完成，保留已有 plan，跳过 re-decompose
+    if state.get("plan") and state.get("pending_add_confirmation"):
+        _push_progress(state, "等待确认中，跳过任务分解...")
+        return state
+
+    # 如果上一轮有反问/澄清，将原始意图与当前回答合并后重新拆解
+    pending_cl = state.get("pending_clarification")
+    if pending_cl:
+        original = pending_cl.get("original_message", "")
+        user_msg = f"{original}（上一轮补充信息：{state.get('user_message', '')}）"
+        state["pending_clarification"] = None
+    else:
+        user_msg = state.get("user_message", "")
     recent_dialogue = state.get("recent_dialogue") or []
+    _push_progress(state, f"正在分析是否需要拆解任务...")
 
     try:
         available_topics = get_available_knowledge_topics()
@@ -226,18 +278,17 @@ def _node_decompose(state: ChatState) -> ChatState:
         available_topics = []
 
     system = (
-        "你是一个任务分解器。判断用户请求是否需要拆成多个子步骤执行。\n"
-        "如果一轮就能回答（如问候、问日期、问单个事件），输出 needs_plan=false。\n"
-        "如果用户回复了确认词（如'都干'/'都做'/'都要'/'全做'/'一起做'），说明想同时执行上一条助手消息中提到的多个操作，需要分解成多步。\n"
-        "如果需要查多个不同信息（天气+日程、日程+待办）或多个步骤才能给出完整回答，也需要分解。\n\n"
-        "可用工具的 args 字段名必须严格按以下说明：\n"
-        "- query_weather: args={\"city\": \"城市名，如成都\"}\n"
-        "- query_todos: args={\"range_days\": 7}\n"
-        "- query_calendar: args={\"start_date\": \"YYYY-MM-DD\", \"end_date\": \"YYYY-MM-DD\"}\n"
-        "- query_knowledge: args={\"question\": \"搜索问题\", \"top_k\": 5}\n"
-        "- propose_todo: args={\"text\": \"用户输入原文\"}\n"
-        "- normal_chat: args={}\n\n"
-        "注意：仅当 available_topics 中存在与用户问题明确相关的文件时才使用 query_knowledge，否则不要使用。\n\n"
+        "你是一个任务分解器。判断用户的请求是否需要拆成多个子步骤依次执行。\n\n"
+        "需要拆解的场景：\n"
+        '- 用户确认/要求同时执行多个操作（如"都干""全做"）\n'
+        "- 需要查询多个不同信息才能回答（天气+日程、日程+待办等）\n"
+        "- 需要查信息→生成待办的多步流程\n"
+        "- 缺少关键信息需反问（如查天气没提城市）\n\n"
+        "不需要拆解的场景：\n"
+        "- 一个工具就能完成的请求\n"
+        "- 纯聊天的请求\n\n"
+        "可用工具：query_weather, query_todos, query_calendar, query_knowledge, "
+        "propose_todo, decompose_goal, clarify, revise_proposal, normal_chat\n\n"
         "输出严格 JSON，不要 Markdown：\n"
         '{"needs_plan": false}\n'
         '或 {"needs_plan": true, "steps": [{"action":"...","args":{...},"purpose":"..."}]}'
@@ -287,6 +338,7 @@ def _is_prev_todo_query(state: ChatState) -> bool:
 
 def _node_decide(state: ChatState) -> ChatState:
     msg = (state.get("user_message") or "").strip()
+    _push_progress(state, "正在决定使用哪个工具...")
 
     if state.get("pending_add_confirmation"):
         if detect_affirmation(msg):
@@ -308,6 +360,26 @@ def _node_decide(state: ChatState) -> ChatState:
             state["decision"] = decision
             return state
 
+    # 重试：上一步 verify 不通过，尝试修正参数后重新执行
+    retry_info = state.get("retry_info")
+    if retry_info:
+        plan = state.get("plan") or []
+        plan_index = state.get("plan_index", 0)
+        if plan and plan_index < len(plan):
+            step = plan[plan_index]
+            fix_suggestion = retry_info.get("fix_suggestion", "")
+            if step["action"] == "query_knowledge":
+                args = step.get("args") or {}
+                args["question"] = f"{args.get('question', '')}（修正：{fix_suggestion}）"
+                step["args"] = args
+            elif step["action"] == "query_weather":
+                args = step.get("args") or {}
+                if fix_suggestion and not args.get("city"):
+                    args["city"] = fix_suggestion
+                    step["args"] = args
+            state["retry_info"] = None
+            state["retry_count"] = state.get("retry_count", 0)
+
     if _is_prev_todo_query(state):
         decision = {
             "action": "query_todos",
@@ -322,7 +394,7 @@ def _node_decide(state: ChatState) -> ChatState:
         decision = {
             "action": "normal_chat",
             "args": {},
-            "assistant_message": "你是说刚才提到的'跟进导员报销审批'这个事吗？如果是，请说'是'或'要'；如果不是，请告诉我具体想记什么。",
+            "assistant_message": "你是说刚才提到的待办事项吗？如果是，请说'是'或'要'；如果不是，请告诉我具体想记什么。",
             "trace": {"intent": "confirmation_clarify", "why": "短句但无待确认草案，先澄清"},
         }
         state["decision"] = decision
@@ -361,7 +433,17 @@ def _node_decide(state: ChatState) -> ChatState:
         recent_dialogue=state.get("recent_dialogue", []),
         summary=state.get("summary"),
     )
-    decision = route_decision(ctx)
+    try:
+        decision = route_decision(ctx)
+    except Exception as exc:
+        logger.warning("route_decision LLM failed, fallback to normal_chat: %s", exc)
+        from .agent_router import RouterDecision, RouterTrace
+        decision = RouterDecision(
+            action="normal_chat",
+            args={},
+            assistant_message="",
+            trace=RouterTrace(intent="fallback_llm", why="路由 LLM 调用失败，降级为普通对话"),
+        )
     state["decision"] = decision.model_dump()
 
     decision_detail = state["decision"]
@@ -446,6 +528,19 @@ def _build_normal_chat_answer(
             reminder_lines.append(f"  {title}（已提醒{count}次）")
         context_parts.append("待提醒事项（AI 检测到需关注但未确认）：\n" + "\n".join(reminder_lines))
 
+    goals = state.get("goals") or []
+    if goals:
+        goal_lines = []
+        for gd in goals[:5]:
+            line = f"  {gd['title']}"
+            if gd.get("sub_goals"):
+                subs = [s.get("title", "") for s in gd["sub_goals"][:3]]
+                line += " → " + "、".join(subs)
+            if gd.get("progress_pct", 0) > 0:
+                line += f" ({gd['progress_pct']:.0f}%)"
+            goal_lines.append(line)
+        context_parts.append("活跃目标：\n" + "\n".join(goal_lines))
+
     if context_parts:
         messages.append({"role": "system", "content": "用户相关背景：\n" + "\n\n".join(context_parts)})
     messages.extend(state.get("recent_dialogue", []))
@@ -459,7 +554,8 @@ def _node_run_tool(state: ChatState) -> ChatState:
     args = decision.get("args") or {}
 
     if action == "query_todos":
-        # 先尝试解析精确日期（如“后天/周三”）。
+        _push_progress(state, "正在查询待办事项...")
+        # 先尝试解析精确日期（如"后天/周三"）。
         # 能解析到单日就查单日；否则按 range_days 查区间。
         date_hint = normalize_date_hint(state["user_message"])
 
@@ -506,6 +602,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
         return state
 
     if action == "query_knowledge":
+        _push_progress(state, "正在搜索知识库...")
         user_q = (state.get("user_message") or "").strip()
         router_q = (args.get("question") or "").strip()
         eff = (state.get("effective_user_message") or "").strip()
@@ -578,6 +675,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
 
     if action == "query_weather":
         city_arg = (args.get("city") or args.get("location") or "").strip() if isinstance(args, dict) else ""
+        _push_progress(state, f"正在查询{city_arg or '指定城市'}天气...")
         profile_ctx = state.get("profile_context") or ""
         query_input: dict[str, Any] = {"city": city_arg or None, "has_profile_city": bool(profile_ctx)}
         try:
@@ -586,11 +684,16 @@ def _node_run_tool(state: ChatState) -> ChatState:
             query_input["cached"] = bool(result.get("cached"))
             state["used_tool"] = "query_weather"
 
+            forecast_dates = [d.get("date", "") for d in (result.get("forecast") or [])]
+            user_question = state.get("user_message", "")
             prompt = (
-                "你是生活助理。用户在询问天气。下面是一段结构化天气数据（实况 + 未来几天预报，真实数据）。\n"
+                "你是生活助理。用户在询问天气。\n"
+                f"用户的问题是：{user_question}\n"
+                f"以下是该城市的天气数据，数据覆盖日期：{', '.join(forecast_dates) or '无预报数据'}。\n\n"
                 "请用中文生成简短、自然的回复：\n"
                 "- 先说实况（当前温度/天气/湿度/风）\n"
                 "- 再提示未来几天的趋势与出行建议（带伞/穿衣）\n"
+                "- 如果用户问的日期不在数据覆盖范围内，请明确说明该日期暂时无法预报。\n"
                 "- 不要编造数据里没有的温度或天气现象；如果字段缺失就跳过。\n"
             )
             state["answer"] = chat_completion(
@@ -618,6 +721,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
         return state
 
     if action == "query_calendar":
+        _push_progress(state, "正在查询日程安排...")
         now = datetime.now()
         max_days = 90
 
@@ -695,7 +799,17 @@ def _node_run_tool(state: ChatState) -> ChatState:
         state["proposal_id"] = proposal_id
         state["proposal"] = proposal_payload
         state["used_tool"] = "plan_proposal"
-        state["answer"] = "已生成待办草案，请确认是否加入待办。"
+        items = proposal_payload.get("items") or []
+        if len(items) > 1:
+            lines = ["已生成以下待办草案，请确认是否全部加入："]
+            for i, it in enumerate(items, 1):
+                title = it.get("title", "")
+                due = it.get("due_at", "")
+                due_str = f"（{due[:10]}）" if due else ""
+                lines.append(f"{i}. {title}{due_str}")
+            state["answer"] = "\n".join(lines)
+        else:
+            state["answer"] = "已生成待办草案，请确认是否加入待办。"
         _append_trace(
             state,
             _trace_step(
@@ -714,6 +828,96 @@ def _node_run_tool(state: ChatState) -> ChatState:
                 output=proposal_payload,
             ),
         )
+        return state
+
+    if action == "decompose_goal":
+        text = args.get("text") or state["user_message"]
+        _push_progress(state, "正在拆解目标...")
+        try:
+            from ..agent.memory.personal_memory import extract_goal
+            from ..service.goal_service import goal_service
+            session_id = state["session_id"]
+            memory_owner_id = _resolve_memory_owner_id(session_id)
+            extraction = extract_goal(
+                user_message=text,
+                recent_dialogue=state.get("recent_dialogue") or [],
+                now_iso=datetime.now().isoformat(timespec="seconds"),
+                session_id=session_id,
+            )
+            if extraction and extraction.items:
+                saved = []
+                for g in extraction.items:
+                    goal_dict = goal_service.save_goal(
+                        session_id=memory_owner_id,
+                        title=g.title,
+                        category=g.category,
+                        target_date=g.target_date,
+                        sub_goals=[s.model_dump() for s in g.sub_goals] if g.sub_goals else None,
+                        milestones=[m.model_dump() for m in g.milestones] if g.milestones else None,
+                        notes=g.notes,
+                    )
+                    saved.append(goal_dict)
+                state["used_tool"] = "decompose_goal"
+                summary = "已为你拆解了以下目标：\n"
+                for gd in saved:
+                    summary += f"\n• {gd['title']}"
+                    if gd.get("sub_goals"):
+                        for s in gd["sub_goals"][:5]:
+                            summary += f"\n  - {s.get('title', '')}"
+                state["answer"] = summary
+            else:
+                state["used_tool"] = "decompose_goal"
+                state["answer"] = "我暂时没有从你的话中识别出明确的目标。你可以更具体地描述你希望达成什么。"
+        except Exception as exc:
+            logger.warning("decompose_goal failed: %s", exc)
+            state["used_tool"] = "decompose_goal"
+            state["answer"] = "目标拆解时出了点问题，请稍后再试试。"
+        _append_trace(state, _trace_step(step_type="tool", name="decompose_goal", input={"text": text},
+            output={"answer": state.get("answer", "")}))
+        return state
+
+    if action == "clarify":
+        assistant_message = (decision.get("assistant_message") or "").strip()
+        if not assistant_message:
+            state["answer"] = "请提供更多信息，我才能帮你处理。"
+        else:
+            state["answer"] = assistant_message
+        state["used_tool"] = "clarify"
+        state["pending_clarification"] = {
+            "original_message": state.get("user_message", ""),
+            "asked_question": state["answer"],
+        }
+        _append_trace(state, _trace_step(step_type="tool", name="clarify",
+            input={"question": assistant_message},
+            output={"answer": state["answer"]}))
+        return state
+
+    if action == "revise_proposal":
+        correction = args.get("correction") or state["user_message"]
+        _push_progress(state, "正在根据修正重新生成...")
+        try:
+            proposal_id, proposal = propose_plan(correction)
+            proposal_payload = proposal.model_dump()
+            items = proposal_payload.get("items") or []
+            if items:
+                state["pending_add_confirmation"] = True
+                state["proposal_id"] = proposal_id
+                state["proposal"] = proposal_payload
+                state["used_tool"] = "revise_proposal"
+                state["answer"] = "已根据你的修正重新生成待办草案：\n" + "\n".join(
+                    f"  {i+1}. {it.get('title', '')}" + (f"（{it.get('due_at','')[:10]}）" if it.get('due_at') else "")
+                    for i, it in enumerate(items)
+                ) + "\n请确认是否加入待办。"
+            else:
+                state["used_tool"] = "revise_proposal"
+                state["answer"] = "已按你的修正更新。"
+        except Exception as exc:
+            logger.warning("revise_proposal failed: %s", exc)
+            state["used_tool"] = "revise_proposal"
+            state["answer"] = "修改时出了点问题，请再描述一次。"
+        _append_trace(state, _trace_step(step_type="tool", name="revise_proposal",
+            input={"correction": correction},
+            output={"answer": state.get("answer", "")}))
         return state
 
     if action == "confirm_proposal":
@@ -743,6 +947,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
         return state
 
     # normal_chat 分支：
+    _push_progress(state, "正在生成回答...")
     state["used_tool"] = None
     plan = state.get("plan") or []
     plan_context = ""
@@ -766,8 +971,43 @@ def _node_run_tool(state: ChatState) -> ChatState:
     return state
 
 
+def _push_upcoming_todos(state: ChatState):
+    """待办即将到期（1小时内）时推送通知。"""
+    upcoming = state.get("upcoming_todos") or []
+    now = datetime.now()
+    threshold = now + timedelta(hours=1)
+    imminent = [
+        t for t in upcoming
+        if t.get("due_at") and now <= datetime.fromisoformat(t["due_at"].replace("Z", "+00:00").split("+")[0]) <= threshold
+    ]
+    if not imminent:
+        return
+    try:
+        from ..service.push_service import push_notification
+        for todo in imminent[:3]:
+            title = todo.get("title", "待办提醒")
+            due = todo.get("due_at", "")[11:16] if todo.get("due_at") else ""
+            push_notification(f"⏰ {title}", f"到期时间：{due}")
+    except Exception as exc:
+        logger.warning("push_service._push_upcoming_todos failed: %s", exc)
+
+
+def _push_pending_reminders(state: ChatState):
+    """DB 中到期的提醒也推送通知。"""
+    reminders = state.get("pending_reminders") or []
+    if not reminders:
+        return
+    try:
+        from ..service.push_service import push_reminder_due
+        for r in reminders[:3]:
+            push_reminder_due(r.get("content", ""), r.get("remind_count", 0))
+    except Exception as exc:
+        logger.warning("push_service._push_pending_reminders failed: %s", exc)
+
+
 # 主动决策节点：基于近期事件/待办/画像，决定是否追加主动建议。
 def _node_proactive_decision(state: ChatState) -> ChatState:
+    _push_progress(state, "正在分析是否需要主动建议...")
     recent_events = state.get("recent_events", [])
     upcoming_todos = state.get("upcoming_todos", [])
     pending_reminders = state.get("pending_reminders", [])
@@ -777,17 +1017,22 @@ def _node_proactive_decision(state: ChatState) -> ChatState:
         return state
 
     now_iso = datetime.now().isoformat(timespec="seconds")
-    decision = decide_proactive_advice(
-        user_message=state["user_message"],
-        assistant_answer=state.get("answer", ""),
-        recent_events=recent_events,
-        upcoming_todos=upcoming_todos,
-        pending_reminders=pending_reminders,
-        profile_context=profile_context,
-        now_iso=now_iso,
-        threshold=settings.proactive_advice_threshold,
-        session_id=state["session_id"],
-    )
+    try:
+        decision = decide_proactive_advice(
+            user_message=state["user_message"],
+            assistant_answer=state.get("answer", ""),
+            recent_events=recent_events,
+            upcoming_todos=upcoming_todos,
+            pending_reminders=pending_reminders,
+            profile_context=profile_context,
+            goals=state.get("goals"),
+            now_iso=now_iso,
+            threshold=settings.proactive_advice_threshold,
+            session_id=state["session_id"],
+        )
+    except Exception as exc:
+        logger.warning("proactive advice decision LLM failed, skipping: %s", exc)
+        decision = ProactiveAdviceDecision(score=0.0, should_add=False, advice=None, reasons=["LLM调用失败，跳过"])
 
     advice_added = False
     if decision.should_add and decision.advice:
@@ -795,6 +1040,20 @@ def _node_proactive_decision(state: ChatState) -> ChatState:
         if decision.advice not in current_answer:
             state["answer"] = f"{current_answer}\n\n补充建议：{decision.advice}".strip()
             advice_added = True
+
+    # 主动推送：有高价值建议且非对话中已追加时，微信推送
+    if decision.should_add and decision.advice and not advice_added and decision.score >= settings.proactive_advice_threshold + 0.2:
+        try:
+            from ..service.push_service import push_proactive_advice
+            push_proactive_advice(decision.advice, decision.reasons)
+        except Exception as exc:
+            logger.warning("push_service.push_proactive_advice failed: %s", exc)
+
+    # 主动推送：待办即将到期（1小时内）
+    _push_upcoming_todos(state)
+
+    # 主动推送：提醒到期
+    _push_pending_reminders(state)
 
     _append_trace(
         state,
@@ -826,8 +1085,111 @@ def _node_proactive_decision(state: ChatState) -> ChatState:
     return state
 
 
+_VERIFYABLE_ACTIONS = {"query_todos", "query_knowledge", "query_weather", "query_calendar", "normal_chat"}
+
+_MAX_RETRIES = 2
+
+
+def _node_verify(state: ChatState) -> ChatState:
+    """审查单步工具执行结果，不通过时标记 retry。"""
+    action = (state.get("decision") or {}).get("action", "")
+    if action not in _VERIFYABLE_ACTIONS:
+        return state
+
+    answer = (state.get("answer") or "").strip()
+    if not answer:
+        return state
+
+    _push_progress(state, "正在审查执行结果...")
+    user_msg = state.get("user_message", "")
+    step_purpose = ""
+    plan = state.get("plan") or []
+    plan_index = state.get("plan_index", 0)
+    if plan and plan_index < len(plan):
+        step_purpose = plan[plan_index].get("purpose", action)
+
+    system = (
+        "你是执行质量审查员。判断工具执行结果是否满足用户需求。\n"
+        "输出严格 JSON：\n"
+        '{"passed": true|false, "issues": ["问题描述"], "fix_suggestion": "如何修复"}'
+    )
+    payload = {
+        "user_request": user_msg,
+        "step_action": action,
+        "step_purpose": step_purpose,
+        "step_result": answer[:800],
+        "rules": [
+            "结果不能为空或仅含错误信息",
+            "结果应该与用户请求和步骤目的相关",
+        ],
+    }
+    try:
+        text = chat_completion(
+            [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+            temperature=0.0,
+            runtime_context={"scenario": "verify_step", "session_id": state["session_id"]},
+        ).strip()
+        data = json.loads(text)
+        passed = data.get("passed", True)
+        if not passed:
+            issues = data.get("issues", [])
+            suggestion = data.get("fix_suggestion", "")
+            retry_count = state.get("retry_count", 0)
+            state["retry_count"] = retry_count + 1
+            if retry_count < _MAX_RETRIES:
+                state["retry_info"] = {
+                    "issues": issues,
+                    "fix_suggestion": suggestion,
+                    "step_index": plan_index,
+                }
+                logger.info("verify failed for %s (retry %d/%d): %s", action, retry_count + 1, _MAX_RETRIES, issues)
+            else:
+                logger.warning("verify failed for %s after %d retries, skipping", action, _MAX_RETRIES)
+                state["retry_info"] = None
+                state["answer"] = answer + "\n\n（此步骤执行未达预期，已跳过）"
+    except Exception as exc:
+        logger.debug("verify check skipped for %s: %s", action, exc)
+    return state
+
+
+def _node_quality_gate(state: ChatState) -> ChatState:
+    """最终回答质量审查：检查是否完整回答了用户。"""
+    _push_progress(state, "正在检查最终回答质量...")
+    answer = (state.get("answer") or "").strip()
+    if not answer:
+        return state
+
+    user_msg = state.get("user_message", "")
+    system = (
+        "你是回答质量评审员。检查最终回答是否完整、准确地回应了用户。\n"
+        "输出严格 JSON：\n"
+        '{"passed": true|false, "missing": ["遗漏点"], "fix": "修正后的完整回答"}'
+    )
+    payload = {
+        "user_request": user_msg,
+        "assistant_answer": answer,
+    }
+    try:
+        text = chat_completion(
+            [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+            temperature=0.0,
+            runtime_context={"scenario": "quality_gate", "session_id": state["session_id"]},
+        ).strip()
+        data = json.loads(text)
+        passed = data.get("passed", True)
+        if not passed:
+            fix = data.get("fix", "").strip()
+            if fix:
+                state["answer"] = fix
+                logger.info("quality gate fixed answer (was: %s...)", answer[:60])
+    except Exception as exc:
+        logger.debug("quality gate skipped: %s", exc)
+    return state
+
+
 # 收口节点：保证每条路径都有 answer，并记录最终 used_tool / has_proposal。
 def _node_finalize(state: ChatState) -> ChatState:
+    _push_progress(state, "正在汇总最终回答...")
     # 多步计划：把各 step 结果汇总成一个连贯回答。
     plan = state.get("plan") or []
     completed_steps = [s for s in plan if s.get("result")]
@@ -877,6 +1239,11 @@ def _node_finalize(state: ChatState) -> ChatState:
 # -----------------------------
 
 def _node_advance_plan(state: ChatState) -> ChatState:
+    # HITL 绕路（confirm_proposal）不消耗计划步骤
+    action = (state.get("decision") or {}).get("action", "")
+    if action == "confirm_proposal":
+        return state
+
     plan = state.get("plan") or []
     plan_index = state.get("plan_index", 0)
     if plan and plan_index < len(plan):
@@ -887,6 +1254,11 @@ def _node_advance_plan(state: ChatState) -> ChatState:
 
 
 def _route_after_advance(state: ChatState) -> str:
+    if state.get("pending_add_confirmation"):
+        return "finalize"
+    # 重试：verify 失败后不消耗 plan_index，回到 decide 重新执行
+    if state.get("retry_info") and state.get("retry_count", 0) <= _MAX_RETRIES:
+        return "decide"
     plan = state.get("plan") or []
     plan_index = state.get("plan_index", 0)
     if plan and plan_index < len(plan):
@@ -907,8 +1279,10 @@ def build_chat_graph(
     graph.add_node("decompose", _node_decompose)
     graph.add_node("decide", _node_decide)
     graph.add_node("run_tool", _node_run_tool)
+    graph.add_node("verify", _node_verify)
     graph.add_node("advance_plan", _node_advance_plan)
     graph.add_node("finalize", _node_finalize)
+    graph.add_node("quality_gate", _node_quality_gate)
     graph.add_node("proactive_decision", _node_proactive_decision)
 
     graph.add_edge(START, "load_context")
@@ -920,16 +1294,22 @@ def build_chat_graph(
     graph.add_edge("hitl_resume", "finalize")
     graph.add_edge("decompose", "decide")
     graph.add_edge("decide", "run_tool")
-    graph.add_edge("run_tool", "advance_plan")
+    graph.add_edge("run_tool", "verify")
+    graph.add_conditional_edges(
+        "verify",
+        lambda s: "advance_plan" if not s.get("retry_info") else "decide",
+        {"advance_plan": "advance_plan", "decide": "decide"},
+    )
     graph.add_conditional_edges(
         "advance_plan",
         _route_after_advance,
         {"decide": "decide", "finalize": "finalize"},
     )
     
-    # 在 finalize 之后增加条件分支：根据 used_tool 决定是否执行主动决策
+    # finalize → quality_gate → proactive_decision → END
+    graph.add_edge("finalize", "quality_gate")
     graph.add_conditional_edges(
-        "finalize",
+        "quality_gate",
         lambda s: "proactive_decision" if _should_check_proactive(s) else END,
         {
             "proactive_decision": "proactive_decision",
@@ -954,6 +1334,7 @@ def _build_checkpoint_context(values: dict) -> dict:
         "pending_add_confirmation": values.get("pending_add_confirmation"),
         "proposal_confirmed": values.get("proposal_confirmed"),
         "pending_reminders": values.get("pending_reminders", []),
+        "pending_clarification": values.get("pending_clarification"),
     }
 
 
@@ -988,6 +1369,7 @@ def _build_initial_state(
         "summary": checkpoint_context.get("summary"),
         "pending_text": checkpoint_context.get("pending_text"),
         "pending_add_confirmation": checkpoint_context.get("pending_add_confirmation"),
+        "pending_clarification": checkpoint_context.get("pending_clarification"),
         "proposal_id": checkpoint_context.get("proposal_id"),
         "proposal": checkpoint_context.get("proposal"),
         "proposal_confirmed": False,
@@ -1005,6 +1387,8 @@ def _build_initial_state(
         "forced_args": forced_args or {},
         "plan": [],
         "plan_index": 0,
+        "retry_info": None,
+        "retry_count": 0,
         "recent_events": recent_events or [],
         "upcoming_todos": upcoming_todos or [],
         "pending_reminders": pending_reminders or [],
@@ -1029,11 +1413,16 @@ def run_chat_graph(
     compiled_graph: Any,
     session_id: str,
     user_message: str,
+    progress_queue: Any = None,
     **kwargs,
 ) -> ChatState:
-    ctx = load_chat_checkpoint_context(compiled_graph, session_id)
-    state = _build_initial_state(session_id=session_id, user_message=user_message, checkpoint_context=ctx, **kwargs)
-    return compiled_graph.invoke(state, config={"configurable": {"thread_id": session_id}, "recursion_limit": 100})
+    _set_progress_queue(session_id, progress_queue)
+    try:
+        ctx = load_chat_checkpoint_context(compiled_graph, session_id)
+        state = _build_initial_state(session_id=session_id, user_message=user_message, checkpoint_context=ctx, **kwargs)
+        return compiled_graph.invoke(state, config={"configurable": {"thread_id": session_id}, "recursion_limit": 100})
+    finally:
+        _clear_progress_queue(session_id)
 
 
 async def arun_chat_graph(
@@ -1041,14 +1430,19 @@ async def arun_chat_graph(
     compiled_graph: Any,
     session_id: str,
     user_message: str,
+    progress_queue: Any = None,
     **kwargs,
 ) -> ChatState:
-    config = {"configurable": {"thread_id": session_id}, "recursion_limit": 100}
-    current_state = await compiled_graph.aget_state(config)
-    if len(getattr(current_state, "tasks", []) or []) > 0:
-        return await compiled_graph.ainvoke(Command(resume=user_message), config=config)
+    _set_progress_queue(session_id, progress_queue)
+    try:
+        config = {"configurable": {"thread_id": session_id}, "recursion_limit": 100}
+        current_state = await compiled_graph.aget_state(config)
+        if len(getattr(current_state, "tasks", []) or []) > 0:
+            return await compiled_graph.ainvoke(Command(resume=user_message), config=config)
 
-    ctx = await aload_chat_checkpoint_context(compiled_graph, session_id)
-    state = _build_initial_state(session_id=session_id, user_message=user_message, checkpoint_context=ctx, **kwargs)
-    return await compiled_graph.ainvoke(state, config=config)
+        ctx = await aload_chat_checkpoint_context(compiled_graph, session_id)
+        state = _build_initial_state(session_id=session_id, user_message=user_message, checkpoint_context=ctx, **kwargs)
+        return await compiled_graph.ainvoke(state, config=config)
+    finally:
+        _clear_progress_queue(session_id)
 

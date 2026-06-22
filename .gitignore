@@ -5,7 +5,7 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
-.env.*
+.env
 .venv*
 .idea/
 .vscode/
@@ -13,6 +13,7 @@ __pycache__/
 data/
 .pytest_cache/
 agent_env/
+LifeOps-Android/
 
 # Local model weights/artifacts
 bge-*/

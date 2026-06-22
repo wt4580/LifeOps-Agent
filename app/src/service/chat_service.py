@@ -163,7 +163,7 @@ class ChatService:
             hours=settings.proactive_todo_hours,
         )
         
-        _push("正在思考并查询相关信息...")
+        _push("正在进入思考流程...")
         chat_graph = get_chat_graph()
         checkpoint_context = await aload_chat_checkpoint_context(chat_graph, session_id) if chat_graph else {}
         pending_proposal_id = checkpoint_context.get("proposal_id")
@@ -172,6 +172,7 @@ class ChatService:
             compiled_graph=chat_graph,
             session_id=session_id,
             user_message=message,
+            progress_queue=progress_queue,
             profile_context=profile_context or None,
             pre_advice=pre_advice,
             pre_steps=pre_steps,
@@ -264,7 +265,10 @@ class ChatService:
                 try:
                     msg = progress_queue.get_nowait()
                     last_status = msg
-                    yield f"data: {json.dumps({'type': 'status', 'message': msg}, ensure_ascii=False)}\n\n"
+                    if isinstance(msg, dict):
+                        yield f"data: {json.dumps({'type': msg.get('type', 'status'), 'message': msg.get('message', '')}, ensure_ascii=False)}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'status', 'message': msg}, ensure_ascii=False)}\n\n"
                     drained = True
                 except asyncio.QueueEmpty:
                     break
@@ -424,7 +428,22 @@ class ChatService:
             if notes and notes != (row.notes or ""):
                 row.notes = notes
                 changed = True
-            
+
+            for scalar_field in ("age", "gender", "occupation", "city", "sleep_schedule", "exercise_habits", "work_hours", "family_status"):
+                val = patch.get(scalar_field)
+                if val is not None:
+                    setattr(row, scalar_field, val)
+                    changed = True
+
+            for json_field, key in [("diet_json", "diet"), ("allergies_json", "allergies"), ("goals_json", "goals")]:
+                val = patch.get(key)
+                if val:
+                    current = json.loads(getattr(row, json_field)) if getattr(row, json_field) else []
+                    merged = self._merge_unique(current, val)
+                    if merged != current:
+                        setattr(row, json_field, json.dumps(merged, ensure_ascii=False))
+                        changed = True
+
             if changed:
                 db.commit()
             else:
@@ -584,7 +603,21 @@ class ChatService:
                 conds = json.loads(profile_row.conditions_json) if profile_row.conditions_json else []
             except json.JSONDecodeError:
                 conds = []
-            profile_data = {"preferences": prefs, "conditions": conds, "notes": profile_row.notes}
+            try:
+                diet = json.loads(profile_row.diet_json) if profile_row.diet_json else []
+            except json.JSONDecodeError:
+                diet = []
+            try:
+                goals = json.loads(profile_row.goals_json) if profile_row.goals_json else []
+            except json.JSONDecodeError:
+                goals = []
+            profile_data = {
+                "preferences": prefs, "conditions": conds, "notes": profile_row.notes,
+                "age": profile_row.age, "gender": profile_row.gender, "occupation": profile_row.occupation,
+                "city": profile_row.city, "diet": diet, "sleep_schedule": profile_row.sleep_schedule,
+                "exercise_habits": profile_row.exercise_habits, "work_hours": profile_row.work_hours,
+                "family_status": profile_row.family_status, "goals": goals,
+            }
 
         payload = {
             "memories": [{"kind": m.kind, "title": m.title, "notes": m.notes, "confidence": m.confidence, "insight_type": m.insight_type} for m in memories],
@@ -596,9 +629,16 @@ class ChatService:
         system_prompt = (
             "你是深度分析器。分析用户积累数据，推断隐含模式、偏好和习惯，更新画像。\n"
             "输出严格 JSON，不要解释。\n"
-            'schema: {"inferred_preferences":[{"name":"...","reason":"...","confidence":0-1}],'
-            '"inferred_conditions":[{"name":"...","reason":"...","confidence":0-1}],'
-            '"notes":"...或null"}\n'
+            'schema: {\n'
+            '  "inferred_preferences":[{"name":"...","reason":"...","confidence":0-1}],\n'
+            '  "inferred_conditions":[{"name":"...","reason":"...","confidence":0-1}],\n'
+            '  "inferred_diet":[{"name":"...","reason":"...","confidence":0-1}],\n'
+            '  "inferred_sleep_schedule":string|null,\n'
+            '  "inferred_exercise_habits":string|null,\n'
+            '  "inferred_work_hours":string|null,\n'
+            '  "inferred_goals":[{"name":"...","reason":"...","confidence":0-1}],\n'
+            '  "notes":"...或null"\n'
+            "}\n"
             "规则：\n"
             "- 只提炼有足够证据支撑的推断（比如多次同类型事件）；\n"
             "- confidence 反映证据强度；\n"
@@ -620,7 +660,7 @@ class ChatService:
             new_conds = [f"[推断:{c['confidence']}] {c['name']}（{c['reason']}）" for c in data.get("inferred_conditions") or []]
             notes = data.get("notes") or ""
 
-            if new_prefs or new_conds or notes:
+            if new_prefs or new_conds or notes or data.get("inferred_diet") or data.get("inferred_sleep_schedule") or data.get("inferred_exercise_habits") or data.get("inferred_work_hours") or data.get("inferred_goals"):
                 with SessionLocal() as db:
                     row = db.execute(
                         select(UserProfile).where(UserProfile.session_id == owner_id).limit(1)
@@ -649,6 +689,41 @@ class ChatService:
                             current_notes = (row.notes or "") + f"\n[深度反思] {notes}" if row.notes else f"[深度反思] {notes}"
                             row.notes = current_notes.strip()
                             changed = True
+
+                        for inferred_key, col in [
+                            ("inferred_sleep_schedule", "sleep_schedule"),
+                            ("inferred_exercise_habits", "exercise_habits"),
+                            ("inferred_work_hours", "work_hours"),
+                        ]:
+                            val = data.get(inferred_key)
+                            if val and val != getattr(row, col):
+                                setattr(row, col, f"[推断] {val}")
+                                changed = True
+
+                        inferred_diet = data.get("inferred_diet") or []
+                        if inferred_diet:
+                            try:
+                                cur = json.loads(row.diet_json) if row.diet_json else []
+                            except json.JSONDecodeError:
+                                cur = []
+                            new_diet = [f"[推断:{d['confidence']}] {d['name']}（{d['reason']}）" for d in inferred_diet]
+                            merged = self._merge_unique(cur, new_diet)
+                            if merged != cur:
+                                row.diet_json = json.dumps(merged, ensure_ascii=False)
+                                changed = True
+
+                        inferred_goals = data.get("inferred_goals") or []
+                        if inferred_goals:
+                            try:
+                                cur = json.loads(row.goals_json) if row.goals_json else []
+                            except json.JSONDecodeError:
+                                cur = []
+                            new_goals = [f"[推断:{g['confidence']}] {g['name']}（{g['reason']}）" for g in inferred_goals]
+                            merged = self._merge_unique(cur, new_goals)
+                            if merged != cur:
+                                row.goals_json = json.dumps(merged, ensure_ascii=False)
+                                changed = True
+
                         if changed:
                             db.commit()
                             logger.info("Deep reflection updated profile for session=%s", session_id)
