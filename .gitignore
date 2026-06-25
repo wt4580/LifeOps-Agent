@@ -20,3 +20,4 @@ LifeOps-Android/
 bge-*/
 *.safetensors
 *.onnx
+.opencode/

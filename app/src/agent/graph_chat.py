@@ -1048,20 +1048,7 @@ def _node_proactive_decision(state: ChatState) -> ChatState:
             state["answer"] = f"{current_answer}\n\n补充建议：{decision.advice}".strip()
             advice_added = True
 
-    # 主动推送：有高价值建议且非对话中已追加时，微信推送
-    if decision.should_add and decision.advice and not advice_added and decision.score >= settings.proactive_advice_threshold + 0.2:
-        try:
-            from ..service.push_service import push_proactive_advice
-            push_proactive_advice(decision.advice, decision.reasons)
-        except Exception as exc:
-            logger.warning("push_service.push_proactive_advice failed: %s", exc)
-
-    # 主动推送：待办即将到期（1小时内）
-    _push_upcoming_todos(state)
-
-    # 主动推送：提醒到期
-    _push_pending_reminders(state)
-
+    # 推送由独立调度器处理，聊天图中不推送（用户已在对话框看到）
     _append_trace(
         state,
         _trace_step(

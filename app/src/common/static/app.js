@@ -214,6 +214,8 @@ function appendAssistantTurn() {
   const thoughtHeader = document.createElement("div");
   thoughtHeader.className = "assistant-thought-header";
 
+  // 图标已移到 header，此处不再创建
+
   const thoughtLabel = document.createElement("span");
   thoughtLabel.className = "assistant-thought-label";
   thoughtLabel.textContent = "思考";
@@ -497,6 +499,47 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
 });
 
 // ========================================
+// 居中循环动图（思考时播放）
+// ========================================
+const THINK_FRAMES = ["/static/waiting1.png", "/static/thinking.png", "/static/waiting2.png"];
+let thinkTimer = null;
+let thinkFrameIdx = 0;
+
+function startThinkAnim() {
+  if (thinkTimer) { clearTimeout(thinkTimer); thinkTimer = null; }
+  const el = document.getElementById("think-anim");
+  const img = document.getElementById("think-img");
+  if (!el || !img) return;
+  thinkFrameIdx = 0;
+  img.src = THINK_FRAMES[0];
+  el.style.display = "block";
+  thinkTimer = setInterval(() => {
+    thinkFrameIdx = (thinkFrameIdx + 1) % THINK_FRAMES.length;
+    img.src = THINK_FRAMES[thinkFrameIdx];
+  }, 250);
+}
+
+function showStaticImage(src, durationMs, thenHide) {
+  if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
+  const el = document.getElementById("think-anim");
+  const img = document.getElementById("think-img");
+  if (!el || !img) return;
+  img.src = src;
+  el.style.display = "block";
+  if (thenHide) {
+    thinkTimer = setTimeout(() => { el.style.display = "none"; }, durationMs);
+  }
+}
+
+function stopThinkAnim() {
+  showStaticImage("/static/done.png", 1500, true);
+}
+
+function showErrorAnim() {
+  showStaticImage("/static/error.png", 3000, true);
+}
+
+// ========================================
 // 聊天功能
 // ========================================
 if (chatSend) {
@@ -515,6 +558,7 @@ if (chatSend) {
         body: JSON.stringify({ message, session_id: sessionId }),
       });
       if (!res.ok || !res.body) {
+        showErrorAnim();
         throw new Error(`请求失败: ${res.status}`);
       }
 
@@ -523,6 +567,7 @@ if (chatSend) {
       let buffer = "";
       let finalResult = null;
       let assistantText = "";
+      let thinkingStarted = false;
 
       while (true) {
         const { value, done } = await reader.read();
@@ -536,6 +581,11 @@ if (chatSend) {
           const line = part.split("\n").find((item) => item.startsWith("data: "));
           if (!line) continue;
           const payload = JSON.parse(line.slice(6));
+
+          if (!thinkingStarted && (payload.type === "status" || payload.type === "step")) {
+            thinkingStarted = true;
+            startThinkAnim();
+          }
 
           if (payload.type === "delta") {
             assistantText += payload.delta || "";
@@ -566,6 +616,7 @@ if (chatSend) {
             }
           } else if (payload.type === "final") {
             finalResult = payload.result;
+            stopThinkAnim();
           }
         }
       }
@@ -593,6 +644,7 @@ if (chatSend) {
         assistantTurn.answerDiv.textContent = `回答：${assistantText || "未收到回复"}`;
       }
     } catch (error) {
+      showErrorAnim();
       if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, ["请求失败"]);
       if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：错误: ${error.message}`;
     }

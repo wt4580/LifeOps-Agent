@@ -15,9 +15,14 @@
     <!-- 左侧：聊天区（主） -->
     <main class="chat-section">
       <header class="chat-header">
-        <div>
-          <h1>LifeOps</h1>
-          <span class="brand-subtitle">生活管理助手</span>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div>
+            <h1>LifeOps</h1>
+            <span class="brand-subtitle">生活管理助手</span>
+          </div>
+          <div id="think-anim" class="think-anim" style="display:none">
+            <img id="think-img" src="/static/waiting1.png" alt="思考中" draggable="false">
+          </div>
         </div>
         <div class="header-actions">
           <button id="toggle-rag" class="btn-icon" title="知识库" aria-label="切换知识库面板">
