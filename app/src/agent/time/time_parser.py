@@ -38,10 +38,11 @@ def normalize_date_hint(user_text: str) -> str | None:
 
     system = (
         "你是一个时间解析器。请把用户文本中的时间表达解析为一个具体的公历日期。\n\n"
-        "参考信息（据此计算日期）：\n"
+        "## 参考信息（据此计算日期）\n"
         f"{json.dumps(ctx, ensure_ascii=False, indent=2)}\n\n"
+        "## 输出格式\n"
         "输出必须是严格 JSON：{\"date\": \"YYYY-MM-DD\" 或 null, \"confidence\": 0到1之间的小数}\n"
-        "规则：\n"
+        "## 规则\n"
         "- 用户可能说：明天、后天、大后天、下周三、这周五、月底、两周后、端午节、春节、中秋、下个月5号等\n"
         "- 你可以参考上面的节日列表来识别传统节日名称对应的日期\n"
         "- 只在用户明确表达了时间/日期/节日时给出 date\n"

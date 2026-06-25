@@ -120,6 +120,7 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
 
     system = (
         "你是一个生活助理的决策引擎。你的任务：理解用户意图，从以下工具中选择最合适的。\n\n"
+        "## 参考日历\n"
         "今天日期和今年剩余节日如下（请用此信息计算所有时间参数）：\n"
         f"{json.dumps(today_ctx, ensure_ascii=False, indent=2)}\n\n"
         "知识库中可用的主题列表：\n"
@@ -127,13 +128,14 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
         "文档大纲（标题层级）：\n"
         f"{json.dumps(ctx.available_outline or [], ensure_ascii=False, indent=2)}\n"
         "如果用户问题与上述主题或文档大纲中的章节相关，优先使用 query_knowledge。\n\n"
-        "判断要点：\n"
+        "## 判断要点\n"
         "- 工具名暗示能力边界。query_* 只读查询，propose_* / ask_* 会写数据。\n"
         "- args 里的日期必须是你自己算好的 YYYY-MM-DD，不要传'明天''端午节'等文本。\n"
         "- 用户说的日期可能是传统节日、相对日期（后天/下周/月底）、或具体日期，自行识别。\n"
         "- 如果拿不准用户意图，优先选 ask_user_confirm_proposal（反问确认）。\n"
         "- 如果没有匹配的工具，选 normal_chat。\n"
         "- 知识库仅在用户问题与可用主题明确相关时才用。\n\n"
+        "## 输出格式\n"
         "输出 JSON：\n"
         "{\n"
         '  "action": "normal_chat|query_todos|query_knowledge|propose_todo|ask_user_confirm_proposal|query_calendar|query_weather",\n'

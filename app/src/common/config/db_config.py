@@ -79,6 +79,25 @@ def _ensure_todo_columns() -> None:
             conn.execute(text("ALTER TABLE todo_items ADD COLUMN completed_at DATETIME"))
 
 
+def _ensure_life_events_columns() -> None:
+    """为现有 life_events 表补齐 importance 列。"""
+    url = settings.database_url
+    if not url.startswith("sqlite:///"):
+        return
+    with engine.begin() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='life_events'")
+        ).fetchone()
+        if not table_exists:
+            return
+        rows = conn.execute(text("PRAGMA table_info(life_events)")).fetchall()
+        existing = {r[1] for r in rows}
+        if "importance" not in existing:
+            conn.execute(text("ALTER TABLE life_events ADD COLUMN importance VARCHAR(8) NOT NULL DEFAULT 'low'"))
+        if "event_time" not in existing:
+            conn.execute(text("ALTER TABLE life_events ADD COLUMN event_time DATETIME"))
+
+
 def _ensure_user_profile_columns() -> None:
     """为现有 user_profiles 表补齐新增列。"""
     url = settings.database_url
@@ -135,3 +154,4 @@ def init_db() -> None:
     _ensure_todo_columns()
     _ensure_memory_columns()
     _ensure_user_profile_columns()
+    _ensure_life_events_columns()

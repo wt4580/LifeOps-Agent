@@ -15,8 +15,8 @@ def extract_memory_from_dialogue(dialogue: list[dict]) -> MemoryExtraction | Non
     system_prompt = (
         "You extract structured memories from recent dialogue. "
         "Return ONLY valid JSON following schema: "
-        '{items:[{kind,title,occurred_at,notes,confidence,insight_type}]}\n'
-        "Rules:\n"
+        '{items:[{kind,title,occurred_at,notes,confidence,insight_type}]}\n\n'
+        "## Rules\n"
         "- kind: meeting|deadline|birthday|todo|event|preference|pattern\n"
         "- insight_type=explicit: user clearly stated the fact (confidence=1.0)\n"
         "- insight_type=inferred: you deduced a preference/pattern from implicit hints "

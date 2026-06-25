@@ -19,7 +19,6 @@ from ..agent.memory.personal_memory import (
     build_profile_context,
     extract_personal_events,
     extract_profile_facts,
-    generate_profile_pre_advice,
     parse_event_time,
     decide_proactive_advice,
 )
@@ -46,8 +45,8 @@ class ChatService:
     async def chat(self, message: str, session_id: str | None = None, progress_queue: asyncio.Queue | None = None) -> dict:
         """执行一次完整聊天请求。
 
-        这条链路会先保存用户消息，再抽取画像/事件/预建议，
-        最后交给 LangGraph 统一做路由、工具调用和 HITL 处理。
+        先保存用户消息，加载已有上下文，交给 LangGraph 统一处理路由/工具调用/HITL，
+        图执行完后（非 quick 模式）再运行画像和事件提取。
         """
         def _push(msg: str):
             if progress_queue is not None:
@@ -63,88 +62,26 @@ class ChatService:
             db.add(ChatMessage(session_id=session_id, role="user", content=message))
             db.commit()
 
-        # B) 前置处理：尽量在进图之前补齐可用上下文。
-        _push("正在分析输入...")
-        recent_for_profile = checkpoint_context.get("recent_dialogue") or self._load_recent_dialogue(session_id, limit=12)
+        # B) 前置处理：加载已有上下文，extraction 移入图内执行。
+        _push("正在加载上下文...")
         memory_owner_id = self._resolve_memory_owner_id(session_id)
         now_dt = datetime.now()
-        now_iso = now_dt.isoformat(timespec="seconds")
 
-        # 画像抽取：记录稳定偏好、身高体重、限制条件等信息。
-        _push("正在更新用户画像...")
-        profile_patch = extract_profile_facts(
-            message, recent_for_profile, now_iso=now_iso, session_id=session_id,
-        )
-        profile_changed = self._upsert_user_profile(
-            memory_owner_id, profile_patch.model_dump() if profile_patch else None
-        )
         profile = self._load_user_profile(memory_owner_id)
         profile_context = build_profile_context(profile)
 
-        # 个人事件抽取：把事实性内容存下来，供后续建议与画像分析使用。
-        _push("正在提取生活事件...")
-        personal = extract_personal_events(
-            message, recent_for_profile, now_iso=now_iso, session_id=session_id,
-        )
-        personal_inserted = 0
-        if personal and personal.items:
-            personal_inserted = self._store_personal_events(
-                memory_owner_id, message, [item.model_dump() for item in personal.items],
-            )
-
-        # 近期事件窗口：不要只看固定条数，尽量按时间范围判断上下文。
-        _push("正在整理背景信息...")
         recent_events, event_window_start, event_window_end = self._load_life_events_in_window(
             session_id=memory_owner_id,
             hours=settings.proactive_event_window_hours,
             now_dt=now_dt,
         )
-        # 加载待提醒事项（DB 持久化的提醒，按时间退避）。
+        important_events = self._load_important_events(
+            session_id=memory_owner_id,
+            now_dt=now_dt,
+        )
         pending_reminders = reminder_service.load_pending_reminders(memory_owner_id)
 
-        # 基于画像与近期事件生成一个前置建议，交给 Graph 作为软提示。
-        pre_advice = generate_profile_pre_advice(
-            user_message=message,
-            profile_context=profile_context,
-            recent_events=recent_events,
-            now_iso=now_iso,
-            session_id=session_id,
-        )
-
         pre_steps = [
-            {
-                "type": "preprocess",
-                "name": "profile_context",
-                "ts": datetime.now().isoformat(timespec="seconds"),
-                "output": {
-                    "profile_changed": profile_changed,
-                    "has_profile": bool(profile_context),
-                    "profile_context": profile_context or "",
-                    "memory_scope": settings.personal_memory_scope,
-                    "memory_owner_id": memory_owner_id,
-                },
-            },
-            {
-                "type": "preprocess",
-                "name": "personal_events",
-                "ts": datetime.now().isoformat(timespec="seconds"),
-                "output": {
-                    "inserted": personal_inserted,
-                    "recent_events_count": len(recent_events),
-                    "event_window_hours": settings.proactive_event_window_hours,
-                    "event_window_start": event_window_start,
-                    "event_window_end": event_window_end,
-                },
-            },
-            {
-                "type": "preprocess",
-                "name": "pre_graph_hint",
-                "ts": datetime.now().isoformat(timespec="seconds"),
-                "output": {
-                    "pre_advice": pre_advice or "NONE",
-                    "source": "profile+life_events",
-                },
-            },
             {
                 "type": "preprocess",
                 "name": "pending_reminders",
@@ -174,14 +111,26 @@ class ChatService:
             user_message=message,
             progress_queue=progress_queue,
             profile_context=profile_context or None,
-            pre_advice=pre_advice,
             pre_steps=pre_steps,
             recent_events=recent_events,
+            important_events=important_events,
             upcoming_todos=upcoming_todos,
             pending_reminders=pending_reminders,
             event_window_start=event_window_start,
             event_window_end=event_window_end,
         )
+        # 图后条件提取：非 quick 模式才运行 extraction
+        if state.get("mode") != "quick":
+            _push("正在提取画像和事件...")
+            recent_for_profile = checkpoint_context.get("recent_dialogue") or self._load_recent_dialogue(session_id, limit=12)
+            now_iso = datetime.now().isoformat(timespec="seconds")
+            profile_patch = extract_profile_facts(message, recent_for_profile, now_iso=now_iso, session_id=session_id)
+            if profile_patch:
+                self._upsert_user_profile(memory_owner_id, profile_patch.model_dump())
+            personal = extract_personal_events(message, recent_for_profile, now_iso=now_iso, session_id=session_id)
+            if personal and personal.items:
+                self._store_personal_events(memory_owner_id, message, [item.model_dump() for item in personal.items])
+
         answer = state.get("answer") or ""
         proposal_id = state.get("proposal_id")
         proposal_payload = state.get("proposal")
@@ -502,6 +451,7 @@ class ChatService:
                         tags_json=json.dumps(item.get("tags", []), ensure_ascii=False),
                         notes=item.get("notes"),
                         source_text=source_text,
+                        importance=item.get("importance", "low"),
                     )
                 )
                 inserted += 1
@@ -530,19 +480,20 @@ class ChatService:
                 tags = json.loads(r.tags_json) if r.tags_json else []
             except json.JSONDecodeError:
                 tags = []
-            out.append(
-                {
-                    "category": r.category,
-                    "title": r.title,
-                    "event_time": r.event_time.isoformat() if r.event_time else None,
-                    "recorded_at": r.created_at.isoformat() if r.created_at else None,
-                    "effective_time": (r.event_time or r.created_at).isoformat() if (r.event_time or r.created_at) else None,
-                    "amount": r.amount,
-                    "amount_unit": r.amount_unit,
-                    "tags": tags,
-                    "notes": r.notes,
-                }
-            )
+        out.append(
+            {
+                "category": r.category,
+                "title": r.title,
+                "event_time": r.event_time.isoformat() if r.event_time else None,
+                "recorded_at": r.created_at.isoformat() if r.created_at else None,
+                "effective_time": (r.event_time or r.created_at).isoformat() if (r.event_time or r.created_at) else None,
+                "amount": r.amount,
+                "amount_unit": r.amount_unit,
+                "tags": tags,
+                "notes": r.notes,
+                "importance": r.importance,
+            }
+        )
         
         return (
             out,
@@ -550,6 +501,36 @@ class ChatService:
             now_dt.isoformat(timespec="seconds"),
         )
     
+    def _load_important_events(self, session_id: str, now_dt: datetime) -> list[dict]:
+        """读取重大事件（importance=high，30天内），独立注入。"""
+        cutoff = now_dt - timedelta(days=30)
+        with SessionLocal() as db:
+            rows = (
+                db.execute(
+                    select(LifeEvent)
+                    .where(LifeEvent.session_id == session_id)
+                    .where(LifeEvent.importance == "high")
+                    .where(func.coalesce(LifeEvent.event_time, LifeEvent.created_at) >= cutoff)
+                    .order_by(func.coalesce(LifeEvent.event_time, LifeEvent.created_at).desc())
+                )
+                .scalars()
+                .all()
+            )
+        out = []
+        for r in rows:
+            try:
+                tags = json.loads(r.tags_json) if r.tags_json else []
+            except json.JSONDecodeError:
+                tags = []
+            out.append({
+                "category": r.category,
+                "title": r.title,
+                "event_time": r.event_time.isoformat() if r.event_time else None,
+                "tags": tags,
+                "notes": r.notes,
+            })
+        return out
+
     def _load_upcoming_todos_for_advice(self, session_id: str, hours: int = 24) -> list[dict]:
         """读取未来待办事项，用于判断是否要主动提醒用户。"""
         now = datetime.now()
@@ -627,7 +608,8 @@ class ChatService:
         }
 
         system_prompt = (
-            "你是深度分析器。分析用户积累数据，推断隐含模式、偏好和习惯，更新画像。\n"
+            "你是深度分析器。分析用户积累数据，推断隐含模式、偏好和习惯，更新画像。\n\n"
+            "## 输出格式\n"
             "输出严格 JSON，不要解释。\n"
             'schema: {\n'
             '  "inferred_preferences":[{"name":"...","reason":"...","confidence":0-1}],\n'
@@ -639,7 +621,7 @@ class ChatService:
             '  "inferred_goals":[{"name":"...","reason":"...","confidence":0-1}],\n'
             '  "notes":"...或null"\n'
             "}\n"
-            "规则：\n"
+            "## 规则\n"
             "- 只提炼有足够证据支撑的推断（比如多次同类型事件）；\n"
             "- confidence 反映证据强度；\n"
             "- 已有画像中已确认的事实不要重复输出；\n"
@@ -789,11 +771,19 @@ class ChatService:
                 return
             
             prompt = (
-                "Summarize the conversation for later retrieval. "
-                "Focus on commitments, plans, preferences, and open questions. "
-                "Return a concise paragraph."
+                "你是一个对话分析师。从对话中提取结构化摘要。\n\n"
+                "## 关注领域\n"
+                "个人偏好、承诺与计划、已确认事实。\n\n"
+                "## 输出格式\n"
+                "按以下 Markdown 结构输出，三个分类必须至少输出一行（可写"暂无"）：\n"
+                "## 个人偏好\n"
+                "- ...\n\n"
+                "## 承诺与计划\n"
+                "- ...\n\n"
+                "## 已确认事实\n"
+                "- ..."
             )
-            
+
             summary_text = chat_completion(
                 [
                     {"role": "system", "content": prompt},
@@ -841,9 +831,17 @@ class ChatService:
                     {
                         "role": "system",
                         "content": (
-                            "请把这段历史对话压缩成长期记忆摘要。"
-                            "重点保留：个人偏好、长期目标、反复出现的任务、已确认事实。"
-                            "输出一段简洁中文。"
+                            "请把这段历史对话压缩成长期记忆摘要。\n\n"
+                            "## 重点保留\n"
+                            "个人偏好、长期目标、反复出现的任务、已确认事实。\n\n"
+                            "## 输出格式\n"
+                            "按以下 Markdown 结构输出，三个分类必须至少输出一行（可写"暂无"）：\n"
+                            "## 个人偏好\n"
+                            "- ...\n\n"
+                            "## 承诺与计划\n"
+                            "- ...\n\n"
+                            "## 已确认事实\n"
+                            "- ..."
                         ),
                     },
                     {"role": "user", "content": json.dumps(old_dialogue, ensure_ascii=False)},

@@ -10,7 +10,8 @@ __pycache__/
 .idea/
 .vscode/
 *.log
-data/
+app/data/
+app/src/data/*.md
 .pytest_cache/
 agent_env/
 LifeOps-Android/

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """lifeops.retrieval
 
@@ -325,9 +325,10 @@ def _rewrite_query(query: str) -> str:
     """用 LLM 改写 query，提升召回对“口语问法”的鲁棒性。"""
 
     prompt = (
-        "你是检索查询改写器（query rewrite）。\n"
-        "目标：把用户问题改写成更适合从本地文档中检索的关键词/短语。\n"
-        "规则：\n"
+        "你是检索查询改写器（query rewrite）。\n\n"
+        "## 目标\n"
+        "把用户问题改写成更适合从本地文档中检索的关键词/短语。\n"
+        "## 规则\n"
         "- 输出必须只是一行关键词，用空格分隔；不要解释，不要换行。\n"
         "- 保留专有名词、缩写、阶段名（如 stage2）、人名、术语。\n"
         "- 如果问题包含文件名（如 work.png），请保留 work 这样的主体词，同时也保留 work.png 作为线索。\n"
@@ -640,10 +641,12 @@ def rag_answer(
 
     system_prompt = (
         "你是一个严谨的知识库问答助手。你只能根据提供的 Context 回答，并在句子中内联标注引用 [1][2]。\n"
-        "如果 Context 不足以回答，请明确说不知道，不要编造。\n"
-        "关键约束：Context 默认是外部知识文档，不代表用户真实发生过的行为。\n"
+        "如果 Context 不足以回答，请明确说不知道，不要编造。\n\n"
+        "## 关键约束\n"
+        "Context 默认是外部知识文档，不代表用户真实发生过的行为。\n"
         "例如菜谱/指南中的食物不能被表述成‘用户已经吃过’。\n"
         "只有当 Context 明确出现‘用户本人记录/我今天吃了/个人日志’等证据时，才能描述为用户已发生事实。\n"
+        "## 个性化约束\n"
         "若提供了 PROFILE/PROFILE_HINT，可用于个性化表达，但不得与 Context 冲突，也不得把文档建议误写成用户历史。"
     )
     messages = [

@@ -84,9 +84,9 @@ def chat_completion(messages: list[dict], temperature: float = 0.2, runtime_cont
     context_message = {
         "role": "system",
         "content": (
-            "RuntimeContext(JSON): "
+            "## RuntimeContext\n"
             + str(ctx)
-            + "\n请将当前时间作为事实来源参与推理，避免忽略时间导致建议偏差。"
+            + "\n\n请将当前时间作为事实来源参与推理，避免忽略时间导致建议偏差。"
         ),
     }
     enriched_messages = [context_message, *messages]

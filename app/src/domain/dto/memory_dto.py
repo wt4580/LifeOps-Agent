@@ -28,6 +28,7 @@ class PersonalEventItem(BaseModel):
     amount_unit: str | None = Field(default=None, description="单位，如 元/次/公里")
     tags: list[str] = Field(default_factory=list, description="标签，如 油腻/高盐/通勤/检索")
     notes: str | None = Field(default=None, description="补充说明")
+    importance: str = Field(default="low", description="high|low。对用户生活有重大影响的事件标 high（如手术/入职/结婚/大病），日常事件标 low。")
 
 
 class PersonalEventExtraction(BaseModel):

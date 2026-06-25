@@ -159,11 +159,11 @@ def propose_plan(user_input: str) -> tuple[str, PlanProposal]:
     system_prompt = (
         "你是待办规划器。把用户输入改写成可执行待办清单。"
         "只输出 JSON，不要解释。"
-        'schema: {"items":[{"title":"...","due_at":"ISO或null"}]}.'
-        "要求："
-        "1) title 是动作导向短句（5-22字），不要复述原话，不含'待办/提醒'字样；"
-        "2) 用户可能在一条消息里提到多件事，每件事输出一条 items；"
-        "3) due_at 用 ISO8601（YYYY-MM-DD 或 YYYY-MM-DDTHH:MM:SS），无法确定则为 null；"
+        'schema: {"items":[{"title":"...","due_at":"ISO或null"}]}.\n\n'
+        "## 格式要求\n"
+        "1) title 是动作导向短句（5-22字），不要复述原话，不含'待办/提醒'字样；\n"
+        "2) 用户可能在一条消息里提到多件事，每件事输出一条 items；\n"
+        "3) due_at 用 ISO8601（YYYY-MM-DD 或 YYYY-MM-DDTHH:MM:SS），无法确定则为 null；\n"
         "4) 今天是 " + today + "."
         + (" 用户时间表达已解析为 " + fixed_date + "，请优先使用该日期。" if fixed_date else "")
     )

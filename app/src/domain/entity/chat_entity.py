@@ -63,6 +63,7 @@ class LifeEvent(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    importance: Mapped[str] = mapped_column(String(8), default="low", index=True)
 
 
 class UserProfile(Base):

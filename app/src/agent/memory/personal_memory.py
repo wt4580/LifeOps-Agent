@@ -158,14 +158,15 @@ def extract_personal_events(
         "只输出 JSON，不要解释。\n"
         "schema: {\"items\":[{\"category\":\"diet|activity|research|finance|schedule|health|other\","
         "\"title\":\"...\",\"event_time\":\"ISO或null\",\"amount\":数字或null,"
-        "\"amount_unit\":\"...或null\",\"tags\":[\"...\"],\"notes\":\"...或null\"}]}\n"
-        "规则：\n"
+        "\"amount_unit\":\"...或null\",\"tags\":[\"...\"],\"notes\":\"...或null\",\"importance\":\"low|high\"}]}\n"
+        "## 规则\n"
         "- 只抽取已发生的事件（过去时/完成时），不要抽取未来的计划或承诺。\n"
         "- 明确的否定事实也不必抽取（如'没吃饭'不是事件）。\n"
         "- event_time 必须尽量填写；若只知道日期则用 YYYY-MM-DDT00:00:00。\n"
         "- 若用户未给具体时间，允许输出 null，服务端会回填当前时间。\n"
         "- 饮食类尽量标注 tags（如 油腻/高糖/高盐/蛋白质）。\n"
         "- 未来计划、待办、提醒等请留空，不要在 life event 中记录。\n"
+        "- importance: 对用户生活有重大影响（手术/入职/结婚/大病/搬新居）标 high，日常事件标 low。\n"
         "- 若本句无可记忆事件，返回 {\"items\":[]}。"
     )
 
@@ -213,7 +214,7 @@ def extract_profile_facts(
         '  "sleep_schedule":string|null, "exercise_habits":string|null, "work_hours":string|null,\n'
         '  "family_status":string|null, "goals":[string]\n'
         "}\n"
-        "字段说明：\n"
+        "## 字段说明\n"
         "- height_cm/weight_kg: 身高厘米/体重千克\n"
         "- preferences: 喜好和反感，如'喜欢跑步'/'不吃辣'/'不爱运动'\n"
         "- conditions: 疾病/慢性病/身体禁忌\n"
@@ -228,7 +229,7 @@ def extract_profile_facts(
         "- work_hours: 工作时间段，如'9-18'/'朝九晚六'\n"
         "- family_status: 家庭状况，如'独居'/'已婚有娃'/'和父母住'\n"
         "- goals: 短期目标/优先事项，如'减肥'/'攒钱'/'学英语'\n"
-        "规则：\n"
+        "## 规则\n"
         "- 只提取用户明确表达的信息；不确定则置空或不填。\n"
         "- preferences 包含喜好和反感。\n"
         "- 用户明确表达否定（不喜欢/讨厌/不吃等）一定要提取到 preferences 或 allergies，不要忽略。\n"
@@ -265,15 +266,16 @@ def extract_goal(
     """
     system = (
         "你是目标拆解助手。从用户对话中识别明确的目标陈述，并将其拆解为可执行的子步骤。\n\n"
-        "判断标准：\n"
+        "## 判断标准\n"
         "- 包含意愿动词（想/要/打算/计划/准备/决定/希望）\n"
         "- 有明确的愿景或结果描述（如'减肥20斤'/'学会Python'/'攒10万'）\n"
         "- 是长期/中期目标而非一次性待办（'周五交报表'不是目标）\n\n"
-        "拆解原则：\n"
+        "## 拆解原则\n"
         "- 每个大目标拆成 3-7 个具体子步骤\n"
         "- 子步骤应是可执行的行动（如'每周跑步3次'而非'多运动'）\n"
         "- 如有明确的时间节点，设为 milestone\n"
         "- category: health|career|finance|learning|lifestyle|other\n\n"
+        "## 输出格式\n"
         "输出严格 JSON，不要 Markdown：\n"
         '{"items": [{"title": "...", "category": "...", "target_date": "2026-12-31", '
         '"sub_goals": [{"title": "每月减2斤", "target_date": "2026-06"}], '
@@ -391,7 +393,7 @@ def generate_proactive_advice(
 
     system_prompt = (
         "你是个人生活管理建议助手。读近期事件+待办+目标，判断是否需要主动提醒。\n"
-        "要求：\n"
+        "## 要求\n"
         "- 只说最相关的一条；没有确定关联则输出 NONE。\n"
         "- 以第二人称「你」开头，简洁口语化。\n"
         "- 结合当前时间与事件时间判断是否冲突。\n"
@@ -439,7 +441,7 @@ def generate_profile_pre_advice(
 
     system_prompt = (
         "你是生活助理的前置分析器。请基于用户画像与近期个人事件，提炼与当前问题最相关的先验知识。\n"
-        "要求：\n"
+        "## 要求\n"
         "- 输出 1-2 句中文短提示，供后续主状态机参考；\n"
         "- 结合当前时间与事件时间判断是否临近冲突；\n"
         "- 只用输入信息，不编造；\n"
@@ -490,18 +492,19 @@ def decide_proactive_advice(
     system_prompt = (
         "你是一个严谨的提醒筛选器。判断是否需要追加建议，输出严格 JSON。\n"
         'schema: {"score":0-1,"should_add":bool,"advice":"str或null","reasons":["str"]}\n'
-        "核心原则：默认 should_add=false，除非：\n"
+        "## 核心原则\n"
+        "默认 should_add=false，除非：\n"
         "1. 事件/待办/目标之间存在真实关联（时间冲突、因果关系、健康风险）\n"
         "2. 能给出明确、可执行的操作建议\n"
         "3. 不是把两个无关事件强行关联\n\n"
-        "反面案例（should_add=false）：\n"
+        "## 反面案例（should_add=false）\n"
         "- 明天预订肯德基 + 后天端午节 -> 无关，不应建议\n"
         "- 明天去超市 + 下周有会议 -> 无关\n\n"
-        "正面案例（should_add=true）：\n"
+        "## 正面案例（should_add=true）\n"
         "- 明天下午3点开会 + 明天下午2点体检 -> 时间冲突，建议调整\n"
         "- 明天跑10公里 + 膝盖不舒服 -> 健康风险，建议减量\n"
         "- 目标'减重20斤' + 晚上约了火锅 -> 与目标冲突，提醒注意饮食\n\n"
-        "输出要求：\n"
+        "## 输出要求\n"
         "- advice 一句话以内，只说直接相关的操作\n"
         "- 没有真实关联时 should_add=false, advice=null"
     )
