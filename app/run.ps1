@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
-python -m venv .venv
-.venv\Scripts\activate
+python -m venv agent_env
+agent_env\Scripts\Activate.ps1
 pip install -r requirements.txt
-python -m uvicorn app.src.main:app --reload
+python -m app.src
 
