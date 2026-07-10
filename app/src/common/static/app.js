@@ -26,11 +26,13 @@ const askSend = document.getElementById("ask-send");
 const askAnswer = document.getElementById("ask-answer");
 const askCitations = document.getElementById("ask-citations");
 
-let sessionId = localStorage.getItem("lifeops_session_id");
-if (!sessionId) {
-  sessionId = crypto.randomUUID();
-  localStorage.setItem("lifeops_session_id", sessionId);
-}
+const loginSection = document.getElementById("login-section");
+const loginInput = document.getElementById("login-input");
+const loginBtn = document.getElementById("login-btn");
+const logoutBtn = document.getElementById("logout-btn");
+const appSection = document.getElementById("app-section");
+
+let sessionId = localStorage.getItem("lifeops_session_id") || "";
 
 let proposalId = null;
 let currentTodoView = "upcoming";
@@ -241,6 +243,18 @@ function appendAssistantTurn() {
     thoughtToggle.textContent = collapsed ? "展开" : "收起";
   });
 
+  function expandThought() {
+    thoughtDiv.classList.remove("collapsed");
+    thoughtToggle.textContent = "收起";
+    collapsed = false;
+  }
+
+  function collapseThought() {
+    thoughtDiv.classList.add("collapsed");
+    thoughtToggle.textContent = "展开";
+    collapsed = true;
+  }
+
   thoughtHeader.appendChild(thoughtLabel);
   thoughtHeader.appendChild(thoughtToggle);
 
@@ -249,7 +263,7 @@ function appendAssistantTurn() {
   wrapper.appendChild(answerDiv);
   chatLog.appendChild(wrapper);
   chatLog.scrollTop = chatLog.scrollHeight;
-  return { wrapper, thoughtDiv, answerDiv, thoughtToggle };
+  return { wrapper, thoughtDiv, answerDiv, thoughtToggle, expandThought, collapseThought };
 }
 
 function setThoughtLines(thoughtDiv, lines) {
@@ -540,6 +554,66 @@ function showErrorAnim() {
 }
 
 // ========================================
+// 登录
+// ========================================
+async function handleLogin() {
+  const username = loginInput.value.trim();
+  if (!username) {
+    loginInput.focus();
+    return;
+  }
+  try {
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username }),
+    });
+    if (!res.ok) throw new Error("登录失败");
+    const data = await res.json();
+    sessionId = data.session_id;
+    localStorage.setItem("lifeops_session_id", sessionId);
+    loginSection.style.display = "none";
+    appSection.style.display = "";
+    loadUpcomingTodos();
+    loadPendingReminders();
+  } catch (err) {
+    console.error("Login error:", err);
+  }
+}
+
+if (sessionId) {
+  loginSection.style.display = "none";
+  appSection.style.display = "";
+  loadUpcomingTodos();
+  loadPendingReminders();
+} else {
+  loginSection.style.display = "";
+  appSection.style.display = "none";
+}
+
+if (loginBtn) {
+  loginBtn.addEventListener("click", handleLogin);
+}
+if (loginInput) {
+  loginInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleLogin();
+    }
+  });
+}
+if (logoutBtn) {
+  logoutBtn.addEventListener("click", () => {
+    localStorage.removeItem("lifeops_session_id");
+    sessionId = "";
+    appSection.style.display = "none";
+    loginSection.style.display = "";
+    loginInput.value = "";
+    loginInput.focus();
+  });
+}
+
+// ========================================
 // 聊天功能
 // ========================================
 if (chatSend) {
@@ -568,6 +642,7 @@ if (chatSend) {
       let finalResult = null;
       let assistantText = "";
       let thinkingStarted = false;
+      let streamLine = null;
 
       while (true) {
         const { value, done } = await reader.read();
@@ -582,14 +657,24 @@ if (chatSend) {
           if (!line) continue;
           const payload = JSON.parse(line.slice(6));
 
-          if (!thinkingStarted && (payload.type === "status" || payload.type === "step")) {
+          if (!thinkingStarted && (payload.type === "status" || payload.type === "step" || payload.type === "delta")) {
             thinkingStarted = true;
             startThinkAnim();
+            assistantTurn.expandThought();
           }
 
           if (payload.type === "delta") {
             assistantText += payload.delta || "";
-            if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：${assistantText}`;
+            if (assistantTurn?.thoughtDiv) {
+              if (!streamLine) {
+                streamLine = document.createElement("div");
+                streamLine.className = "thought-line";
+                streamLine.dataset.stream = "true";
+                streamLine.style.color = "#555";
+                assistantTurn.thoughtDiv.appendChild(streamLine);
+              }
+              streamLine.textContent = assistantText;
+            }
           } else if (payload.type === "status") {
             if (assistantTurn?.thoughtDiv) {
               let firstLine = assistantTurn.thoughtDiv.querySelector(".thought-line");
@@ -608,7 +693,7 @@ if (chatSend) {
               const newLine = document.createElement("div");
               newLine.className = "thought-line";
               newLine.textContent = text;
-              if (lastLine && lastLine.textContent.startsWith("正在")) {
+              if (lastLine && lastLine.textContent.startsWith("正在") && lastLine.dataset.stream !== "true") {
                 lastLine.textContent = text;
               } else {
                 assistantTurn.thoughtDiv.appendChild(newLine);
@@ -623,6 +708,7 @@ if (chatSend) {
 
       if (finalResult) {
         const finalAnswer = finalResult.answer || assistantText || "";
+        assistantTurn.collapseThought();
         if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：${finalAnswer}`;
         if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, buildThoughtLines(finalResult.trace, finalResult));
 

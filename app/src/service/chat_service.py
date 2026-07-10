@@ -207,15 +207,13 @@ class ChatService:
         progress_queue: asyncio.Queue = asyncio.Queue()
         task = asyncio.create_task(self.chat(message=message, session_id=session_id, progress_queue=progress_queue))
 
-        last_status = ""
         while not task.done():
             drained = False
             while True:
                 try:
                     msg = progress_queue.get_nowait()
-                    last_status = msg
                     if isinstance(msg, dict):
-                        yield f"data: {json.dumps({'type': msg.get('type', 'status'), 'message': msg.get('message', '')}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
                     else:
                         yield f"data: {json.dumps({'type': 'status', 'message': msg}, ensure_ascii=False)}\n\n"
                     drained = True
@@ -224,37 +222,8 @@ class ChatService:
             if not task.done():
                 await asyncio.sleep(0.3 if not drained else 0.05)
 
-        # 主任务结束后，把答案拆成更小的片段输出。
         result = await task
-        answer = result.get("answer") or ""
-        chunks = self._chunk_text(answer)
-
-        if not chunks:
-            yield f"data: {json.dumps({'type': 'final', 'result': result}, ensure_ascii=False)}\n\n"
-            return
-
-        for chunk in chunks:
-            yield f"data: {json.dumps({'type': 'delta', 'delta': chunk}, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.01)
-
         yield f"data: {json.dumps({'type': 'final', 'result': result}, ensure_ascii=False)}\n\n"
-
-    def _chunk_text(self, text: str) -> list[str]:
-        """把长文本拆成适合 SSE 推送的小片段。"""
-        text = (text or "").strip()
-        if not text:
-            return []
-
-        chunks: list[str] = []
-        buffer = ""
-        for char in text:
-            buffer += char
-            if char in {"。", "！", "？", "\n"} or len(buffer) >= 24:
-                chunks.append(buffer)
-                buffer = ""
-        if buffer:
-            chunks.append(buffer)
-        return chunks
 
     @staticmethod
     def _extract_advice_from_answer(answer: str) -> str | None:
@@ -480,7 +449,7 @@ class ChatService:
                 tags = json.loads(r.tags_json) if r.tags_json else []
             except json.JSONDecodeError:
                 tags = []
-        out.append(
+            out.append(
             {
                 "category": r.category,
                 "title": r.title,
@@ -755,13 +724,79 @@ class ChatService:
             db.commit()
     
     async def _maybe_update_summary(self, session_id: str) -> None:
-        """按轮次定期刷新摘要，避免长对话无限增长。"""
+        """滑动摘要窗口。
+
+        每 summary_refresh_turns 条消息触发一次：
+        - 如果原始消息超过 RECENT_MAX（50），把最旧的 SLIDE_STEP（10）条
+          合并到摘要中并删除，使摘要始终覆盖 recent_dialogue 之前的所有内容。
+        - 否则直接从 recent_dialogue 刷新摘要。
+        """
+        RECENT_MAX = 50
+        SLIDE_STEP = 10
+
         with SessionLocal() as db:
             count = db.execute(
                 select(func.count()).select_from(ChatMessage).where(ChatMessage.session_id == session_id)
             ).scalar_one()
-        
-        if count > 0 and count % self.summary_refresh_turns == 0:
+
+        if count == 0 or count % self.summary_refresh_turns != 0:
+            return
+
+        with SessionLocal() as db:
+            rows = (
+                db.execute(
+                    select(ChatMessage)
+                    .where(ChatMessage.session_id == session_id)
+                    .order_by(ChatMessage.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+
+        total = len(rows)
+
+        if total > RECENT_MAX:
+            slide_count = min(total - RECENT_MAX, SLIDE_STEP)
+            old_rows = rows[:slide_count]
+            old_dialogue = [{"role": r.role, "content": r.content} for r in old_rows]
+            existing_summary = self._get_summary(session_id) or "无"
+
+            summary_text = ""
+            try:
+                summary_text = chat_completion(
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "你是生活助理的记忆系统。更新对话摘要，保留重要信息。\n\n"
+                                f"## 已有摘要\n{existing_summary}\n\n"
+                                "## 新增对话（即将被压缩）\n"
+                                "把以下对话合并到已有摘要中，精简并更新。\n\n"
+                                "## 输出格式\n"
+                                "按以下 Markdown 结构输出，三个分类至少输出一行：\n"
+                                "## 讨论脉络\n"
+                                "- 按时间顺序概述讨论了什么\n\n"
+                                "## 关键决定与计划\n"
+                                "- 用户做出的决定、确认的计划\n\n"
+                                "## 待跟进话题\n"
+                                "- 未完成或需后续关注的事项"
+                            ),
+                        },
+                        {"role": "user", "content": json.dumps(old_dialogue, ensure_ascii=False)},
+                    ],
+                    temperature=0.2,
+                )
+            except Exception as exc:
+                logger.warning("Slide summary failed session=%s total=%s err=%s", session_id, total, exc)
+
+            if summary_text.strip():
+                self._save_summary(session_id, summary_text.strip())
+
+            ids = [r.id for r in old_rows]
+            with SessionLocal() as db:
+                db.execute(delete(ChatMessage).where(ChatMessage.id.in_(ids)))
+                db.commit()
+        else:
             g = get_chat_graph()
             checkpoint_context = await aload_chat_checkpoint_context(g, session_id) if g else {}
             recent = checkpoint_context.get("recent_dialogue") or self._load_recent_dialogue(
@@ -769,19 +804,17 @@ class ChatService:
             )
             if not recent:
                 return
-            
+
             prompt = (
-                "你是一个对话分析师。从对话中提取结构化摘要。\n\n"
-                "## 关注领域\n"
-                "个人偏好、承诺与计划、已确认事实。\n\n"
+                "你是一个生活助理的记忆系统。从对话中提取关键信息，更新对话摘要。\n\n"
                 "## 输出格式\n"
                 "按以下 Markdown 结构输出，三个分类必须至少输出一行（可写\u201c暂无\u201d）：\n"
-                "## 个人偏好\n"
-                "- ...\n\n"
-                "## 承诺与计划\n"
-                "- ...\n\n"
-                "## 已确认事实\n"
-                "- ..."
+                "## 讨论脉络\n"
+                "- 按时间顺序概述主要讨论了什么\n\n"
+                "## 关键决定与计划\n"
+                "- 用户做出的决定、确认的计划\n\n"
+                "## 待跟进话题\n"
+                "- 未完成或需要后续关注的事项"
             )
 
             summary_text = chat_completion(
@@ -794,9 +827,11 @@ class ChatService:
             self._save_summary(session_id, summary_text)
     
     def _maybe_prune_chat_history(self, session_id: str) -> None:
-        """滚动压缩聊天记录。
+        """全量压缩聊天记录。
 
-        当消息过多时，把更早的内容压缩成摘要并删除原消息，控制上下文体积。
+        当消息超过上限时，把全部旧消息 + 已有摘要喂给 LLM 生成一份更新的摘要，
+        然后删除被压缩的旧消息，只保留最近 target 条。
+        确保 LLM 看到的对话盲区为 0：摘要覆盖所有被删除的对话，recent_dialogue 覆盖所有保留的对话。
         """
         with SessionLocal() as db:
             rows = (
@@ -808,22 +843,20 @@ class ChatService:
                 .scalars()
                 .all()
             )
-        
+
         total = len(rows)
         if total <= settings.chat_retention_limit:
             return
-        
+
         target = settings.chat_prune_target
-        if target >= settings.chat_retention_limit:
-            target = max(100, settings.chat_retention_limit - 100)
-        
-        prune_count = max(0, total - target)
+        prune_count = total - target
         if prune_count <= 0:
             return
-        
+
         old_rows = rows[:prune_count]
         old_dialogue = [{"role": r.role, "content": r.content} for r in old_rows]
-        
+        existing_summary = self._get_summary(session_id) or "无"
+
         summary_text = ""
         try:
             summary_text = chat_completion(
@@ -831,17 +864,19 @@ class ChatService:
                     {
                         "role": "system",
                         "content": (
-                            "请把这段历史对话压缩成长期记忆摘要。\n\n"
-                            "## 重点保留\n"
-                            "个人偏好、长期目标、反复出现的任务、已确认事实。\n\n"
+                            "你是生活助理的记忆系统。更新对话摘要，保留重要信息。\n\n"
+                            "## 已有摘要\n"
+                            f"{existing_summary}\n\n"
+                            "## 新增对话（即将被压缩删除）\n"
+                            "把以下新增对话合并到已有摘要中，精简并更新。\n\n"
                             "## 输出格式\n"
-"按以下 Markdown 结构输出，三个分类必须至少输出一行（可写\u201c暂无\u201d）：\n"
-                            "## 个人偏好\n"
-                            "- ...\n\n"
-                            "## 承诺与计划\n"
-                            "- ...\n\n"
-                            "## 已确认事实\n"
-                            "- ..."
+                            "按以下 Markdown 结构输出，三个分类必须至少输出一行（可写\u201c暂无\u201d）：\n"
+                            "## 讨论脉络\n"
+                            "- 按时间顺序概述讨论了什么\n\n"
+                            "## 关键决定与计划\n"
+                            "- 用户做出的决定、确认的计划\n\n"
+                            "## 待跟进话题\n"
+                            "- 未完成或需后续关注的事项"
                         ),
                     },
                     {"role": "user", "content": json.dumps(old_dialogue, ensure_ascii=False)},
@@ -850,15 +885,15 @@ class ChatService:
             )
         except Exception as exc:
             logger.warning("Chat prune summary failed session=%s total=%s err=%s", session_id, total, exc)
-        
+
         if summary_text.strip():
-            self._save_summary(session_id, f"[rolling-prune] {summary_text.strip()}")
-        
+            self._save_summary(session_id, summary_text.strip())
+
         ids = [r.id for r in old_rows]
         with SessionLocal() as db:
             db.execute(delete(ChatMessage).where(ChatMessage.id.in_(ids)))
             db.commit()
-        
+
         logger.info(
             "Pruned chat history session_id=%s total=%s pruned=%s kept=%s",
             session_id,

@@ -101,10 +101,12 @@ class Settings(BaseSettings):
     # -------------------------
     # 聊天留存策略
     # -------------------------
-    # 当单 session 消息数超过上限时，触发“摘要 + 删除最旧消息”的滚动压缩。
-    chat_retention_limit: int = Field(default=1000, alias="CHAT_RETENTION_LIMIT")
-    # 压缩后希望保留的消息条数（应小于 retention_limit，避免每条消息都触发压缩）。
-    chat_prune_target: int = Field(default=800, alias="CHAT_PRUNE_TARGET")
+    # 当单 session 消息数超过上限时，触发"全量压缩→更新摘要→删除旧消息"。
+    # 保留的条数应 >= graph_chat.RECENT_DIALOGUE_LIMIT（默认 50），
+    # 确保 recent_dialogue 能覆盖所有未压缩的消息，避免盲区。
+    chat_retention_limit: int = Field(default=300, alias="CHAT_RETENTION_LIMIT")
+    # 压缩后希望保留的消息条数。
+    chat_prune_target: int = Field(default=50, alias="CHAT_PRUNE_TARGET")
 
     # -------------------------
     # 高德天气配置

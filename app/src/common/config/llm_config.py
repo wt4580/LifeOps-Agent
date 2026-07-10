@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import logging
 import unicodedata
+from collections.abc import Callable
 from datetime import datetime, timezone
 from functools import lru_cache
 
@@ -76,7 +77,12 @@ def _build_runtime_context(runtime_context: dict | None) -> dict:
     return merged
 
 
-def chat_completion(messages: list[dict], temperature: float = 0.2, runtime_context: dict | None = None) -> str:
+def chat_completion(
+    messages: list[dict],
+    temperature: float = 0.2,
+    runtime_context: dict | None = None,
+    on_token: Callable[[str], None] | None = None,
+) -> str:
     client = get_client()
     start = time.time()
 
@@ -91,21 +97,39 @@ def chat_completion(messages: list[dict], temperature: float = 0.2, runtime_cont
     }
     enriched_messages = [context_message, *messages]
 
-    response = client.chat.completions.create(
-        model=get_llm_model(),
-        messages=enriched_messages,
-        temperature=temperature,
-    )
+    if on_token:
+        response = client.chat.completions.create(
+            model=get_llm_model(),
+            messages=enriched_messages,
+            temperature=temperature,
+            stream=True,
+        )
+        full_text = ""
+        finish_reason = "stream"
+        for chunk in response:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta.content or ""
+            full_text += delta
+            if delta:
+                on_token(delta)
+        cleaned = normalize_llm_output(full_text)
+    else:
+        response = client.chat.completions.create(
+            model=get_llm_model(),
+            messages=enriched_messages,
+            temperature=temperature,
+        )
+        finish_reason = response.choices[0].finish_reason
+        raw = response.choices[0].message.content
+        cleaned = normalize_llm_output(raw)
 
     elapsed = time.time() - start
-    finish_reason = response.choices[0].finish_reason
-    raw = response.choices[0].message.content
-    cleaned = normalize_llm_output(raw)
     preview = (cleaned[:120] + "...") if cleaned and len(cleaned) > 120 else (cleaned or "(empty)")
-    if not cleaned and raw:
+    if not cleaned:
         logger.warning(
-            "LLM 返回仅含不可见字符 finish=%s scenario=%s len=%d",
-            finish_reason, ctx.get("scenario", "unknown"), len(raw) if raw else 0,
+            "LLM 返回仅含不可见字符 finish=%s scenario=%s",
+            finish_reason, ctx.get("scenario", "unknown"),
         )
     logger.info(
         "LLM %s %.2fs %s preview=%s",

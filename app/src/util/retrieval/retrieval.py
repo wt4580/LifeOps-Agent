@@ -321,8 +321,8 @@ def _extract_filename_hints(query: str) -> list[str]:
     return list(hints)
 
 
-def _rewrite_query(query: str) -> str:
-    """用 LLM 改写 query，提升召回对“口语问法”的鲁棒性。"""
+def _rewrite_query(query: str, session_id: str = "") -> str:
+    """用 LLM 改写 query，提升召回对"口语问法"的鲁棒性。"""
 
     prompt = (
         "你是检索查询改写器（query rewrite）。\n\n"
@@ -330,6 +330,7 @@ def _rewrite_query(query: str) -> str:
         "把用户问题改写成更适合从本地文档中检索的关键词/短语。\n"
         "## 规则\n"
         "- 输出必须只是一行关键词，用空格分隔；不要解释，不要换行。\n"
+        "- 最多输出 10 个关键词。\n"
         "- 保留专有名词、缩写、阶段名（如 stage2）、人名、术语。\n"
         "- 如果问题包含文件名（如 work.png），请保留 work 这样的主体词，同时也保留 work.png 作为线索。\n"
         "- 删除无意义词：如 里面、什么、一下、帮我、请问 等。"
@@ -341,6 +342,7 @@ def _rewrite_query(query: str) -> str:
                 {"role": "user", "content": query},
             ],
             temperature=0.0,
+            runtime_context={"scenario": "rewrite_query", "session_id": session_id},
         )
         return " ".join(text.split())
     except Exception as exc:
@@ -544,7 +546,7 @@ def _search_langchain(query: str, top_k: int) -> list[Citation]:
         return []
 
 
-def search_chunks(query: str, top_k: int = 5) -> list[Citation]:
+def search_chunks(query: str, top_k: int = 5, session_id: str = "") -> list[Citation]:
     """统一检索入口：按 backend 分流到 bm25 / langchain / hybrid。"""
 
     backend = settings.rag_backend.lower().strip()
@@ -555,7 +557,7 @@ def search_chunks(query: str, top_k: int = 5) -> list[Citation]:
     if not rows and backend in {"bm25", "hybrid"}:
         return []
 
-    rewritten = _rewrite_query(query)
+    rewritten = _rewrite_query(query, session_id=session_id)
 
     path_hits = _path_recall(rows, query, top_k=max(top_k, 8)) if rows else []
     bm25_hits = _bm25_recall(rows, query, top_k=max(top_k, 8), reason="bm25") if rows else []
@@ -600,6 +602,7 @@ def rag_answer(
     *,
     profile_context: str | None = None,
     pre_advice: str | None = None,
+    on_token: Callable[[str], None] | None = None,
 ) -> str:
     """把候选证据拼成 Context，交给 LLM 生成带引用回答。"""
 
@@ -664,4 +667,5 @@ def rag_answer(
             "evidence_best_score": round(best_score, 6),
             "evidence_strong_count": strong_count,
         },
+        on_token=on_token,
     )

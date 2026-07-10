@@ -1290,6 +1290,73 @@ button:focus-visible {
 }
 
 /* ========================================
+   Login
+   ======================================== */
+.login-section {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #f5f0e8 0%, #e8e0d0 100%);
+}
+
+.login-card {
+  background: #fff;
+  border-radius: 20px;
+  padding: 48px 40px 40px;
+  width: 360px;
+  max-width: 90vw;
+  text-align: center;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.08);
+}
+
+.login-icon {
+  color: #8b7a62;
+  margin-bottom: 12px;
+}
+
+.login-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: #4a3f35;
+  margin: 0 0 4px;
+}
+
+.login-subtitle {
+  font-size: 14px;
+  color: #8b7a62;
+  margin: 0 0 32px;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.login-input {
+  padding: 12px 16px;
+  border: 1.5px solid #ddd6cc;
+  border-radius: 10px;
+  font-size: 16px;
+  outline: none;
+  background: #faf8f4;
+  color: #4a3f35;
+  transition: border-color 0.2s;
+}
+
+.login-input:focus {
+  border-color: #8b7a62;
+}
+
+.login-btn {
+  padding: 12px;
+  font-size: 16px;
+}
+
+/* ========================================
    Print
    ======================================== */
 @media print {

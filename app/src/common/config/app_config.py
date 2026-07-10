@@ -23,6 +23,7 @@ from .chat_graph_holder import set_chat_graph
 from ..domain.global_exception import register_global_exception_handlers
 from ...agent.graph_chat import build_chat_graph
 from ...controller import (
+        auth_router,
         chat_router,
         plan_router,
         todo_router,
@@ -48,6 +49,7 @@ def register_routers(app: FastAPI):
     app.include_router(rag_router)
     app.include_router(health_router)
     app.include_router(web_router)
+    app.include_router(auth_router)
     
     logger.info("All routers registered")
 
