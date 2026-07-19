@@ -574,8 +574,8 @@ async function handleLogin() {
     localStorage.setItem("lifeops_session_id", sessionId);
     loginSection.style.display = "none";
     appSection.style.display = "";
-    loadUpcomingTodos();
-    loadPendingReminders();
+    loadTodos("/api/todos/upcoming?days=7");
+    loadReminders();
   } catch (err) {
     console.error("Login error:", err);
   }
@@ -584,8 +584,8 @@ async function handleLogin() {
 if (sessionId) {
   loginSection.style.display = "none";
   appSection.style.display = "";
-  loadUpcomingTodos();
-  loadPendingReminders();
+  loadTodos("/api/todos/upcoming?days=7");
+  loadReminders();
 } else {
   loginSection.style.display = "";
   appSection.style.display = "none";
@@ -737,14 +737,12 @@ if (chatSend) {
   });
 }
 
-if (chatInput) {
-  chatInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (chatSend) chatSend.click();
-    }
-  });
-}
+document.addEventListener("keydown", function(e) {
+  if (e.key === "Enter" && !e.shiftKey && document.activeElement === chatInput) {
+    e.preventDefault();
+    if (chatSend) chatSend.click();
+  }
+});
 
 // ========================================
 // 待办查询
