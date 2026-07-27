@@ -498,14 +498,19 @@ def _merge_rank(*lists: list[Citation], top_k: int) -> list[Citation]:
 
 
 def _rrf_fuse(*lists: list[Citation], top_k: int, k: int = 60) -> list[Citation]:
-    """RRF 融合：对不同召回通道做稳健排序融合。"""
+    """RRF 融合：对不同召回通道做稳健排序融合。
+
+    RRF 分数仅用于排序；展示的 score 字段保留原始相似度（向量分优先）。
+    """
 
     fused: dict[tuple[str, int | None, str], Citation] = {}
     rrf_score: dict[tuple[str, int | None, str], float] = {}
+    display_score: dict[tuple[str, int | None, str], float] = {}
 
     for l in lists:
         for rank, c in enumerate(l, start=1):
             key = (c.path, c.page, c.snippet)
+            is_vector = "vector" in (c.reason or "")
             if key not in fused:
                 fused[key] = Citation(
                     path=c.path, page=c.page, snippet=c.snippet, score=0.0, reason=c.reason,
@@ -515,6 +520,11 @@ def _rrf_fuse(*lists: list[Citation], top_k: int, k: int = 60) -> list[Citation]
             else:
                 if c.reason not in fused[key].reason:
                     fused[key].reason = f"{fused[key].reason}+{c.reason}"
+            # 展示分数：向量分覆盖 BM25/路径分；非向量通道取最大值
+            if is_vector:
+                display_score[key] = c.score
+            else:
+                display_score[key] = max(display_score.get(key, 0.0), c.score)
             rrf_score[key] = rrf_score.get(key, 0.0) + (1.0 / (k + rank))
 
     for key, score in rrf_score.items():
@@ -522,6 +532,12 @@ def _rrf_fuse(*lists: list[Citation], top_k: int, k: int = 60) -> list[Citation]
 
     out = list(fused.values())
     out.sort(key=lambda x: x.score, reverse=True)
+
+    for o in out:
+        key = (o.path, o.page, o.snippet)
+        if key in display_score:
+            o.score = display_score[key]
+
     return out[:top_k]
 
 
