@@ -40,6 +40,7 @@ class LCRetrievalHit:
     snippet: str
     score: float
     reason: str
+    section_path: str | None = None
 
 
 def _require_langchain() -> None:

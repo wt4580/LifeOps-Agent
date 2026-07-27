@@ -15,7 +15,43 @@ class TextChunk:
     page: int | None = None
     section_title: str | None = None
     heading_level: int | None = None
+    section_path: str | None = None
+    section_rank: int | None = None
     is_table: bool = False
+
+
+@dataclass
+class HeadingNode:
+    title: str
+    level: int
+
+
+class HeadingStack:
+    def __init__(self):
+        self._stack: list[HeadingNode] = []
+        self._section_count: int = 0
+
+    def update(self, title: str, level: int) -> None:
+        while self._stack and self._stack[-1].level >= level:
+            self._stack.pop()
+        self._stack.append(HeadingNode(title=title, level=level))
+        self._section_count = 0
+
+    @property
+    def path(self) -> str:
+        return " > ".join(n.title for n in self._stack) if self._stack else ""
+
+    @property
+    def current_title(self) -> str | None:
+        return self._stack[-1].title if self._stack else None
+
+    @property
+    def current_level(self) -> int | None:
+        return self._stack[-1].level if self._stack else None
+
+    def bump_section_rank(self) -> int:
+        self._section_count += 1
+        return self._section_count
 
 
 @dataclass
@@ -90,7 +126,7 @@ def _build_pdf_chunks(path: str) -> list[TextChunk]:
         return []
 
     raw_chunks: list[TextChunk] = []
-    current_section: tuple[str, int] | None = None
+    heading_stack = HeadingStack()
 
     for p in pages:
         content = (p.text or "").strip()
@@ -105,7 +141,7 @@ def _build_pdf_chunks(path: str) -> list[TextChunk]:
             if heading:
                 page_heading = heading
                 body_start = i + 1
-                current_section = heading
+                heading_stack.update(title=heading[0], level=heading[1])
                 break
 
         body = "\n".join(lines[body_start:]).strip()
@@ -114,17 +150,20 @@ def _build_pdf_chunks(path: str) -> list[TextChunk]:
                 raw_chunks.append(TextChunk(
                     text=page_heading[0], page=p.page,
                     section_title=page_heading[0], heading_level=page_heading[1],
+                    section_path=heading_stack.path,
                 ))
             continue
 
         parts = _smart_split(body) if len(body) > 800 else [body]
         for part in parts:
             is_table = _is_table_block(part)
-            title = current_section[0] if current_section else None
-            level = current_section[1] if current_section else None
+            section_rank = heading_stack.bump_section_rank()
             raw_chunks.append(TextChunk(
                 text=part, page=p.page,
-                section_title=title, heading_level=level,
+                section_title=heading_stack.current_title,
+                heading_level=heading_stack.current_level,
+                section_path=heading_stack.path,
+                section_rank=section_rank,
                 is_table=is_table,
             ))
 
@@ -146,7 +185,7 @@ def _build_txt_chunks(path: str) -> list[TextChunk]:
 
     lines = text.split("\n")
     chunks: list[TextChunk] = []
-    current_section: tuple[str, int] | None = None
+    heading_stack = HeadingStack()
     buffer_lines: list[str] = []
     buffer_len = 0
 
@@ -157,14 +196,28 @@ def _build_txt_chunks(path: str) -> list[TextChunk]:
         block = "\n".join(buffer_lines).strip()
         if not block:
             return
-        title = current_section[0] if current_section else None
-        level = current_section[1] if current_section else None
+        section_rank = heading_stack.bump_section_rank()
         is_table = _is_table_block(block)
         if len(block) <= 800:
-            chunks.append(TextChunk(text=block, section_title=title, heading_level=level, is_table=is_table))
+            chunks.append(TextChunk(
+                text=block,
+                section_title=heading_stack.current_title,
+                heading_level=heading_stack.current_level,
+                section_path=heading_stack.path,
+                section_rank=section_rank,
+                is_table=is_table,
+            ))
         else:
             for part in _smart_split(block):
-                chunks.append(TextChunk(text=part, section_title=title, heading_level=level, is_table=is_table))
+                sr = heading_stack.bump_section_rank()
+                chunks.append(TextChunk(
+                    text=part,
+                    section_title=heading_stack.current_title,
+                    heading_level=heading_stack.current_level,
+                    section_path=heading_stack.path,
+                    section_rank=sr,
+                    is_table=is_table,
+                ))
         buffer_lines = []
         buffer_len = 0
 
@@ -172,7 +225,7 @@ def _build_txt_chunks(path: str) -> list[TextChunk]:
         heading = _is_heading_line(line)
         if heading:
             flush_buffer()
-            current_section = heading
+            heading_stack.update(title=heading[0], level=heading[1])
             continue
         stripped = line.strip()
         if not stripped and buffer_len > 600:

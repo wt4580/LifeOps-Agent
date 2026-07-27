@@ -27,6 +27,7 @@ Action = Literal[
     "query_accounts",
     "create_account",
     "ask_user_confirm_balance",
+    "query_database",
 ]
 
 
@@ -159,6 +160,14 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
                 "description": "询问用户确认是否更新已有账户的余额。仅当 create_account 检测到余额不一致并设置了 pending_balance_update 后使用。",
                 "args": {},
             },
+            {
+                "name": "query_database",
+                "description": "对业务数据库或知识库执行只读 SQL 查询。用于灵活查看数据，如列出表结构、统计记录数、按条件筛选内容等。支持 SELECT/PRAGMA/EXPLAIN。会自动尝试 business 和 knowledge 两个数据库。",
+                "args": {
+                    "sql": "string. 合法的 SELECT/PRAGMA/EXPLAIN 语句",
+                    "max_rows": "int, default 50. 最大返回行数",
+                },
+            },
         ]
     }
 
@@ -179,11 +188,12 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
         "- 如果拿不准用户意图，优先选 ask_user_confirm_proposal（反问确认）。\n"
         "- 如果没有匹配的工具，选 normal_chat。\n"
         "- 知识库仅在用户问题与可用主题明确相关时才用。\n"
-        "- 记账相关：用户说'花了xx' '付了xx' '收入xx' '用了xx钱' 等涉及金额的描述，优先用 record_expense。用户说'查账单''花了多少钱''分析支出' 用 query_expenses。用户说'我的账户''我的余额' 用 query_accounts。用户说'我的XX有XX元''我XX账户有XX钱' 用 create_account。如果 create_account 提示余额不一致，接下来用 ask_user_confirm_balance 让用户确认。\n\n"
+        "- 记账相关：用户说'花了xx' '付了xx' '收入xx' '用了xx钱' 等涉及金额的描述，优先用 record_expense。用户说'查账单''花了多少钱''分析支出' 用 query_expenses。用户说'我的账户''我的余额' 用 query_accounts。用户说'我的XX有XX元''我XX账户有XX钱' 用 create_account。如果 create_account 提示余额不一致，接下来用 ask_user_confirm_balance 让用户确认。\n"
+        "- query_database：当用户想查看数据统计、列表、表结构，或现有专用工具无法满足的灵活查询时使用。例如'知识库有哪些文件''这个月记了多少笔账''user_profiles表有哪些字段'。优先使用专用工具，专用工具不足时用此工具兜底。\n\n"
         "## 输出格式\n"
         "输出 JSON：\n"
         "{\n"
-        '  "action": "normal_chat|query_todos|query_knowledge|propose_todo|ask_user_confirm_proposal|query_calendar|query_weather|record_expense|query_expenses|query_accounts|create_account|ask_user_confirm_balance",\n'
+        '  "action": "normal_chat|query_todos|query_knowledge|propose_todo|ask_user_confirm_proposal|query_calendar|query_weather|record_expense|query_expenses|query_accounts|create_account|ask_user_confirm_balance|query_database",\n'
         '  "args": { ... },\n'
         '  "assistant_message": "给用户的第一句回应（中文，可留空）",\n'
         '  "trace": {"intent": "简要意图", "why": "简短选择理由"}\n'

@@ -28,7 +28,7 @@ def extract_memory_from_dialogue(dialogue: list[dict]) -> MemoryExtraction | Non
     )
     messages = [{"role": "system", "content": system_prompt}] + dialogue
     try:
-        content = chat_completion(messages, temperature=0.1)
+        content = chat_completion(messages, temperature=0.1, runtime_context={"scenario": "memory_extraction"})
         data = json.loads(content)
         return MemoryExtraction.model_validate(data)
     except (json.JSONDecodeError, ValidationError) as exc:

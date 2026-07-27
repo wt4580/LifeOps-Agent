@@ -336,6 +336,7 @@ def _node_decompose(state: ChatState) -> ChatState:
         "- query_accounts: 查询账户余额\n"
         "- create_account: 创建账户\n"
         "- ask_user_confirm_balance: 让用户确认更新余额\n"
+        "- query_database: 执行只读 SQL 查询\n"
         "- normal_chat: 普通对话\n\n"
         "## 纯闲聊判断\n"
         "如果用户只是打招呼、寒暄、说心情、纯聊天，没有任何查询/操作意图：\n"
@@ -421,7 +422,7 @@ def _build_normal_chat_answer(
     if assistant_message:
         return assistant_message, True
 
-    messages: list[dict[str, str]] = [{"role": "system", "content": "你是一个中文生活助手。"}]
+    messages: list[dict[str, str]] = [{"role": "system", "content": "你是一个中文生活助手。请在回答时严格区分实时查询结果与历史记录。"}]
     md_context = load_markdown_context()
     if md_context:
         messages.append({"role": "system", "content": f"助手备忘录与技能：\n{md_context}"})
@@ -434,7 +435,7 @@ def _build_normal_chat_answer(
     if state.get("summary"):
         summary = state["summary"]
         if not summary.startswith("##"):
-            summary = f"## 对话摘要\n{summary}"
+            summary = f"## 对话摘要（历史记录，仅供了解用户背景，不代表当前状态）\n{summary}"
         context_parts.append(summary)
 
     important_events = state.get("important_events") or []
@@ -512,7 +513,11 @@ def _build_normal_chat_answer(
             except Exception:
                 pass
 
-    result = chat_completion(messages, on_token=on_token if q else None)
+    result = chat_completion(
+        messages,
+        on_token=on_token if q else None,
+        runtime_context={"scenario": "normal_chat", "session_id": session_id},
+    )
     return result, False
 
 
@@ -747,9 +752,10 @@ def _node_run_tool(state: ChatState) -> ChatState:
                         {"role": "system", "content": prompt},
                         {"role": "user", "content": json.dumps(events, ensure_ascii=False)},
                     ],
-                temperature=0.2,
-                on_token=_make_on_token(state),
-            )
+                    temperature=0.2,
+                    on_token=_make_on_token(state),
+                    runtime_context={"scenario": "calendar_summarize", "session_id": state.get("session_id", "")},
+                )
             _append_trace(
                     state,
                     _trace_step(
@@ -1122,6 +1128,44 @@ def _node_run_tool(state: ChatState) -> ChatState:
             _push_delta(state, state["answer"])
         return state
 
+    if action == "query_database":
+        _push_progress(state, "正在查询数据库...")
+        try:
+            from ..service.db_query_service import execute_read_query
+            sql = (args.get("sql") or "").strip()
+            max_rows = int(args.get("max_rows", 50) or 50)
+            if not sql:
+                state["used_tool"] = "query_database"
+                state["answer"] = "请提供要执行的 SQL 语句。"
+                _push_delta(state, state["answer"])
+                return state
+            result = execute_read_query(sql, max_rows=max_rows)
+            if result.get("error"):
+                state["used_tool"] = "query_database"
+                state["answer"] = f"查询出错：{result['error']}"
+                _push_delta(state, state["answer"])
+                return state
+            lines = [f"数据库：{result['db']}，共 {result['row_count']} 条记录"]
+            if result["columns"]:
+                lines.append(" | ".join(str(c) for c in result["columns"]))
+                lines.append("-" * 40)
+            for r in result["rows"]:
+                lines.append(" | ".join(str(v) if v is not None else "NULL" for v in r))
+            if result.get("truncated"):
+                lines.append(f"...（仅显示前 {max_rows} 条）")
+            answer = "\n".join(lines)
+            state["used_tool"] = "query_database"
+            state["answer"] = answer
+            _push_delta(state, state["answer"])
+            _append_trace(state, _trace_step(step_type="tool", name="query_database",
+                input={"sql": sql, "max_rows": max_rows}, output={"db": result["db"], "row_count": result["row_count"]}))
+        except Exception as exc:
+            logger.warning("query_database failed: %s", exc)
+            state["used_tool"] = "query_database"
+            state["answer"] = f"数据库查询出错：{exc}"
+            _push_delta(state, state["answer"])
+        return state
+
     # normal_chat 分支：
     state["used_tool"] = None
     plan = state.get("plan") or []
@@ -1335,6 +1379,8 @@ def _node_quality_gate(state: ChatState) -> ChatState:
     user_msg = state.get("user_message", "")
     system = (
         "你是回答质量评审员。检查最终回答是否完整、准确地回应了用户。\n"
+        "注意：如果回答正确地说「没有找到事件」或类似结论，不要生成包含新信息的 fix。\n"
+        "fix 只能基于 assistant_answer 已有的结论补充措辞，绝不能添加原文没有的事实。\n"
         "## 输出格式\n"
         "输出严格 JSON：\n"
         '{"passed": true|false, "missing": ["遗漏点"], "fix": "修正后的完整回答"}'

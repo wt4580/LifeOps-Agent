@@ -13,17 +13,19 @@
 """
 
 import hashlib
+import json
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from rank_bm25 import BM25Okapi
 
 from ...common.config.log_config import logger
 from ...common.config.knowledge_db_config import KnowledgeSessionLocal
-from ...domain.entity.knowledge_entity import DocumentChunk
+from ...domain.entity.knowledge_entity import Document, DocumentChunk
 from ...common.config.llm_config import chat_completion
 from ...common.config.base_config import settings
 from ..ingest.scanner import scan_documents
@@ -41,6 +43,7 @@ class Citation:
     source_type: str | None = None
     doc_topic: str | None = None
     section_title: str | None = None
+    section_path: str | None = None
     summary: str | None = None
 
 
@@ -85,9 +88,10 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
 
     with KnowledgeSessionLocal() as db:
         if rebuild:
+            db.query(Document).delete()
             deleted = db.query(DocumentChunk).delete()
             db.commit()
-            logger.info("Rebuild index: cleared document_chunks deleted=%s", deleted)
+            logger.info("Rebuild index: cleared documents + document_chunks deleted=%s", deleted)
 
         for doc in docs:
             source_type = _infer_source_type(doc.path)
@@ -114,6 +118,8 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
                         doc_topic=doc_topic,
                         section_title=chunk.section_title,
                         heading_level=chunk.heading_level,
+                        section_path=chunk.section_path,
+                        section_rank=chunk.section_rank,
                         is_table=chunk.is_table,
                     )
                 )
@@ -121,6 +127,120 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
         db.commit()
 
     return inserted, skipped
+
+
+def _migrate_section_paths() -> None:
+    """给已有 chunks 回填 section_path 和 section_rank（增量迁移用）。"""
+    from ..ingest.scanner import HeadingStack
+
+    with KnowledgeSessionLocal() as db:
+        file_paths = db.execute(
+            select(DocumentChunk.file_path).where(DocumentChunk.section_path == None).distinct()
+        ).scalars().all()
+        for fp in file_paths:
+            chunks = db.execute(
+                select(DocumentChunk).where(
+                    DocumentChunk.file_path == fp,
+                    DocumentChunk.section_path == None,
+                ).order_by(DocumentChunk.id)
+            ).scalars().all()
+            if not chunks:
+                continue
+            heading_stack = HeadingStack()
+            for c in chunks:
+                if c.section_title and c.heading_level is not None:
+                    heading_stack.update(title=c.section_title, level=c.heading_level)
+                c.section_path = heading_stack.path
+                c.section_rank = heading_stack.bump_section_rank()
+        db.commit()
+        if file_paths:
+            logger.info("Migrated section_path for %s files", len(file_paths))
+
+
+def _sync_document_records() -> None:
+    """从 document_chunks 聚合数据，创建或更新 documents 表记录。"""
+    with KnowledgeSessionLocal() as db:
+        file_rows = db.execute(
+            select(
+                DocumentChunk.file_path,
+                DocumentChunk.source_type,
+                DocumentChunk.doc_topic,
+                DocumentChunk.section_title,
+                DocumentChunk.heading_level,
+                DocumentChunk.section_path,
+                func.count(DocumentChunk.id),
+            ).group_by(DocumentChunk.file_path)
+        ).all()
+
+        for (fp, src_type, topic, _sec_title, _heading_lv, _sec_path, cnt) in file_rows:
+            existing = db.execute(
+                select(Document).where(Document.file_path == fp).limit(1)
+            ).scalars().first()
+
+            heading_rows = db.execute(
+                select(
+                    DocumentChunk.section_title,
+                    DocumentChunk.heading_level,
+                ).where(
+                    DocumentChunk.file_path == fp,
+                    DocumentChunk.section_title != None,
+                ).distinct().order_by(DocumentChunk.id)
+            ).all()
+            outline = [{"title": t, "level": lv} for t, lv in heading_rows if t] if heading_rows else None
+
+            if existing:
+                existing.chunk_count = cnt
+                existing.outline = json.dumps(outline, ensure_ascii=False) if outline else None
+                existing.updated_at = datetime.now(timezone.utc)
+            else:
+                db.add(Document(
+                    file_path=fp,
+                    source_type=src_type or "other",
+                    topics=topic or "other",
+                    outline=json.dumps(outline, ensure_ascii=False) if outline else None,
+                    chunk_count=cnt,
+                ))
+        db.commit()
+
+
+def _generate_document_summaries() -> None:
+    """对缺少摘要的 Document 记录生成文件级摘要（LLM 生成）。"""
+    with KnowledgeSessionLocal() as db:
+        docs = db.execute(
+            select(Document).where(Document.summary == None).limit(20)
+        ).scalars().all()
+        if not docs:
+            return
+
+        updated = 0
+        for doc in docs:
+            chunks = db.execute(
+                select(DocumentChunk.chunk_text, DocumentChunk.summary)
+                .where(DocumentChunk.file_path == doc.file_path)
+                .order_by(DocumentChunk.id)
+                .limit(50)
+            ).all()
+            if not chunks:
+                continue
+            snippet = " | ".join(
+                (s or t)[:200] for t, s in chunks[:5]
+            )
+            try:
+                answer = chat_completion(
+                    [{"role": "user", "content": (
+                        f"为以下知识文档生成一句话摘要（30字以内）：\n"
+                        f"文件名：{os.path.basename(doc.file_path)}\n"
+                        f"内容片段：{snippet}"
+                    )}],
+                    temperature=0.0,
+                ).strip()[:120]
+                if answer:
+                    doc.summary = answer
+                    updated += 1
+            except Exception as exc:
+                logger.warning("Document summary failed for %s: %s", doc.file_path, exc)
+        db.commit()
+        logger.info("Generated document summaries count=%s", updated)
 
 
 def _generate_chunk_summaries() -> None:
@@ -181,60 +301,54 @@ def _generate_chunk_summaries() -> None:
 
 def get_available_knowledge_topics() -> list[dict]:
     with KnowledgeSessionLocal() as db:
-        rows = db.execute(
-            select(
-                DocumentChunk.file_path,
-                DocumentChunk.section_title,
-                DocumentChunk.summary,
-            ).distinct().limit(500)
-        ).all()
-        doc_map: dict[str, dict] = {}
-        for fp, section, summary in rows:
-            if fp not in doc_map:
-                topic = _infer_doc_topic(fp)
-                doc_map[fp] = {"file": os.path.basename(fp), "topic": topic, "sections": set(), "summaries": []}
-            if section:
-                doc_map[fp]["sections"].add(section)
-            if summary:
-                doc_map[fp]["summaries"].append(summary)
+        docs = db.execute(
+            select(Document).order_by(Document.file_path).limit(100)
+        ).scalars().all()
         result = []
-        for info in doc_map.values():
-            entry = {"file": info["file"], "topic": info["topic"]}
-            if info["sections"]:
-                entry["sections"] = sorted(info["sections"])[:10]
-            if info["summaries"]:
-                entry["summary_samples"] = info["summaries"][:3]
+        for d in docs:
+            entry = {"file": os.path.basename(d.file_path), "topic": d.topics or "other"}
+            if d.summary:
+                entry["summary"] = d.summary
+            if d.outline:
+                try:
+                    parsed = json.loads(d.outline)
+                    entry["sections"] = [h["title"] for h in parsed if h.get("title")][:10]
+                except Exception:
+                    pass
             result.append(entry)
         return result
 
 
 def get_document_outline() -> list[dict]:
     with KnowledgeSessionLocal() as db:
-        rows = db.execute(
-            select(
-                DocumentChunk.file_path,
-                DocumentChunk.section_title,
-                DocumentChunk.heading_level,
-            ).distinct().order_by(DocumentChunk.file_path, DocumentChunk.heading_level, DocumentChunk.id)
-        ).all()
-        doc_outline: dict[str, list[dict]] = {}
-        for fp, title, level in rows:
-            if not title:
-                continue
-            if fp not in doc_outline:
-                doc_outline[fp] = []
-            doc_outline[fp].append({"title": title, "level": level or 1})
+        docs = db.execute(
+            select(Document).order_by(Document.file_path).limit(100)
+        ).scalars().all()
         result = []
-        for fp, headings in doc_outline.items():
+        for d in docs:
+            headings = []
+            if d.outline:
+                try:
+                    parsed = json.loads(d.outline)
+                    headings = parsed[:20]
+                except Exception:
+                    pass
             result.append({
-                "file": os.path.basename(fp),
-                "headings": headings[:20],
+                "file": os.path.basename(d.file_path),
+                "headings": headings,
             })
         return result
 
 
-def index_documents(*, rebuild: bool = False) -> dict:
-    """统一索引入口：先建 SQLite 索引，再按配置可选构建向量索引。"""
+def index_documents(*, rebuild: bool = False, reset: bool = False) -> dict:
+    """统一索引入口：先建 SQLite 索引，再按配置可选构建向量索引。
+    
+    Args:
+        rebuild: 重建索引（清空再重录，但保留去重判断）
+        reset:  重置索引（跳过所有去重，清空存量后全量重录，隐含 rebuild=True）
+    """
+    if reset:
+        rebuild = True
 
     start = datetime.now(timezone.utc)
     inserted, skipped = _index_documents_sqlite(rebuild=rebuild)
@@ -244,6 +358,7 @@ def index_documents(*, rebuild: bool = False) -> dict:
         "inserted": inserted,
         "skipped": skipped,
         "rebuild": rebuild,
+        "reset": reset,
         "backend": backend,
         "vector_attempted": backend in {"langchain", "hybrid"},
     }
@@ -258,16 +373,19 @@ def index_documents(*, rebuild: bool = False) -> dict:
             logger.warning("Vector index build failed, keep sqlite index only: %s", exc)
             result["vector_error"] = str(exc)
 
-    if inserted > 0:
+    if inserted > 0 or rebuild:
+        _sync_document_records()
         _generate_chunk_summaries()
+        _generate_document_summaries()
 
     elapsed = (datetime.now(timezone.utc) - start).total_seconds()
     logger.info(
-        "Index complete. inserted=%s skipped=%s elapsed=%.2fs rebuild=%s backend=%s",
+        "Index complete. inserted=%s skipped=%s elapsed=%.2fs rebuild=%s reset=%s backend=%s",
         inserted,
         skipped,
         elapsed,
         rebuild,
+        reset,
         backend,
     )
     return result
@@ -432,6 +550,7 @@ def _path_recall(rows: list[DocumentChunk], query: str, top_k: int) -> list[Cita
                 source_type=getattr(r, "source_type", None),
                 doc_topic=getattr(r, "doc_topic", None),
                 section_title=getattr(r, "section_title", None),
+                section_path=getattr(r, "section_path", None),
                 summary=getattr(r, "summary", None),
             )
         )
@@ -467,6 +586,7 @@ def _bm25_recall(rows: list[DocumentChunk], query: str, top_k: int, reason: str)
                 source_type=getattr(r, "source_type", None),
                 doc_topic=getattr(r, "doc_topic", None),
                 section_title=getattr(r, "section_title", None),
+                section_path=getattr(r, "section_path", None),
                 summary=getattr(r, "summary", None),
             )
         )
@@ -515,7 +635,7 @@ def _rrf_fuse(*lists: list[Citation], top_k: int, k: int = 60) -> list[Citation]
                 fused[key] = Citation(
                     path=c.path, page=c.page, snippet=c.snippet, score=0.0, reason=c.reason,
                     source_type=c.source_type, doc_topic=c.doc_topic,
-                    section_title=c.section_title, summary=c.summary,
+                    section_title=c.section_title, section_path=c.section_path, summary=c.summary,
                 )
             else:
                 if c.reason not in fused[key].reason:
@@ -562,6 +682,7 @@ def _search_langchain(query: str, top_k: int) -> list[Citation]:
                 source_type=getattr(h, "source_type", None),
                 doc_topic=getattr(h, "doc_topic", None),
                 section_title=getattr(h, "section_title", None),
+                section_path=getattr(h, "section_path", None),
                 summary=getattr(h, "summary", None),
             )
             for h in hits
@@ -569,6 +690,45 @@ def _search_langchain(query: str, top_k: int) -> list[Citation]:
     except Exception as exc:
         logger.warning("langchain retrieval failed: %s", exc)
         return []
+
+
+def _apply_document_summary_filter(rows: list) -> list:
+    """用文档摘要做轻量预过滤：查询词匹配文档摘要则只保留该文档的 chunks。"""
+    with KnowledgeSessionLocal() as db:
+        docs = db.execute(
+            select(Document.file_path, Document.summary)
+            .where(Document.summary != None)
+        ).all()
+    if not docs:
+        return rows
+
+    corpus = [_tokenize(d.summary) for d in docs if d.summary]
+    if not corpus:
+        return rows
+    tokens = _tokenize(" ".join(_tokenize(rows[0].chunk_text or "") if hasattr(rows[0], 'chunk_text') else ""))
+    # 用查询词匹配文档摘要
+    query_tokens = _tokenize(" ".join(_tokenize(d.summary[:200]) for d in docs if d.summary))
+    # 简化：用文档摘要 BM25 匹配查询
+    doc_map = {d.file_path: d.summary for d in docs if d.summary}
+    doc_paths = list(doc_map.keys())
+    doc_texts = [doc_map[p] for p in doc_paths]
+    doc_corpus_tokens = [_tokenize(t) for t in doc_texts]
+    bm25 = BM25Okapi(doc_corpus_tokens)
+    query_tokens = _tokenize(query)
+    if not query_tokens:
+        return rows
+    scores = bm25.get_scores(query_tokens)
+    matched = [(p, s) for p, s in zip(doc_paths, scores) if s > 0]
+    if not matched:
+        return rows
+    # 保留命中文档的 file_path 集合
+    keep_paths = set(p for p, s in matched)
+    filtered = [r for r in rows if r.file_path in keep_paths]
+    if filtered:
+        logger.info("Document summary filter: %d/%d rows kept for %d matched docs",
+                     len(filtered), len(rows), len(keep_paths))
+        return filtered
+    return rows
 
 
 def search_chunks(query: str, top_k: int = 5, session_id: str = "") -> list[Citation]:
@@ -581,6 +741,8 @@ def search_chunks(query: str, top_k: int = 5, session_id: str = "") -> list[Cita
     rows = _apply_source_filter(rows, query)
     if not rows and backend in {"bm25", "hybrid"}:
         return []
+
+    rows = _apply_document_summary_filter(rows)
 
     rewritten = _rewrite_query(query, session_id=session_id)
 
@@ -650,7 +812,9 @@ def rag_answer(
     context_lines: list[str] = []
     for idx, cite in enumerate(citations, start=1):
         meta = f"{cite.reason}|{cite.source_type or 'unknown'}|{cite.doc_topic or 'other'}"
-        if cite.section_title:
+        if cite.section_path:
+            meta += f"|{cite.section_path}"
+        elif cite.section_title:
             meta += f"|section:{cite.section_title}"
         if cite.summary:
             meta += f"|summary:{cite.summary}"

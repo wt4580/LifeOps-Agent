@@ -14,10 +14,11 @@ def index_documents(req: IndexRequest | None = None):
     """索引指定目录下的文档
     
     Args:
-        req: 可选的文档目录路径，如果为空则使用配置中的默认值
+        req: 索引请求，可指定 reset=true 重置索引
     """
     try:
-        result = rag_service.index_docs()
+        reset = (req or IndexRequest()).reset
+        result = rag_service.index_docs(reset=reset)
         return success_response(data=result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -64,6 +64,10 @@ def _ensure_document_chunks_columns() -> None:
             conn.execute(text("ALTER TABLE document_chunks ADD COLUMN is_table INTEGER"))
         if "summary" not in existing:
             conn.execute(text("ALTER TABLE document_chunks ADD COLUMN summary TEXT"))
+        if "section_path" not in existing:
+            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN section_path VARCHAR(512)"))
+        if "section_rank" not in existing:
+            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN section_rank INTEGER"))
 
 
 def init_knowledge_db() -> None:

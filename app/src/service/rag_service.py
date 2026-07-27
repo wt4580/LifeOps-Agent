@@ -19,16 +19,16 @@ class RAGService:
     3. 搜索相关片段
     """
     
-    def index_docs(self) -> dict:
+    def index_docs(self, reset: bool = False) -> dict:
         """索引指定目录下的文档
         
         Args:
-            docs_dir: 文档目录路径，如果为None则使用配置中的默认值
+            reset: 是否重置索引（清空存量后全量重录）
             
         Returns:
             索引结果统计
         """
-        result = index_documents()
+        result = index_documents(reset=reset)
         logger.info("Indexing completed: %s", result)
         
         return result
