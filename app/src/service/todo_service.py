@@ -33,9 +33,8 @@ class TodoService:
         }
 
     def _apply_scope_filter(self, stmt, session_id: str):
-        scope = (settings.personal_memory_scope or "global").strip().lower()
         session_col = getattr(TodoItem, "session_id", None)
-        if scope == "session" and session_col is not None:
+        if session_col is not None:
             return stmt.where(session_col == session_id)
         return stmt
 

@@ -255,14 +255,7 @@ class ChatService:
         return [{"role": r.role, "content": r.content} for r in rows]
     
     def _resolve_memory_owner_id(self, session_id: str) -> str:
-        """解析记忆所有者 ID。
-
-        `session` 模式按会话隔离；`global` 模式则共享到统一 owner。
-        """
-        scope = (settings.personal_memory_scope or "global").strip().lower()
-        if scope == "session":
-            return session_id
-        return "global"
+        return session_id
     
     def _load_user_profile(self, session_id: str) -> dict | None:
         """读取用户画像，并还原成普通字典供上层使用。"""
@@ -512,9 +505,8 @@ class ChatService:
                 .where(TodoItem.due_at < end)
                 .order_by(TodoItem.due_at.asc())
             )
-            scope = (settings.personal_memory_scope or "global").strip().lower()
             session_col = getattr(TodoItem, "session_id", None)
-            if scope == "session" and session_col is not None:
+            if session_col is not None:
                 stmt = stmt.where(session_col == session_id)
             
             rows = db.execute(stmt).scalars().all()

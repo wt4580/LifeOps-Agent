@@ -82,6 +82,7 @@ def chat_completion(
     temperature: float = 0.2,
     runtime_context: dict | None = None,
     on_token: Callable[[str], None] | None = None,
+    max_tokens: int | None = None,
 ) -> str:
     client = get_client()
     start = time.time()
@@ -97,13 +98,12 @@ def chat_completion(
     }
     enriched_messages = [context_message, *messages]
 
+    kwargs = dict(model=get_llm_model(), messages=enriched_messages, temperature=temperature)
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+
     if on_token:
-        response = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=enriched_messages,
-            temperature=temperature,
-            stream=True,
-        )
+        response = client.chat.completions.create(**kwargs, stream=True)
         full_text = ""
         finish_reason = "stream"
         for chunk in response:
@@ -115,11 +115,7 @@ def chat_completion(
                 on_token(delta)
         cleaned = normalize_llm_output(full_text)
     else:
-        response = client.chat.completions.create(
-            model=get_llm_model(),
-            messages=enriched_messages,
-            temperature=temperature,
-        )
+        response = client.chat.completions.create(**kwargs)
         finish_reason = response.choices[0].finish_reason
         raw = response.choices[0].message.content
         cleaned = normalize_llm_output(raw)

@@ -99,8 +99,8 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
                         DocumentChunk.file_path == doc.path,
                         DocumentChunk.page == chunk.page,
                         DocumentChunk.chunk_hash == chunk_hash,
-                    )
-                ).scalar_one_or_none()
+                    ).limit(1)
+                ).scalars().first()
                 if exists:
                     skipped += 1
                     continue
@@ -329,8 +329,8 @@ def _rewrite_query(query: str, session_id: str = "") -> str:
         "## 目标\n"
         "把用户问题改写成更适合从本地文档中检索的关键词/短语。\n"
         "## 规则\n"
-        "- 输出必须只是一行关键词，用空格分隔；不要解释，不要换行。\n"
-        "- 最多输出 10 个关键词。\n"
+        "- 输出必须只是一行关键词，用空格分隔；不要解释，不要换行，不要列表。\n"
+        "- 严格输出 3-10 个关键词，不要多也不要少。\n"
         "- 保留专有名词、缩写、阶段名（如 stage2）、人名、术语。\n"
         "- 如果问题包含文件名（如 work.png），请保留 work 这样的主体词，同时也保留 work.png 作为线索。\n"
         "- 删除无意义词：如 里面、什么、一下、帮我、请问 等。"
@@ -342,9 +342,18 @@ def _rewrite_query(query: str, session_id: str = "") -> str:
                 {"role": "user", "content": query},
             ],
             temperature=0.0,
+            max_tokens=64,
             runtime_context={"scenario": "rewrite_query", "session_id": session_id},
         )
-        return " ".join(text.split())
+        cleaned = " ".join(text.split())
+        if len(cleaned) > 200:
+            logger.warning("rewrite query too long (%d chars), fallback to original: %s", len(cleaned), cleaned[:80])
+            return query
+        words = cleaned.split()
+        if len(words) > 20:
+            logger.warning("rewrite query too many words (%d), fallback to original: %s", len(words), cleaned[:80])
+            return query
+        return cleaned
     except Exception as exc:
         logger.warning("query rewrite failed: %s", exc)
         return query

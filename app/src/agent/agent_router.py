@@ -22,6 +22,11 @@ Action = Literal[
     "ask_user_confirm_proposal",
     "query_calendar",
     "query_weather",
+    "record_expense",
+    "query_expenses",
+    "query_accounts",
+    "create_account",
+    "ask_user_confirm_balance",
 ]
 
 
@@ -115,6 +120,45 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
                     "city": "string|null. 城市名。从对话中识别，否则留空。",
                 },
             },
+            {
+                "name": "record_expense",
+                "description": "记录一笔支出或收入。用户说花了/用了/付了/收了多少钱时使用。从用户描述中自动提取金额、分类、账户、描述。支出金额为正，系统自动记为负数；收入金额直接记录。",
+                "args": {
+                    "amount": "float. 金额（正数）。系统会自动将支出记为负数。",
+                    "category": "string|null. 分类。支出可选：餐饮/交通/购物/娱乐/医疗/教育/住房/日用品/服饰/通讯/其他。收入可选：工资/红包/投资/兼职/退款/其他。从用户描述推断。",
+                    "description": "string. 具体用途描述，如'午饭''买书''打车'",
+                    "account_name": "string|null. 账户名。从对话中识别用户提到的账户，如'微信''支付宝''现金'",
+                    "transaction_type": "string. 'expense' 或 'income'",
+                },
+            },
+            {
+                "name": "query_expenses",
+                "description": "查询和分析记账记录。用户问花了多少钱、支出情况、账单分析时使用。",
+                "args": {
+                    "start_date": "string|null, YYYY-MM-DD。查询起始日期，根据用户说法自行计算。",
+                    "end_date": "string|null, YYYY-MM-DD。查询结束日期，根据用户说法自行计算。",
+                    "category": "string|null. 筛选特定分类。",
+                    "group_by": "string, default 'category'。汇总方式：category / account / month",
+                },
+            },
+            {
+                "name": "query_accounts",
+                "description": "查询用户的所有账户及余额。用户问我的账户、我的余额、还有多少钱时使用。",
+                "args": {},
+            },
+            {
+                "name": "create_account",
+                "description": "创建新账户。用户说'我的XX有XX元''我XX账户有XX钱'时使用。账户已存在会检测余额是否一致，不一致时设置 pending_balance_update 状态。",
+                "args": {
+                    "name": "string. 账户名称，如'微信''支付宝''现金'",
+                    "balance": "float. 账户余额（正数）",
+                },
+            },
+            {
+                "name": "ask_user_confirm_balance",
+                "description": "询问用户确认是否更新已有账户的余额。仅当 create_account 检测到余额不一致并设置了 pending_balance_update 后使用。",
+                "args": {},
+            },
         ]
     }
 
@@ -129,16 +173,17 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
         f"{json.dumps(ctx.available_outline or [], ensure_ascii=False, indent=2)}\n"
         "如果用户问题与上述主题或文档大纲中的章节相关，优先使用 query_knowledge。\n\n"
         "## 判断要点\n"
-        "- 工具名暗示能力边界。query_* 只读查询，propose_* / ask_* 会写数据。\n"
+        "- 工具名暗示能力边界。query_* 只读查询，propose_* / ask_* / record_* 会写数据。\n"
         "- args 里的日期必须是你自己算好的 YYYY-MM-DD，不要传'明天''端午节'等文本。\n"
         "- 用户说的日期可能是传统节日、相对日期（后天/下周/月底）、或具体日期，自行识别。\n"
         "- 如果拿不准用户意图，优先选 ask_user_confirm_proposal（反问确认）。\n"
         "- 如果没有匹配的工具，选 normal_chat。\n"
-        "- 知识库仅在用户问题与可用主题明确相关时才用。\n\n"
+        "- 知识库仅在用户问题与可用主题明确相关时才用。\n"
+        "- 记账相关：用户说'花了xx' '付了xx' '收入xx' '用了xx钱' 等涉及金额的描述，优先用 record_expense。用户说'查账单''花了多少钱''分析支出' 用 query_expenses。用户说'我的账户''我的余额' 用 query_accounts。用户说'我的XX有XX元''我XX账户有XX钱' 用 create_account。如果 create_account 提示余额不一致，接下来用 ask_user_confirm_balance 让用户确认。\n\n"
         "## 输出格式\n"
         "输出 JSON：\n"
         "{\n"
-        '  "action": "normal_chat|query_todos|query_knowledge|propose_todo|ask_user_confirm_proposal|query_calendar|query_weather",\n'
+        '  "action": "normal_chat|query_todos|query_knowledge|propose_todo|ask_user_confirm_proposal|query_calendar|query_weather|record_expense|query_expenses|query_accounts|create_account|ask_user_confirm_balance",\n'
         '  "args": { ... },\n'
         '  "assistant_message": "给用户的第一句回应（中文，可留空）",\n'
         '  "trace": {"intent": "简要意图", "why": "简短选择理由"}\n'

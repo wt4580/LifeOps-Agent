@@ -10,6 +10,7 @@
 """
 
 from .auth_controller import router as auth_router
+from .bookkeeping_controller import router as bookkeeping_router
 from .chat_controller import router as chat_router
 from .plan_controller import router as plan_router
 from .todo_controller import router as todo_router
@@ -19,6 +20,7 @@ from .web_controller import router as web_router
 
 __all__ = [
     "auth_router",
+    "bookkeeping_router",
     "chat_router",
     "plan_router",
     "todo_router",

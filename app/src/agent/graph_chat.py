@@ -54,10 +54,7 @@ def _query_todos(*, start: datetime, end: datetime) -> list[dict[str, Any]]:
 
 
 def _resolve_memory_owner_id(session_id: str) -> str:
-    scope = (settings.personal_memory_scope or "global").strip().lower()
-    if scope == "session":
-        return session_id
-    return "global"
+    return session_id
 
 
 def _get_summary(session_id: str) -> str | None:
@@ -334,6 +331,11 @@ def _node_decompose(state: ChatState) -> ChatState:
         "- decompose_goal: 拆解长期目标\n"
         "- clarify: 反问用户补充信息（身份/角色/缺少关键参数时使用）\n"
         "- revise_proposal: 修改待办草案\n"
+        "- record_expense: 记录收支\n"
+        "- query_expenses: 查询账目\n"
+        "- query_accounts: 查询账户余额\n"
+        "- create_account: 创建账户\n"
+        "- ask_user_confirm_balance: 让用户确认更新余额\n"
         "- normal_chat: 普通对话\n\n"
         "## 纯闲聊判断\n"
         "如果用户只是打招呼、寒暄、说心情、纯聊天，没有任何查询/操作意图：\n"
@@ -931,8 +933,196 @@ def _node_run_tool(state: ChatState) -> ChatState:
             output={"answer": state.get("answer", "")}))
         return state
 
+    if action == "record_expense":
+        _push_progress(state, "正在记录账目...")
+        try:
+            from ..service.bookkeeping_service import bookkeeping_service
+            session_id = state["session_id"]
+            amount = float(args.get("amount", 0) or 0)
+            tx_type = (args.get("transaction_type") or "expense").strip().lower()
+            if tx_type == "expense":
+                amount = -abs(amount)
+            else:
+                amount = abs(amount)
+            category = (args.get("category") or "").strip() or None
+            desc = (args.get("description") or "").strip() or None
+            acct_name = (args.get("account_name") or "").strip() or None
+
+            result = bookkeeping_service.record_transaction(
+                amount=amount,
+                session_id=session_id,
+                account_name=acct_name,
+                category=category,
+                description=desc,
+            )
+            state["used_tool"] = "record_expense"
+            type_label = "支出" if amount < 0 else "收入"
+            answer_parts = [f"已记录{type_label}：{abs(amount):.2f}元"]
+            if category:
+                answer_parts.append(f"分类：{category}")
+            if desc:
+                answer_parts.append(f"用途：{desc}")
+            if result.get("account_name"):
+                answer_parts.append(f"账户：{result['account_name']}")
+            state["answer"] = "，".join(answer_parts)
+            _push_delta(state, state["answer"])
+            _append_trace(state, _trace_step(step_type="tool", name="record_expense",
+                input={"amount": amount, "category": category, "description": desc, "account_name": acct_name},
+                output=result))
+        except Exception as exc:
+            logger.warning("record_expense failed: %s", exc)
+            state["used_tool"] = "record_expense"
+            state["answer"] = f"记录时出了点问题：{exc}"
+            _push_delta(state, state["answer"])
+        return state
+
+    if action == "query_expenses":
+        _push_progress(state, "正在查询账目...")
+        try:
+            from ..service.bookkeeping_service import bookkeeping_service
+            session_id = state["session_id"]
+            start = (args.get("start_date") or "").strip() or None
+            end = (args.get("end_date") or "").strip() or None
+            category = (args.get("category") or "").strip() or None
+            group_by = (args.get("group_by") or "category").strip()
+
+            analysis = bookkeeping_service.analyze(
+                session_id=session_id,
+                start_date=start,
+                end_date=end,
+                group_by=group_by,
+            )
+            state["used_tool"] = "query_expenses"
+            lines = [f"共 {analysis['transaction_count']} 笔交易"]
+            lines.append(f"总支出：{analysis['total_expense']:.2f}元")
+            lines.append(f"总收入：{analysis['total_income']:.2f}元")
+            lines.append(f"结余：{analysis['net']:.2f}元")
+            if analysis["by_category"]:
+                lines.append("\n按分类：")
+                for c in analysis["by_category"]:
+                    label = "支出" if c["total"] < 0 else "收入"
+                    lines.append(f"  {c['category']}：{abs(c['total']):.2f}元（{c['count']}笔）")
+            state["answer"] = "\n".join(lines)
+            _push_delta(state, state["answer"])
+            _append_trace(state, _trace_step(step_type="tool", name="query_expenses",
+                input={"start_date": start, "end_date": end, "category": category, "group_by": group_by},
+                output=analysis))
+        except Exception as exc:
+            logger.warning("query_expenses failed: %s", exc)
+            state["used_tool"] = "query_expenses"
+            state["answer"] = f"查询账目时出了点问题：{exc}"
+            _push_delta(state, state["answer"])
+        return state
+
+    if action == "query_accounts":
+        _push_progress(state, "正在查询账户余额...")
+        try:
+            from ..service.bookkeeping_service import bookkeeping_service
+            session_id = state["session_id"]
+            accounts = bookkeeping_service.list_accounts(session_id=session_id)
+            state["used_tool"] = "query_accounts"
+            if not accounts:
+                state["answer"] = "你还没有创建任何账户。可以告诉我新建一个，比如'我的微信账户有500元'。"
+            else:
+                lines = ["你的账户余额如下："]
+                total = 0.0
+                for a in accounts:
+                    lines.append(f"  {a['name']}：{a['balance']:.2f}元")
+                    total += a["balance"]
+                lines.append(f"合计：{total:.2f}元")
+                state["answer"] = "\n".join(lines)
+            _push_delta(state, state["answer"])
+            _append_trace(state, _trace_step(step_type="tool", name="query_accounts",
+                input={}, output={"count": len(accounts)}))
+        except Exception as exc:
+            logger.warning("query_accounts failed: %s", exc)
+            state["used_tool"] = "query_accounts"
+            state["answer"] = f"查询账户时出了点问题：{exc}"
+            _push_delta(state, state["answer"])
+        return state
+
+    if action == "create_account":
+        _push_progress(state, "正在处理账户...")
+        try:
+            from ..service.bookkeeping_service import bookkeeping_service
+            session_id = state["session_id"]
+            name = (args.get("name") or "").strip()
+            balance = float(args.get("balance", 0) or 0)
+            if not name:
+                state["used_tool"] = "create_account"
+                state["answer"] = "请告诉我账户名称，比如'微信''支付宝'。"
+                _push_delta(state, state["answer"])
+                return state
+
+            existing = bookkeeping_service.find_account(name=name, session_id=session_id)
+            if existing is None:
+                result = bookkeeping_service.add_account(name=name, balance=balance, session_id=session_id)
+                state["used_tool"] = "create_account"
+                state["answer"] = f"已创建账户「{result['name']}」，初始余额 {result['balance']:.2f}元。"
+                _push_delta(state, state["answer"])
+                _append_trace(state, _trace_step(step_type="tool", name="create_account",
+                    input={"name": name, "balance": balance}, output=result))
+                return state
+
+            current_balance = existing["balance"]
+            if abs(current_balance - balance) < 0.01:
+                state["used_tool"] = "create_account"
+                state["answer"] = f"账户「{name}」的余额已经是 {current_balance:.2f}元，无需更新。"
+                _push_delta(state, state["answer"])
+                _append_trace(state, _trace_step(step_type="tool", name="create_account",
+                    input={"name": name, "balance": balance}, output={"existing": existing}))
+                return state
+
+            state["pending_balance_update"] = {
+                "id": existing["id"], "name": name,
+                "current_balance": current_balance, "new_balance": balance
+            }
+            state["used_tool"] = "create_account"
+            state["answer"] = f"账户「{name}」当前余额是 {current_balance:.2f}元，用户想要 {balance:.2f}元。请使用 ask_user_confirm_balance 工具让用户确认是否更新。"
+            _push_delta(state, state["answer"])
+        except Exception as exc:
+            logger.warning("create_account failed: %s", exc)
+            state["used_tool"] = "create_account"
+            state["answer"] = f"创建账户时出了点问题：{exc}"
+            _push_delta(state, state["answer"])
+        return state
+
+    if action == "ask_user_confirm_balance":
+        _push_progress(state, "正在等待用户确认...")
+        pending = state.get("pending_balance_update")
+        if not pending:
+            state["used_tool"] = "ask_user_confirm_balance"
+            state["answer"] = "没有待确认的余额更新请求。"
+            _push_delta(state, state["answer"])
+            return state
+        try:
+            from ..service.bookkeeping_service import bookkeeping_service
+            name = pending["name"]
+            current = pending["current_balance"]
+            new_bal = pending["new_balance"]
+            confirm_text = f"你的「{name}」账户当前余额为 {current:.2f}元，你说有 {new_bal:.2f}元，是否要更新为 {new_bal:.2f}元？（回复'确认'或'取消'）"
+            _push_delta(state, confirm_text)
+            user_answer = interrupt(confirm_text)
+            if detect_affirmation(user_answer):
+                result = bookkeeping_service.set_account_balance(
+                    account_id=pending["id"], balance=new_bal, session_id=state["session_id"]
+                )
+                state["used_tool"] = "ask_user_confirm_balance"
+                state["answer"] = f"已更新账户「{result['name']}」余额为 {result['balance']:.2f}元。"
+                _push_delta(state, state["answer"])
+            else:
+                state["used_tool"] = "ask_user_confirm_balance"
+                state["answer"] = f"已保留账户「{name}」当前余额 {current:.2f}元。"
+                _push_delta(state, state["answer"])
+            state["pending_balance_update"] = None
+        except Exception as exc:
+            logger.warning("ask_user_confirm_balance failed: %s", exc)
+            state["used_tool"] = "ask_user_confirm_balance"
+            state["answer"] = f"确认时出了点问题：{exc}"
+            _push_delta(state, state["answer"])
+        return state
+
     # normal_chat 分支：
-    _push_progress(state, "正在生成回答...")
     state["used_tool"] = None
     plan = state.get("plan") or []
     plan_context = ""
