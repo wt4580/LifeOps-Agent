@@ -521,10 +521,91 @@ def _build_normal_chat_answer(
     return result, False
 
 
+def _handle_interrupt_resume(state: ChatState, user_answer: str) -> ChatState:
+    action = (state.get("decision") or {}).get("action", "")
+    if action in ("propose_todo", "ask_user_confirm_proposal", "revise_proposal"):
+        if detect_affirmation(user_answer):
+            state["proposal_confirmed"] = True
+            state["proposal_id"] = None
+            state["proposal"] = None
+            state["answer"] = "好的，已添加到待办。"
+            _push_delta(state, state["answer"])
+            state["used_tool"] = "plan_gate_confirm"
+        elif detect_rejection(user_answer):
+            state["proposal_id"] = None
+            state["proposal"] = None
+            state["answer"] = "好的，已取消。"
+            _push_delta(state, state["answer"])
+            state["used_tool"] = "plan_gate_cancel"
+        else:
+            state["proposal_id"] = None
+            state["proposal"] = None
+            state["answer"] = "请回复'确认'或'取消'。"
+            _push_delta(state, state["answer"])
+            state["used_tool"] = "plan_gate_wait"
+        _append_trace(
+            state,
+            _trace_step(
+                step_type="tool",
+                name="confirm_proposal",
+                input={"user_answer": user_answer},
+                output={"confirmed": state.get("proposal_confirmed", False)},
+            ),
+        )
+        return state
+
+    if action == "ask_user_confirm_balance":
+        pending = state.get("pending_balance_update")
+        if detect_affirmation(user_answer) and pending:
+            try:
+                from ..service.bookkeeping_service import bookkeeping_service
+                result = bookkeeping_service.set_account_balance(
+                    account_id=pending["id"], balance=pending["new_balance"], session_id=state["session_id"]
+                )
+                state["used_tool"] = "ask_user_confirm_balance"
+                state["answer"] = f"已更新账户「{result['name']}」余额为 {result['balance']:.2f}元。"
+                _push_delta(state, state["answer"])
+            except Exception as exc:
+                logger.warning("confirm_balance failed: %s", exc)
+                state["used_tool"] = "ask_user_confirm_balance"
+                state["answer"] = f"更新余额时出了点问题：{exc}"
+                _push_delta(state, state["answer"])
+        else:
+            state["used_tool"] = "ask_user_confirm_balance"
+            name = pending.get("name", "") if pending else ""
+            current = pending.get("current_balance", 0) if pending else 0
+            state["answer"] = f"已保留账户「{name}」当前余额 {current:.2f}元。"
+            _push_delta(state, state["answer"])
+        state["pending_balance_update"] = None
+        return state
+
+    state["answer"] = user_answer
+    state["used_tool"] = "interrupt_resume"
+    _push_delta(state, state["answer"])
+    return state
+
+
 def _node_run_tool(state: ChatState) -> ChatState:
+    # ---- 打断恢复：处理用户回答 ----
+    interrupt_answer = state.get("interrupt_answer")
+    if interrupt_answer is not None:
+        state["interrupt_answer"] = None
+        return _handle_interrupt_resume(state, interrupt_answer)
+
     decision = state.get("decision") or {"action": "normal_chat", "args": {}, "assistant_message": ""}
     action = decision.get("action", "normal_chat")
     args = decision.get("args") or {}
+
+    if action == "clarify":
+        question = (decision.get("assistant_message") or "").strip()
+        if not question:
+            question = "请提供更多信息，我才能帮你处理。"
+        _push_delta(state, question)
+        state["interrupt_message"] = question
+        state["used_tool"] = "clarify"
+        state["plan"] = []
+        state["plan_index"] = 0
+        return state
 
     if action == "query_todos":
         _push_progress(state, "正在查询待办事项...")
@@ -805,37 +886,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
             ),
         )
 
-        # 中断：等待用户确认
-        user_answer = interrupt(confirm_text)
-
-        if detect_affirmation(user_answer):
-            state["proposal_confirmed"] = True
-            state["proposal_id"] = None
-            state["proposal"] = None
-            state["answer"] = "好的，已添加到待办。"
-            _push_delta(state, state["answer"])
-            state["used_tool"] = "plan_gate_confirm"
-        elif detect_rejection(user_answer):
-            state["proposal_id"] = None
-            state["proposal"] = None
-            state["answer"] = "好的，已取消。"
-            _push_delta(state, state["answer"])
-            state["used_tool"] = "plan_gate_cancel"
-        else:
-            state["proposal_id"] = None
-            state["proposal"] = None
-            state["answer"] = "请回复'确认'或'取消'。"
-            _push_delta(state, state["answer"])
-            state["used_tool"] = "plan_gate_wait"
-        _append_trace(
-            state,
-            _trace_step(
-                step_type="tool",
-                name="confirm_proposal",
-                input={"user_answer": user_answer},
-                output={"confirmed": state.get("proposal_confirmed", False)},
-            ),
-        )
+        state["interrupt_message"] = confirm_text
         return state
 
     if action == "decompose_goal":
@@ -904,27 +955,8 @@ def _node_run_tool(state: ChatState) -> ChatState:
                 ) + "\n请确认是否加入待办。"
                 _push_delta(state, confirm_text)
 
-                user_answer = interrupt(confirm_text)
-
-                if detect_affirmation(user_answer):
-                    state["proposal_confirmed"] = True
-                    state["proposal_id"] = None
-                    state["proposal"] = None
-                    state["answer"] = "好的，已添加到待办。"
-                    _push_delta(state, state["answer"])
-                    state["used_tool"] = "plan_gate_confirm"
-                elif detect_rejection(user_answer):
-                    state["proposal_id"] = None
-                    state["proposal"] = None
-                    state["answer"] = "好的，已取消。"
-                    _push_delta(state, state["answer"])
-                    state["used_tool"] = "plan_gate_cancel"
-                else:
-                    state["proposal_id"] = None
-                    state["proposal"] = None
-                    state["answer"] = "请回复'确认'或'取消'。"
-                    _push_delta(state, state["answer"])
-                    state["used_tool"] = "plan_gate_wait"
+                state["interrupt_message"] = confirm_text
+                return state
             else:
                 state["used_tool"] = "revise_proposal"
                 state["answer"] = "已按你的修正更新。"
@@ -1102,25 +1134,12 @@ def _node_run_tool(state: ChatState) -> ChatState:
             _push_delta(state, state["answer"])
             return state
         try:
-            from ..service.bookkeeping_service import bookkeeping_service
             name = pending["name"]
             current = pending["current_balance"]
             new_bal = pending["new_balance"]
             confirm_text = f"你的「{name}」账户当前余额为 {current:.2f}元，你说有 {new_bal:.2f}元，是否要更新为 {new_bal:.2f}元？（回复'确认'或'取消'）"
             _push_delta(state, confirm_text)
-            user_answer = interrupt(confirm_text)
-            if detect_affirmation(user_answer):
-                result = bookkeeping_service.set_account_balance(
-                    account_id=pending["id"], balance=new_bal, session_id=state["session_id"]
-                )
-                state["used_tool"] = "ask_user_confirm_balance"
-                state["answer"] = f"已更新账户「{result['name']}」余额为 {result['balance']:.2f}元。"
-                _push_delta(state, state["answer"])
-            else:
-                state["used_tool"] = "ask_user_confirm_balance"
-                state["answer"] = f"已保留账户「{name}」当前余额 {current:.2f}元。"
-                _push_delta(state, state["answer"])
-            state["pending_balance_update"] = None
+            state["interrupt_message"] = confirm_text
         except Exception as exc:
             logger.warning("ask_user_confirm_balance failed: %s", exc)
             state["used_tool"] = "ask_user_confirm_balance"
@@ -1496,38 +1515,31 @@ def _route_after_advance(state: ChatState) -> str:
 
 
 # -----------------------------
-# 打断节点：向用户反问/确认，等待回答后继续
+# 通用打断节点：所有需要用户确认/反问的地方都用这一个节点
+# 上游节点（run_tool / decompose）负责设 interrupt_message，本节点只负责 interrupt() 和存回答
 # -----------------------------
-def _node_clarify_interrupt(state: ChatState) -> ChatState:
-    action = (state.get("decision") or {}).get("action", "")
-    if action != "clarify":
+def _node_interrupter(state: ChatState) -> ChatState:
+    msg = state.get("interrupt_message")
+    if not msg:
         return state
 
-    question = (state.get("decision", {}).get("assistant_message") or "").strip()
-    if not question:
-        question = "请提供更多信息，我才能帮你处理。"
-
-    _push_delta(state, question)
+    action = (state.get("decision") or {}).get("action", "")
     _append_trace(
         state,
         _trace_step(
             step_type="tool",
-            name="clarify_interrupt",
-            input={"question": question},
+            name=f"interrupt_{action}" if action else "interrupt",
+            input={"question": msg},
         ),
     )
 
-    # 中断：暂停图执行，等待用户回答
-    user_answer = interrupt(question)
+    user_answer = interrupt(msg)
 
-    state["answer"] = user_answer
-    state["used_tool"] = "clarify"
-    state["clarification_item"] = user_answer
-    state["plan"] = []
-    state["plan_index"] = 0
+    state["interrupt_answer"] = user_answer
+    state["interrupt_message"] = None
 
     history = list(state.get("history") or [])
-    history.append({"role": "assistant", "content": question})
+    history.append({"role": "assistant", "content": msg})
     state["history"] = history
     state["recent_dialogue"] = history[-RECENT_DIALOGUE_LIMIT:]
 
@@ -1535,7 +1547,7 @@ def _node_clarify_interrupt(state: ChatState) -> ChatState:
         state,
         _trace_step(
             step_type="tool",
-            name="clarify_resume",
+            name=f"interrupt_{action}_resume" if action else "interrupt_resume",
             input={"answer": user_answer},
             output={"answer": user_answer},
         ),
@@ -1543,8 +1555,15 @@ def _node_clarify_interrupt(state: ChatState) -> ChatState:
     return state
 
 
-# 图连线就是"先走谁再走谁"的唯一真相：
-# START -> load_context -> decompose -> (clarify? -> interrupt | run_tool) -> verify -> advance_plan -> (loop? -> decide | finalize) -> quality_gate -> proactive_decision? -> END
+def _route_after_interrupt(state: ChatState) -> str:
+    action = (state.get("decision") or {}).get("action", "")
+    if action == "clarify":
+        return "decompose"
+    return "run_tool"
+
+
+# 图连线：
+# START -> load_context -> decompose -> run_tool -> [interrupt_message?] -> interrupter -> [clarify?] -> decompose | run_tool -> verify -> advance_plan -> [loop?] -> decompose | finalize -> quality_gate -> [proactive?] -> proactive_decision -> END
 def build_chat_graph(
     *,
     checkpointer: Any | None = None,
@@ -1559,17 +1578,21 @@ def build_chat_graph(
     graph.add_node("finalize", _node_finalize)
     graph.add_node("quality_gate", _node_quality_gate)
     graph.add_node("proactive_decision", _node_proactive_decision)
-    graph.add_node("clarify_interrupt", _node_clarify_interrupt)
+    graph.add_node("interrupter", _node_interrupter)
 
     graph.add_edge(START, "load_context")
     graph.add_edge("load_context", "decompose")
+    graph.add_edge("decompose", "run_tool")
     graph.add_conditional_edges(
-        "decompose",
-        lambda s: "clarify_interrupt" if (s.get("decision") or {}).get("action") == "clarify" else "run_tool",
-        {"clarify_interrupt": "clarify_interrupt", "run_tool": "run_tool"},
+        "run_tool",
+        lambda s: "interrupter" if s.get("interrupt_message") else "verify",
+        {"interrupter": "interrupter", "verify": "verify"},
     )
-    graph.add_edge("clarify_interrupt", "decompose")
-    graph.add_edge("run_tool", "verify")
+    graph.add_conditional_edges(
+        "interrupter",
+        _route_after_interrupt,
+        {"decompose": "decompose", "run_tool": "run_tool"},
+    )
     graph.add_conditional_edges(
         "verify",
         lambda s: "advance_plan" if not s.get("retry_info") else "decompose",
@@ -1606,6 +1629,8 @@ def _build_checkpoint_context(values: dict) -> dict:
         "proposal_id": values.get("proposal_id"),
         "proposal": values.get("proposal"),
         "proposal_confirmed": values.get("proposal_confirmed"),
+        "interrupt_message": None,
+        "interrupt_answer": None,
         "pending_reminders": values.get("pending_reminders", []),
     }
 
@@ -1643,6 +1668,8 @@ def _build_initial_state(
         "proposal_id": checkpoint_context.get("proposal_id"),
         "proposal": checkpoint_context.get("proposal"),
         "proposal_confirmed": False,
+        "interrupt_message": None,
+        "interrupt_answer": None,
         "profile_context": profile_context,
         "effective_user_message": _build_effective_message(user_message, profile_context),
         "trace": {

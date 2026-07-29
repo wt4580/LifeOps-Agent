@@ -20,6 +20,7 @@ const rejectProposal = document.getElementById("reject-proposal");
 const ragSection = document.getElementById("rag-section");
 const closeRag = document.getElementById("close-rag");
 const indexRun = document.getElementById("index-run");
+const indexReset = document.getElementById("index-reset");
 const indexOutput = document.getElementById("index-output");
 const askInput = document.getElementById("ask-input");
 const askSend = document.getElementById("ask-send");
@@ -1067,6 +1068,27 @@ if (indexRun) {
       indexOutput.textContent = JSON.stringify(data, null, 2);
     } catch (error) {
       indexOutput.textContent = `错误: ${error.message}`;
+    }
+  });
+}
+
+if (indexReset) {
+  indexReset.addEventListener("click", async () => {
+    if (!confirm("确定要重置索引吗？将清空所有存量数据后全量重录。")) return;
+    const startTime = new Date();
+    try {
+      indexOutput.textContent = `重置中...（开始时间: ${startTime.toLocaleTimeString()}，可能需数分钟）`;
+      const res = await fetch("/api/index", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reset: true }),
+      });
+      const elapsed = ((new Date() - startTime) / 1000).toFixed(1);
+      const data = await res.json();
+      data.elapsed_seconds = parseFloat(elapsed);
+      indexOutput.textContent = JSON.stringify(data, null, 2);
+    } catch (error) {
+      indexOutput.textContent = `错误（耗时 ${((new Date() - startTime) / 1000).toFixed(1)}s）: ${error.message}`;
     }
   });
 }

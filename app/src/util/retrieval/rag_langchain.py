@@ -5,27 +5,28 @@ from __future__ import annotations
 这个模块提供"向量检索链路"的实现，作为 BM25 的可选增强后端。
 
 核心能力：
-1) 文档加载与分块（PDF/TXT/MD/DOCX/PNG-OCR）。
-2) 构建并持久化本地 FAISS 索引。
-3) 查询时先向量召回，再可选 cross-encoder 重排。
+1) 从 SQLite document_chunks 表加载已切分文本，构建本地 FAISS 向量索引。
+2) 查询时先向量召回，再可选 cross-encoder 重排。
 
 设计原则：
 - 不破坏原有 `retrieval.py` 接口；
 - 依赖缺失时给出明确错误（重排模型不回退为静默关闭或联网拉取）。
-- 每个候选都保留 source/page，保证引用可追溯。
+- 每个候选都保留 source/page/section_path，保证引用可追溯。
 """
 
 import hashlib
 import logging
-import os
 import pickle
 import shutil
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from ..ingest.ocr_png import extract_png
+from sqlalchemy import select
+
 from ...common.config.base_config import settings
+from ...common.config.knowledge_db_config import KnowledgeSessionLocal
+from ...domain.entity.knowledge_entity import DocumentChunk
 
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,9 @@ class LCRetrievalHit:
     score: float
     reason: str
     section_path: str | None = None
+    source_type: str | None = None
+    doc_topic: str | None = None
+    section_title: str | None = None
 
 
 def _require_langchain() -> None:
@@ -151,86 +155,36 @@ def _reranker():
     return CrossEncoder(model_name, tokenizer_args=tokenizer_args)
 
 
-def _make_splitter():
-    """创建递归文本切分器。"""
-    _require_langchain()
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
+def _load_documents_from_db():
+    """从 document_chunks 表加载文本，转成 LangChain Document 列表供向量化。
 
-    return RecursiveCharacterTextSplitter(
-        chunk_size=settings.rag_chunk_size,
-        chunk_overlap=settings.rag_chunk_overlap,
-        separators=["\n\n", "\n", "。", "；", "，", " ", ""],
-    )
-
-
-def _load_documents(root_dir: str):
-    """递归加载文档并切分为可向量化的 Document 列表。"""
+    与 BM25 侧使用相同的扫描分块结果，确保两侧 chunk 一一对应。
+    """
     _require_langchain()
     from langchain_core.documents import Document
-    from langchain_community.document_loaders import PyPDFLoader, TextLoader
-    from langchain_text_splitters import MarkdownHeaderTextSplitter
 
-    splitter = _make_splitter()
-    docs: list[Document] = []
+    with KnowledgeSessionLocal() as db:
+        rows = db.execute(
+            select(DocumentChunk).order_by(DocumentChunk.id)
+        ).scalars().all()
 
-    for dirpath, _, filenames in os.walk(root_dir):
-        for filename in filenames:
-            path = os.path.join(dirpath, filename)
-            ext = os.path.splitext(filename)[1].lower()
-            if ext == ".pdf":
-                loaded = PyPDFLoader(path).load()
-                docs.extend(splitter.split_documents(loaded))
-            elif ext == ".docx":
-                try:
-                    # 按需导入，避免缺少 docx2txt 时整个索引失败。
-                    from langchain_community.document_loaders import Docx2txtLoader
-
-                    loaded = Docx2txtLoader(path).load()
-                    docs.extend(splitter.split_documents(loaded))
-                except Exception as exc:
-                    logger.warning("Skip DOCX file due to loader/dependency error path=%s err=%s", path, exc)
-                    continue
-            elif ext == ".md":
-                raw = TextLoader(path, encoding="utf-8", autodetect_encoding=True).load()[0]
-                md_splitter = MarkdownHeaderTextSplitter(
-                    headers_to_split_on=[("#", "h1"), ("##", "h2"), ("###", "h3")]
-                )
-                header_docs = md_splitter.split_text(raw.page_content)
-                for d in header_docs:
-                    d.metadata["source"] = path
-                docs.extend(splitter.split_documents(header_docs))
-            elif ext == ".txt":
-                loaded = TextLoader(path, encoding="utf-8", autodetect_encoding=True).load()
-                docs.extend(splitter.split_documents(loaded))
-            elif ext == ".png":
-                text = extract_png(path)
-                if text.strip():
-                    png_docs = [Document(page_content=text, metadata={"source": path})]
-                    docs.extend(splitter.split_documents(png_docs))
-            else:
+        docs: list[Document] = []
+        for row in rows:
+            if not row.chunk_text:
                 continue
-
-    # 规范 metadata，确保 source/page 可追溯
-    normalized: list[Document] = []
-    chunk_pos_counter: dict[tuple[str, int | None], int] = {}
-    for d in docs:
-        src = d.metadata.get("source") or d.metadata.get("file_path") or ""
-        page = d.metadata.get("page")
-        try:
-            page_num = int(page) + 1 if page is not None else None
-        except Exception:
-            page_num = None
-
-        key = (str(src), page_num)
-        chunk_pos_counter[key] = chunk_pos_counter.get(key, 0) + 1
-
-        d.metadata["source"] = str(src)
-        d.metadata["page"] = page_num
-        # 每个 source+page 内的序号，用于后续判断“同位置是否改写”。
-        d.metadata["chunk_pos"] = chunk_pos_counter[key]
-        normalized.append(d)
-
-    return normalized
+            docs.append(Document(
+                page_content=row.chunk_text,
+                metadata={
+                    "source": row.file_path,
+                    "page": row.page,
+                    "chunk_pos": row.id,
+                    "section_path": row.section_path,
+                    "section_title": row.section_title,
+                    "source_type": row.source_type,
+                    "doc_topic": row.doc_topic,
+                },
+            ))
+    return docs
 
 
 def _doc_signature_from_values(source: str, page: int | None, chunk_pos: int | None, content: str) -> tuple[tuple[str, int | None, int | None], str]:
@@ -334,12 +288,17 @@ def _calc_vector_diff(
     }
 
 
-def build_vector_index(*, root_dir: str, rebuild: bool = False) -> dict:
-    """构建/重建 FAISS 向量索引并持久化到本地目录。"""
+def build_vector_index(*, root_dir: str | None = None, rebuild: bool = False) -> dict:
+    """构建/重建 FAISS 向量索引并持久化到本地目录。
+    
+    Args:
+        root_dir: 不再使用，保留兼容签名。实际从 document_chunks 表加载。
+        rebuild: 是否删除旧索引从头重建。
+    """
     _require_langchain()
     from langchain_community.vectorstores import FAISS
 
-    docs = _load_documents(root_dir)
+    docs = _load_documents_from_db()
     vec_dir = Path(settings.rag_vector_dir)
 
     old_sigs = _collect_old_doc_signatures(vec_dir)
@@ -400,7 +359,13 @@ def search_with_rerank(query: str, *, top_k: int, candidate_k: int) -> list[LCRe
         snippet = (doc.page_content or "").strip()[:280]
         # FAISS L2 距离越小越好，这里转成可排序分数（越大越好）
         score = 1.0 / (1.0 + float(distance))
-        candidates.append(LCRetrievalHit(path=src, page=page, snippet=snippet, score=score, reason="vector"))
+        candidates.append(LCRetrievalHit(
+            path=src, page=page, snippet=snippet, score=score, reason="vector",
+            section_path=doc.metadata.get("section_path"),
+            source_type=doc.metadata.get("source_type"),
+            doc_topic=doc.metadata.get("doc_topic"),
+            section_title=doc.metadata.get("section_title"),
+        ))
 
     reranker = _reranker()
     if reranker is None:

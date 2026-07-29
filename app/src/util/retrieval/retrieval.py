@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -375,8 +376,8 @@ def index_documents(*, rebuild: bool = False, reset: bool = False) -> dict:
 
     if inserted > 0 or rebuild:
         _sync_document_records()
-        _generate_chunk_summaries()
-        _generate_document_summaries()
+        threading.Thread(target=_generate_chunk_summaries, daemon=True).start()
+        threading.Thread(target=_generate_document_summaries, daemon=True).start()
 
     elapsed = (datetime.now(timezone.utc) - start).total_seconds()
     logger.info(
@@ -388,6 +389,7 @@ def index_documents(*, rebuild: bool = False, reset: bool = False) -> dict:
         reset,
         backend,
     )
+    result["summary_generation"] = "background"
     return result
 
 
@@ -679,11 +681,10 @@ def _search_langchain(query: str, top_k: int) -> list[Citation]:
                 snippet=h.snippet,
                 score=h.score,
                 reason=h.reason,
-                source_type=getattr(h, "source_type", None),
-                doc_topic=getattr(h, "doc_topic", None),
-                section_title=getattr(h, "section_title", None),
-                section_path=getattr(h, "section_path", None),
-                summary=getattr(h, "summary", None),
+                source_type=h.source_type,
+                doc_topic=h.doc_topic,
+                section_title=h.section_title,
+                section_path=h.section_path,
             )
             for h in hits
         ]

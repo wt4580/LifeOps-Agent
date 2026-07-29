@@ -25,6 +25,9 @@ class ChatState(TypedDict, total=False):
     proposal: dict[str, Any] | None
     proposal_confirmed: bool
 
+    interrupt_message: str | None
+    interrupt_answer: str | None
+
     recent_events: list[dict[str, Any]]
     upcoming_todos: list[dict[str, Any]]
     pending_reminders: list[dict[str, Any]]

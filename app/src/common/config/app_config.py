@@ -108,7 +108,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # 关闭时执行
         global resource_stack
 
-        from ..service.scheduler import stop_scheduler
+        from ...service.scheduler import stop_scheduler
         stop_scheduler()
 
         if resource_stack is not None:

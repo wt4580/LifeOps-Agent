@@ -139,13 +139,22 @@
         </div>
 
         <div id="tab-index" class="tab-content active">
-          <button id="index-run" class="btn-secondary full-width">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 4px;">
-              <polyline points="23 4 23 10 17 10"/>
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-            </svg>
-            运行索引
-          </button>
+          <div style="display:flex;gap:8px">
+            <button id="index-run" class="btn-secondary" style="flex:1">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 4px;">
+                <polyline points="23 4 23 10 17 10"/>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              运行索引
+            </button>
+            <button id="index-reset" class="btn-secondary" style="flex:1;color:var(--danger,#e74c3c)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 4px;">
+                <polyline points="23 4 23 10 17 10"/>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+              重置索引
+            </button>
+          </div>
           <pre id="index-output" class="mini-panel"></pre>
         </div>
 
@@ -165,7 +174,7 @@
 
   </div>
 
-  <script src="/static/app.js?v=5"></script>
+  <script src="/static/app.js?v=6"></script>
   <script>
     // 移动端侧边面板切换逻辑
     (function() {
