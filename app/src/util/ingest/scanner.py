@@ -68,15 +68,13 @@ def _is_heading_line(line: str) -> tuple[str, int] | None:
         return (t, 1)
     if re.match(r"^[一二三四五六七八九十百千]+[、．\.\s]", t):
         return (t, 2)
-    if re.match(r"^\d+(?:\.\d+)*[\.\s]", t):
+    if re.match(r"^\d{1,2}(?:\.\d+)*[\.\s](?!\d)", t):
         return (t, 2)
     if re.match(r"^[（(][一二三四五六七八九十\d]+[)）]", t):
         return (t, 3)
-    if t.isupper() and len(t) > 2:
+    if t.isupper() and len(t) > 2 and not re.search('[\u4e00-\u9fff]', t) and t[0].isalpha():
         return (t, 1)
-    if t == t.upper() and any(c in t for c in "（）()"):
-        return (t, 1)
-    if len(t) <= 30 and any(kw in t for kw in ["章", "节", "篇", "条", "目", "录", "前言", "引言", "概述", "附录", "参考", "结论", "总结"]):
+    if len(t) <= 30 and any(t.startswith(kw) for kw in ["章", "节", "篇", "条", "前言", "引言", "概述", "附录", "参考", "结论", "总结"]):
         return (t, 1)
     return None
 
@@ -103,9 +101,9 @@ def _smart_split(text: str, max_size: int = 800, overlap: int = 200) -> list[str
         if end < len(text):
             boundary = text.rfind("\n\n", start + int(overlap * 0.5), end)
             if boundary == -1 or boundary <= start:
-                boundary = text.rfind("\n", start + int(overlap * 0.5), end)
-            if boundary == -1 or boundary <= start:
                 boundary = text.rfind("。", start + int(overlap * 0.5), end)
+            if boundary == -1 or boundary <= start:
+                boundary = text.rfind("\n", start + int(overlap * 0.5), end)
             if boundary == -1 or boundary <= start:
                 boundary = end
             else:
@@ -125,57 +123,79 @@ def _build_pdf_chunks(path: str) -> list[TextChunk]:
     if not pages:
         return []
 
-    raw_chunks: list[TextChunk] = []
-    heading_stack = HeadingStack()
-
+    lines_with_pages: list[tuple[str, int]] = []
     for p in pages:
-        content = (p.text or "").strip()
-        if not content:
+        text = (p.text or "").strip()
+        if not text:
             continue
+        for line in text.split("\n"):
+            lines_with_pages.append((line, p.page))
+    if not lines_with_pages:
+        return []
 
-        lines = content.split("\n")
-        page_heading = None
-        body_start = 0
-        for i, line in enumerate(lines):
-            heading = _is_heading_line(line)
-            if heading:
-                page_heading = heading
-                body_start = i + 1
-                heading_stack.update(title=heading[0], level=heading[1])
-                break
+    chunks: list[TextChunk] = []
+    heading_stack = HeadingStack()
+    buffer_lines: list[tuple[str, int]] = []
+    buffer_len = 0
 
-        body = "\n".join(lines[body_start:]).strip()
-        if not body:
-            if page_heading:
-                raw_chunks.append(TextChunk(
-                    text=page_heading[0], page=p.page,
-                    section_title=page_heading[0], heading_level=page_heading[1],
-                    section_path=heading_stack.path,
-                ))
-            continue
-
-        parts = _smart_split(body) if len(body) > 800 else [body]
-        for part in parts:
-            is_table = _is_table_block(part)
-            section_rank = heading_stack.bump_section_rank()
-            raw_chunks.append(TextChunk(
-                text=part, page=p.page,
+    def flush_buffer():
+        nonlocal buffer_lines, buffer_len
+        if not buffer_lines:
+            return
+        block = "\n".join(l for l, _ in buffer_lines).strip()
+        if not block:
+            buffer_lines = []
+            buffer_len = 0
+            return
+        section_rank = heading_stack.bump_section_rank()
+        is_table = _is_table_block(block)
+        page = buffer_lines[0][1]
+        if len(block) <= 800:
+            chunks.append(TextChunk(
+                text=block, page=page,
                 section_title=heading_stack.current_title,
                 heading_level=heading_stack.current_level,
                 section_path=heading_stack.path,
                 section_rank=section_rank,
                 is_table=is_table,
             ))
-
-    merged: list[TextChunk] = []
-    for c in raw_chunks:
-        if merged and merged[-1].page == c.page and c.is_table:
-            merged[-1].text += "\n" + c.text
-            merged[-1].is_table = True
         else:
-            merged.append(c)
+            for part in _smart_split(block):
+                sr = heading_stack.bump_section_rank()
+                chunks.append(TextChunk(
+                    text=part, page=page,
+                    section_title=heading_stack.current_title,
+                    heading_level=heading_stack.current_level,
+                    section_path=heading_stack.path,
+                    section_rank=sr,
+                    is_table=is_table,
+                ))
+        buffer_lines = []
+        buffer_len = 0
 
-    return merged
+    for line, page in lines_with_pages:
+        heading = _is_heading_line(line)
+        if heading:
+            if re.search(r'\.{4,}', line):
+                stripped = line.strip()
+                if not stripped and buffer_len > 600:
+                    flush_buffer()
+                    continue
+                buffer_lines.append((line, page))
+                buffer_len += len(line) + 1
+                continue
+            flush_buffer()
+            heading_stack.update(title=heading[0], level=heading[1])
+            continue
+        stripped = line.strip()
+        if not stripped and buffer_len > 600:
+            flush_buffer()
+            continue
+        buffer_lines.append((line, page))
+        buffer_len += len(line) + 1
+
+    flush_buffer()
+    return chunks or [TextChunk(text="\n".join(l for l, _ in lines_with_pages))]
 
 
 def _build_txt_chunks(path: str) -> list[TextChunk]:

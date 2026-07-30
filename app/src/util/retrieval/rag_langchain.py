@@ -45,6 +45,7 @@ class LCRetrievalHit:
     source_type: str | None = None
     doc_topic: str | None = None
     section_title: str | None = None
+    chunk_id: int | None = None
 
 
 def _require_langchain() -> None:
@@ -356,8 +357,8 @@ def search_with_rerank(query: str, *, top_k: int, candidate_k: int) -> list[LCRe
     for doc, distance in pairs:
         src = str(doc.metadata.get("source") or "")
         page = doc.metadata.get("page")
-        snippet = (doc.page_content or "").strip()[:280]
-        # FAISS L2 距离越小越好，这里转成可排序分数（越大越好）
+        snippet = (doc.page_content or "").strip()
+        chunk_id = doc.metadata.get("chunk_pos")
         score = 1.0 / (1.0 + float(distance))
         candidates.append(LCRetrievalHit(
             path=src, page=page, snippet=snippet, score=score, reason="vector",
@@ -365,6 +366,7 @@ def search_with_rerank(query: str, *, top_k: int, candidate_k: int) -> list[LCRe
             source_type=doc.metadata.get("source_type"),
             doc_topic=doc.metadata.get("doc_topic"),
             section_title=doc.metadata.get("section_title"),
+            chunk_id=chunk_id,
         ))
 
     reranker = _reranker()

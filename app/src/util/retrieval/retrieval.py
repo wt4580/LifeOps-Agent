@@ -46,6 +46,7 @@ class Citation:
     section_title: str | None = None
     section_path: str | None = None
     summary: str | None = None
+    chunk_id: int | None = None
 
 
 def _hash_text(text: str) -> str:
@@ -205,99 +206,46 @@ def _sync_document_records() -> None:
 
 
 def _generate_document_summaries() -> None:
-    """对缺少摘要的 Document 记录生成文件级摘要（LLM 生成）。"""
+    """对缺少摘要的 Document 记录逐批生成文件级摘要（LLM 生成），不限量"""
     with KnowledgeSessionLocal() as db:
         docs = db.execute(
-            select(Document).where(Document.summary == None).limit(20)
+            select(Document).where(Document.summary == None)
+            .order_by(Document.id)
         ).scalars().all()
         if not docs:
             return
 
-        updated = 0
-        for doc in docs:
-            chunks = db.execute(
-                select(DocumentChunk.chunk_text, DocumentChunk.summary)
-                .where(DocumentChunk.file_path == doc.file_path)
-                .order_by(DocumentChunk.id)
-                .limit(50)
-            ).all()
-            if not chunks:
-                continue
-            snippet = " | ".join(
-                (s or t)[:200] for t, s in chunks[:5]
-            )
-            try:
-                answer = chat_completion(
-                    [{"role": "user", "content": (
-                        f"为以下知识文档生成一句话摘要（30字以内）：\n"
-                        f"文件名：{os.path.basename(doc.file_path)}\n"
-                        f"内容片段：{snippet}"
-                    )}],
-                    temperature=0.0,
-                ).strip()[:120]
-                if answer:
-                    doc.summary = answer
-                    updated += 1
-            except Exception as exc:
-                logger.warning("Document summary failed for %s: %s", doc.file_path, exc)
-        db.commit()
-        logger.info("Generated document summaries count=%s", updated)
-
-
-def _generate_chunk_summaries() -> None:
-    with KnowledgeSessionLocal() as db:
-        rows = db.execute(
-            select(DocumentChunk).where(DocumentChunk.summary == None).limit(200)
-        ).scalars().all()
-        if not rows:
-            return
-
         batch_size = 10
-        updated = 0
-        for i in range(0, len(rows), batch_size):
-            group = rows[i:i + batch_size]
-            texts = []
-            for r in group:
-                t = (r.chunk_text or "").strip()[:300]
-                texts.append(t)
-
-            prompt_lines = []
-            for idx, t in enumerate(texts, start=1):
-                prompt_lines.append(f"[{idx}] {t}")
-            try:
-                answer = chat_completion(
-                    [{"role": "user", "content": (
-                        "为以下每段文本生成一句话摘要（20字以内），"
-                        "按格式输出：\n[idx] 摘要\n\n文本：\n" + "\n".join(prompt_lines)
-                    )}],
-                    temperature=0.0,
+        total_updated = 0
+        for i in range(0, len(docs), batch_size):
+            for doc in docs[i:i + batch_size]:
+                chunks = db.execute(
+                    select(DocumentChunk.chunk_text, DocumentChunk.summary)
+                    .where(DocumentChunk.file_path == doc.file_path)
+                    .order_by(DocumentChunk.id)
+                    .limit(50)
+                ).all()
+                if not chunks:
+                    continue
+                snippet = " | ".join(
+                    (s or t)[:200] for t, s in chunks[:5]
                 )
-                for r, line in zip(group, answer.strip().split("\n")):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    m = re.match(r"^\[(\d+)\]\s*(.*)", line)
-                    if m:
-                        idx = int(m.group(1)) - 1
-                        if 0 <= idx < len(group):
-                            group[idx].summary = m.group(2).strip()[:80]
-                            updated += 1
-            except Exception as exc:
-                logger.warning("Chunk summary batch failed: %s", exc)
-                # fallback: individual calls
-                for r in group:
-                    try:
-                        s = chat_completion(
-                            [{"role": "user", "content": f"用一句话概括以下内容（20字以内）：\n{(r.chunk_text or '')[:300]}"}],
-                            temperature=0.0,
-                        ).strip()[:80]
-                        if s:
-                            r.summary = s
-                            updated += 1
-                    except Exception:
-                        pass
+                try:
+                    answer = chat_completion(
+                        [{"role": "user", "content": (
+                            f"为以下知识文档生成一句话摘要（30字以内）：\n"
+                            f"文件名：{os.path.basename(doc.file_path)}\n"
+                            f"内容片段：{snippet}"
+                        )}],
+                        temperature=0.0,
+                    ).strip()[:120]
+                    if answer:
+                        doc.summary = answer
+                        total_updated += 1
+                except Exception as exc:
+                    logger.warning("Document summary failed for %s: %s", doc.file_path, exc)
         db.commit()
-        logger.info("Generated chunk summaries count=%s", updated)
+        logger.info("Generated document summaries total=%s", total_updated)
 
 
 def get_available_knowledge_topics() -> list[dict]:
@@ -376,7 +324,6 @@ def index_documents(*, rebuild: bool = False, reset: bool = False) -> dict:
 
     if inserted > 0 or rebuild:
         _sync_document_records()
-        threading.Thread(target=_generate_chunk_summaries, daemon=True).start()
         threading.Thread(target=_generate_document_summaries, daemon=True).start()
 
     elapsed = (datetime.now(timezone.utc) - start).total_seconds()
@@ -541,12 +488,11 @@ def _path_recall(rows: list[DocumentChunk], query: str, top_k: int) -> list[Cita
         if not hit:
             continue
 
-        snippet = (r.chunk_text or "")[:240]
         scored.append(
             Citation(
                 path=r.file_path,
                 page=r.page,
-                snippet=snippet,
+                snippet=r.chunk_text or "",
                 score=score,
                 reason="path",
                 source_type=getattr(r, "source_type", None),
@@ -554,6 +500,7 @@ def _path_recall(rows: list[DocumentChunk], query: str, top_k: int) -> list[Cita
                 section_title=getattr(r, "section_title", None),
                 section_path=getattr(r, "section_path", None),
                 summary=getattr(r, "summary", None),
+                chunk_id=r.id,
             )
         )
 
@@ -582,7 +529,7 @@ def _bm25_recall(rows: list[DocumentChunk], query: str, top_k: int, reason: str)
             Citation(
                 path=r.file_path,
                 page=r.page,
-                snippet=(r.chunk_text or "")[:240],
+                snippet=r.chunk_text or "",
                 score=float(s),
                 reason=reason,
                 source_type=getattr(r, "source_type", None),
@@ -590,6 +537,7 @@ def _bm25_recall(rows: list[DocumentChunk], query: str, top_k: int, reason: str)
                 section_title=getattr(r, "section_title", None),
                 section_path=getattr(r, "section_path", None),
                 summary=getattr(r, "summary", None),
+                chunk_id=r.id,
             )
         )
 
@@ -685,6 +633,7 @@ def _search_langchain(query: str, top_k: int) -> list[Citation]:
                 doc_topic=h.doc_topic,
                 section_title=h.section_title,
                 section_path=h.section_path,
+                chunk_id=h.chunk_id,
             )
             for h in hits
         ]
@@ -810,6 +759,7 @@ def rag_answer(
         if strong_count == 0 and best_score < settings.rag_evidence_min_score and rich_snippet_count < 2:
             return settings.rag_no_evidence_template
 
+    window_size = 2
     context_lines: list[str] = []
     for idx, cite in enumerate(citations, start=1):
         meta = f"{cite.reason}|{cite.source_type or 'unknown'}|{cite.doc_topic or 'other'}"
@@ -817,13 +767,44 @@ def rag_answer(
             meta += f"|{cite.section_path}"
         elif cite.section_title:
             meta += f"|section:{cite.section_title}"
-        if cite.summary:
-            meta += f"|summary:{cite.summary}"
-        label = (
-            f"[{idx}] {os.path.basename(cite.path)} p{cite.page or '-'} ({meta})"
-        )
-        context_lines.append(f"{label}: {cite.snippet}")
-    context = "\n".join(context_lines)
+        label = f"[{idx}] {os.path.basename(cite.path)} p{cite.page or '-'} ({meta})"
+        if cite.chunk_id:
+            try:
+                with KnowledgeSessionLocal() as db:
+                    rows = db.execute(
+                        select(DocumentChunk.id, DocumentChunk.chunk_text)
+                        .where(DocumentChunk.file_path == cite.path)
+                        .where(DocumentChunk.id.between(cite.chunk_id - window_size, cite.chunk_id + window_size))
+                        .order_by(DocumentChunk.id)
+                    ).all()
+                if rows:
+                    parts = []
+                    for cid, text in rows:
+                        text = text or ""
+                        if cid == cite.chunk_id:
+                            parts.append(f">>> {text}")
+                        else:
+                            parts.append(text)
+                    context_lines.append(f"{label}:\n" + "\n---\n".join(parts))
+                else:
+                    context_lines.append(f"{label}: {cite.snippet}")
+            except Exception:
+                context_lines.append(f"{label}: {cite.snippet}")
+        else:
+            context_lines.append(f"{label}: {cite.snippet}")
+    context = "\n\n".join(context_lines)
+
+    doc_paths = {c.path for c in citations}
+    if doc_paths:
+        with KnowledgeSessionLocal() as db:
+            doc_rows = db.execute(
+                select(Document.file_path, Document.summary)
+                .where(Document.file_path.in_(list(doc_paths)))
+                .where(Document.summary != None)
+            ).all()
+        if doc_rows:
+            bg_lines = [f"  [{os.path.basename(fp)}] {summary}" for fp, summary in doc_rows]
+            context += "\n\nDocument Background:\n" + "\n".join(bg_lines)
 
     profile_lines: list[str] = []
     if profile_context:
