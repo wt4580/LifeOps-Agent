@@ -525,6 +525,27 @@ def _handle_interrupt_resume(state: ChatState, user_answer: str) -> ChatState:
     action = (state.get("decision") or {}).get("action", "")
     if action in ("propose_todo", "ask_user_confirm_proposal", "revise_proposal"):
         if detect_affirmation(user_answer):
+            proposal = state.get("proposal") or {}
+            items = proposal.get("items") or []
+            if items:
+                from ..domain.entity.chat_entity import TodoItem
+                from ..common.config.db_config import SessionLocal
+                session_id = state.get("session_id", "")
+                with SessionLocal() as db:
+                    for it in items:
+                        raw_due = it.get("due_at") or it.get("due_date")
+                        due_at = None
+                        if raw_due:
+                            try:
+                                due_at = datetime.fromisoformat(raw_due)
+                            except (ValueError, TypeError):
+                                due_at = None
+                        db.add(TodoItem(
+                            session_id=session_id,
+                            title=it.get("title", ""),
+                            due_at=due_at,
+                        ))
+                    db.commit()
             state["proposal_confirmed"] = True
             state["proposal_id"] = None
             state["proposal"] = None
@@ -856,9 +877,16 @@ def _node_run_tool(state: ChatState) -> ChatState:
         return state
 
     if action in ("ask_user_confirm_proposal", "propose_todo"):
+        title = args.get("title")
         pending_text = args.get("text") or state["user_message"]
-        proposal_id, proposal = propose_plan(pending_text)
-        proposal_payload = proposal.model_dump()
+        if title:
+            from uuid import uuid4
+            proposal_id = str(uuid4())
+            due_date = args.get("due_date") or args.get("date")
+            proposal_payload = {"items": [{"title": title, "due_at": due_date}]}
+        else:
+            proposal_id, proposal = propose_plan(pending_text)
+            proposal_payload = proposal.model_dump()
 
         state["proposal_id"] = proposal_id
         state["proposal"] = proposal_payload
@@ -1734,8 +1762,11 @@ async def arun_chat_graph(
     try:
         config = {"configurable": {"thread_id": session_id}, "recursion_limit": 100}
         current_state = await compiled_graph.aget_state(config)
-        if len(getattr(current_state, "tasks", []) or []) > 0:
+        tasks = getattr(current_state, "tasks", []) or []
+        if tasks and (detect_affirmation(user_message) or detect_rejection(user_message)):
             return await compiled_graph.ainvoke(Command(resume=user_message), config=config)
+        if tasks:
+            await compiled_graph.aupdate_state(config, {"interrupt_message": None, "interrupt_answer": None})
 
         ctx = await aload_chat_checkpoint_context(compiled_graph, session_id)
         state = _build_initial_state(session_id=session_id, user_message=user_message, checkpoint_context=ctx, **kwargs)

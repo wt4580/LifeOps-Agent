@@ -24,7 +24,6 @@ from ..agent.memory.personal_memory import (
 )
 from ..agent.graph_chat import aload_chat_checkpoint_context, arun_chat_graph, load_chat_checkpoint_context
 from ..util.retrieval.retrieval import index_documents
-from .plan_service import plan_service
 from ..common.config.log_config import logger
 from .todo_service import reminder_service
 
@@ -103,7 +102,6 @@ class ChatService:
         _push("正在进入思考流程...")
         chat_graph = get_chat_graph()
         checkpoint_context = await aload_chat_checkpoint_context(chat_graph, session_id) if chat_graph else {}
-        pending_proposal_id = checkpoint_context.get("proposal_id")
 
         state = await arun_chat_graph(
             compiled_graph=chat_graph,
@@ -134,14 +132,6 @@ class ChatService:
         answer = state.get("answer") or ""
         proposal_id = state.get("proposal_id")
         proposal_payload = state.get("proposal")
-        if proposal_id and isinstance(proposal_payload, dict):
-            items = proposal_payload.get("items") or []
-            if isinstance(items, list):
-                plan_service.proposal_cache[proposal_id] = items
-
-        if state.get("proposal_confirmed") and pending_proposal_id:
-            plan_service.confirm_proposal(pending_proposal_id, session_id)
-            proposal_id = None
 
         used_tool = state.get("used_tool")
         citations = state.get("citations") or []
