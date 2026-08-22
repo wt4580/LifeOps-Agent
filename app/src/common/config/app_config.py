@@ -31,6 +31,7 @@ from ...controller import (
         rag_router,
         health_router,
         web_router,
+        speech_router,
     )
 
 checkpointer = None
@@ -52,6 +53,7 @@ def register_routers(app: FastAPI):
     app.include_router(web_router)
     app.include_router(auth_router)
     app.include_router(bookkeeping_router)
+    app.include_router(speech_router)
     
     logger.info("All routers registered")
 

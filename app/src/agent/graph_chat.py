@@ -20,7 +20,7 @@ from ..common.config.log_config import logger
 # LLM 每次可见的最近对话条数，必须与 chat_prune_target 一致以避免盲区
 RECENT_DIALOGUE_LIMIT = 50
 from ..common.config.llm_config import chat_completion
-from ..domain.entity.chat_entity import ConversationSummary, TodoItem
+from ..domain.entity.chat_entity import ChatMessage, ConversationSummary, TodoItem
 from .planner.planner import detect_affirmation, detect_rejection, propose_plan
 from ..util.retrieval.retrieval import rag_answer, search_chunks
 from .time.time_parser import normalize_date_hint
@@ -303,13 +303,19 @@ def _node_decompose(state: ChatState) -> ChatState:
 
     # ---- LLM 路由：集成分解 + 决策 ----
     user_msg = msg
-    recent_dialogue = state.get("recent_dialogue") or []
     _push_progress(state, "正在分析意图...")
 
     try:
         available_topics = get_available_knowledge_topics()
     except Exception:
         available_topics = []
+
+    dialogue = _load_dialogue_with_times(state.get("session_id", ""), limit=6, exclude_last_user=True)
+    if not dialogue:
+        dialogue = [
+            {"role": d.get("role"), "content": d.get("content"), "ts": ""}
+            for d in (state.get("recent_dialogue") or [])[-6:]
+        ]
 
     system = (
         "你是一个智能决策引擎。理解用户意图，决定使用哪个工具，以及是否需要拆解成多步执行。\n\n"
@@ -349,7 +355,7 @@ def _node_decompose(state: ChatState) -> ChatState:
     )
     payload = {
         "user_message": user_msg,
-        "recent_dialogue": recent_dialogue[-6:],
+        "recent_dialogue": _format_dialogue_with_times(dialogue),
         "available_topics": available_topics or [],
     }
     raw = chat_completion(
@@ -411,6 +417,60 @@ def _is_prev_todo_query(state: ChatState) -> bool:
     return False
 
 
+def _utc_to_local(dt: datetime) -> datetime | None:
+    """数据库中的 created_at 是 UTC（datetime.utcnow），转成本地时间。"""
+    if dt is None:
+        return None
+    offset = datetime.now().astimezone().utcoffset()
+    if offset is None:
+        return dt
+    return dt + offset
+
+
+def _fmt_ts(dt: datetime | None) -> str:
+    if dt is None:
+        return ""
+    local = _utc_to_local(dt)
+    return local.strftime("%m-%d %H:%M") if local else ""
+
+
+def _load_dialogue_with_times(session_id: str, limit: int = 50, exclude_last_user: bool = True) -> list[dict]:
+    """从数据库加载最近 N 条对话消息（带时间戳），用于喂给 LLM。
+
+    最后一条通常是"当前正在处理的这条用户消息"（由调用方单独拼接），默认排除。
+    """
+    with SessionLocal() as db:
+        rows = (
+            db.execute(
+                select(ChatMessage)
+                .where(ChatMessage.session_id == session_id)
+                .order_by(ChatMessage.created_at.desc())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+    rows.reverse()
+    if exclude_last_user and rows and rows[-1].role == "user":
+        rows = rows[:-1]
+    out = []
+    for r in rows:
+        out.append({"role": r.role, "content": r.content, "ts": _fmt_ts(r.created_at)})
+    return out
+
+
+def _format_dialogue_with_times(dialogue: list[dict]) -> list[dict[str, str]]:
+    """把带 ts 的对话列表转成带时间标签的 {role, content} 消息。"""
+    messages: list[dict[str, str]] = []
+    for turn in dialogue:
+        content = turn.get("content") or ""
+        ts = turn.get("ts") or ""
+        if ts:
+            content = f"[{ts}] {content}"
+        messages.append({"role": turn.get("role") or "user", "content": content})
+    return messages
+
+
 def _build_normal_chat_answer(
     state: ChatState,
     decision: dict[str, Any],
@@ -422,7 +482,16 @@ def _build_normal_chat_answer(
     if assistant_message:
         return assistant_message, True
 
-    messages: list[dict[str, str]] = [{"role": "system", "content": "你是一个中文生活助手。请在回答时严格区分实时查询结果与历史记录。"}]
+    messages: list[dict[str, str]] = [{
+        "role": "system",
+        "content": (
+            "你是一个中文生活助手。请在回答时严格区分实时查询结果与历史记录。\n"
+            f"当前时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}。\n"
+            "对话消息都带有 [时间] 标注：标注时间在近30分钟内的消息属于\"刚刚发生的对话\"（当前上下文），"
+            "更早的属于\"以前的对话\"（背景记忆）。回答时优先依据最近对话与实时查询结果；"
+            "以前的对话仅作背景参考，不要把其中的信息当作当前状态，也不要复述很久以前的无关内容。"
+        ),
+    }]
     md_context = load_markdown_context()
     if md_context:
         messages.append({"role": "system", "content": f"助手备忘录与技能：\n{md_context}"})
@@ -499,11 +568,18 @@ def _build_normal_chat_answer(
         context_parts.append("## 活跃目标\n" + "\n".join(goal_lines))
 
     if context_parts:
-        messages.append({"role": "system", "content": "用户相关背景：\n" + "\n\n".join(context_parts)})
-    messages.extend(state.get("recent_dialogue", []))
-    messages.append({"role": "user", "content": state.get("effective_user_message") or state["user_message"]})
+        messages.append({"role": "system", "content": "## 用户长期记忆（背景资料，供了解用户，不代表当前状态）\n\n" + "\n\n".join(context_parts)})
 
     session_id = state.get("session_id", "")
+    dialogue = _load_dialogue_with_times(session_id, limit=RECENT_DIALOGUE_LIMIT)
+    if not dialogue:
+        dialogue = [
+            {"role": d.get("role"), "content": d.get("content"), "ts": ""}
+            for d in (state.get("recent_dialogue") or [])
+        ]
+    messages.extend(_format_dialogue_with_times(dialogue))
+    messages.append({"role": "user", "content": "[刚刚] " + (state.get("effective_user_message") or state["user_message"])})
+
     q = _progress_queues.get(session_id)
 
     def on_token(token: str):

@@ -608,6 +608,40 @@ body {
   box-shadow: 0 0 0 3px var(--primary-subtle), var(--shadow-sm);
 }
 
+.btn-mic {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease);
+  flex-shrink: 0;
+  box-shadow: var(--shadow-xs);
+}
+
+.btn-mic:hover {
+  border-color: var(--border-focus);
+  color: var(--primary);
+}
+
+.btn-mic.listening {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--fg-inverse);
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(94, 166, 110, 0.45); }
+  50% { box-shadow: 0 0 0 10px rgba(94, 166, 110, 0); }
+}
+
 /* --- Buttons --- */
 .btn-primary {
   padding: var(--space-3) var(--space-5);

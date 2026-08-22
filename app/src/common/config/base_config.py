@@ -83,6 +83,16 @@ class Settings(BaseSettings):
     )
 
     # -------------------------
+    # 语音识别（本地 Whisper）配置
+    # -------------------------
+    whisper_model: str = Field(default="small", alias="WHISPER_MODEL")
+    whisper_device: str = Field(default="cpu", alias="WHISPER_DEVICE")
+    whisper_compute_type: str = Field(default="int8", alias="WHISPER_COMPUTE_TYPE")
+    whisper_language: str = Field(default="zh", alias="WHISPER_LANGUAGE")
+    # 可选：本地模型目录绝对路径（配置后优先本地加载，跳过 HuggingFace 下载）
+    whisper_model_local: str | None = Field(default=None, alias="WHISPER_MODEL_LOCAL")
+
+    # -------------------------
     # 主动建议阈值配置
     # -------------------------
     proactive_advice_threshold: float = Field(default=0.62, alias="PROACTIVE_ADVICE_THRESHOLD")

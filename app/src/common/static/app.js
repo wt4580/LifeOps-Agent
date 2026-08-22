@@ -752,6 +752,127 @@ document.addEventListener("keydown", function(e) {
 });
 
 // ========================================
+// 语音输入（MediaRecorder 录音 + 本地 Whisper 识别，需 HTTPS 或 localhost）
+// ========================================
+const chatMic = document.getElementById("chat-mic");
+let mediaRecorder = null;
+let mediaStream = null;
+let micChunks = [];
+let micListening = false;
+let micAutoStopTimer = null;
+
+function _resetMicUI() {
+  micListening = false;
+  if (chatMic) {
+    chatMic.classList.remove("listening");
+    chatMic.classList.remove("disabled");
+    chatMic.title = "语音输入";
+  }
+}
+
+function _stopMicAutoStopTimer() {
+  if (micAutoStopTimer) {
+    clearTimeout(micAutoStopTimer);
+    micAutoStopTimer = null;
+  }
+}
+
+function _stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    mediaRecorder.stop();
+  }
+  if (mediaStream) {
+    mediaStream.getTracks().forEach((track) => track.stop());
+    mediaStream = null;
+  }
+  _stopMicAutoStopTimer();
+}
+
+if (chatMic && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder) {
+  function _pickMimeType() {
+    const candidates = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/ogg;codecs=opus",
+      "audio/mp4",
+    ];
+    for (const type of candidates) {
+      if (window.MediaRecorder.isTypeSupported(type)) return type;
+    }
+    return "";
+  }
+
+  async function _uploadSpeech(blob) {
+    chatMic.classList.add("disabled");
+    chatMic.title = "识别中...";
+    try {
+      const resp = await fetch("/api/speech", {
+        method: "POST",
+        headers: { "Content-Type": blob.type || "audio/webm" },
+        body: blob,
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const text = data && data.result && data.result.text ? data.result.text : "";
+      if (text) {
+        chatInput.value = text;
+        chatInput.focus();
+        if (chatSend) chatSend.click();
+      } else {
+        appendChat("assistant", "没有听清，请再说一次");
+      }
+    } catch (err) {
+      appendChat("assistant", `语音识别失败: ${err.message}`);
+    } finally {
+      _resetMicUI();
+    }
+  }
+
+  chatMic.addEventListener("click", () => {
+    if (micListening) {
+      _stopRecording();
+      return;
+    }
+    if (!chatInput.value.trim()) {
+      chatInput.value = "";
+    }
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((stream) => {
+        mediaStream = stream;
+        const mimeType = _pickMimeType();
+        micChunks = [];
+        mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) micChunks.push(event.data);
+        };
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(micChunks, { type: mimeType || "audio/webm" });
+          _resetMicUI();
+          _uploadSpeech(blob);
+        };
+        mediaRecorder.onerror = () => {
+          _resetMicUI();
+          appendChat("assistant", "语音录制失败");
+        };
+        mediaRecorder.start();
+        micListening = true;
+        chatMic.classList.add("listening");
+        chatMic.classList.add("disabled");
+        chatMic.title = "正在聆听...";
+        micAutoStopTimer = setTimeout(() => {
+          if (micListening) _stopRecording();
+        }, 20000);
+      })
+      .catch((err) => {
+        _resetMicUI();
+        appendChat("assistant", `无法访问麦克风: ${err.name || err.message}`);
+      });
+  });
+} else if (chatMic) {
+  chatMic.style.display = "none";
+}
+
+// ========================================
 // 待办查询
 // ========================================
 function _formatTodoDue(dueAt) {

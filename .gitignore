@@ -15,9 +15,11 @@ app/src/data/*.md
 .pytest_cache/
 agent_env/
 LifeOps-Android/
+*.log
 
 # Local model weights/artifacts
 bge-*/
 *.safetensors
 *.onnx
 .opencode/
+faster-whisper-small/
