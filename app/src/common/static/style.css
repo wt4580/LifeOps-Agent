@@ -174,14 +174,23 @@ body {
   box-shadow: 0 1px 4px rgba(58, 45, 34, 0.06);
 }
 
+/* --- 顶部居中状态动画（GIF 状态机） --- */
 .think-anim {
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 20;
 }
 
 .think-anim img {
-  width: 28px;
-  height: 28px;
+  height: 96px;
+  width: auto;
+  max-width: 60vw;
   object-fit: contain;
   image-rendering: auto;
 }
@@ -1163,6 +1172,11 @@ body {
 @media (max-width: 768px) {
   .app {
     flex-direction: column;
+  }
+
+  .think-anim img {
+    height: 72px;
+    max-width: 70vw;
   }
 
   .btn-mobile-menu {

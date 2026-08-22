@@ -520,44 +520,61 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
 });
 
 // ========================================
-// 居中循环动图（思考时播放）
+// 顶部居中状态动画（GIF 状态机：待机/思考/知识库检索思考）
 // ========================================
-const THINK_FRAMES = ["/static/waiting1.png", "/static/thinking.png", "/static/waiting2.png"];
-let thinkTimer = null;
-let thinkFrameIdx = 0;
+const ANIM_GIFS = {
+  idle: "/static/待机.gif",
+  think_start: "/static/思考开始.gif",
+  thinking: "/static/思考中.gif",
+  think_end: "/static/思考结束.gif",
+  kb_search_start: "/static/知识库搜索开始.gif",
+  kb_searching: "/static/知识库搜索中.gif",
+  kb_found: "/static/知识库搜索到思索.gif",
+  kb_think_start: "/static/知识库思考开始.gif",
+  kb_thinking: "/static/知识库思考.gif"
+};
+// 过渡动画固定播放时长，播完切到后续阶段；循环类阶段持续到下一次请求
+const ANIM_TRANSITION_MS = 1800;
+const ANIM_SUCCESSOR = {
+  think_start: "thinking",
+  think_end: "idle",
+  kb_search_start: "kb_searching",
+  kb_found: "kb_think_start",
+  kb_think_start: "kb_thinking",
+  think_resume: "thinking"
+};
 
-function startThinkAnim() {
-  if (thinkTimer) { clearTimeout(thinkTimer); thinkTimer = null; }
+let animTimer = null;
+let animPendingStage = null;
+
+// 启动即预加载全部 GIF，避免切换时卡顿/闪白
+Object.values(ANIM_GIFS).forEach((src) => { const img = new Image(); img.src = src; });
+
+function _applyAnim(stage) {
   const el = document.getElementById("think-anim");
   const img = document.getElementById("think-img");
+  animPendingStage = null;
   if (!el || !img) return;
-  thinkFrameIdx = 0;
-  img.src = THINK_FRAMES[0];
-  el.style.display = "block";
-  thinkTimer = setInterval(() => {
-    thinkFrameIdx = (thinkFrameIdx + 1) % THINK_FRAMES.length;
-    img.src = THINK_FRAMES[thinkFrameIdx];
-  }, 250);
-}
-
-function showStaticImage(src, durationMs, thenHide) {
-  if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null; }
-  const el = document.getElementById("think-anim");
-  const img = document.getElementById("think-img");
-  if (!el || !img) return;
-  img.src = src;
-  el.style.display = "block";
-  if (thenHide) {
-    thinkTimer = setTimeout(() => { el.style.display = "none"; }, durationMs);
+  el.style.display = "";
+  const src = ANIM_GIFS[stage];
+  if (src && img.getAttribute("src") !== src) img.src = src;
+  const successor = ANIM_SUCCESSOR[stage];
+  if (successor) {
+    animTimer = setTimeout(() => {
+      animTimer = null;
+      _applyAnim(animPendingStage || successor);
+    }, ANIM_TRANSITION_MS);
   }
 }
 
-function stopThinkAnim() {
-  showStaticImage("/static/done.png", 1500, true);
-}
-
-function showErrorAnim() {
-  showStaticImage("/static/error.png", 3000, true);
+function requestAnim(stage) {
+  if (!ANIM_GIFS[stage]) return;
+  if (animTimer) {
+    // 正在播过渡动画：先记下新请求，播完再切换
+    animPendingStage = stage;
+    return;
+  }
+  _applyAnim(stage);
 }
 
 // ========================================
@@ -581,6 +598,7 @@ async function handleLogin() {
     localStorage.setItem("lifeops_session_id", sessionId);
     loginSection.style.display = "none";
     appSection.style.display = "";
+    requestAnim("idle");
     loadTodos("/api/todos/upcoming?days=7");
     loadReminders();
   } catch (err) {
@@ -591,6 +609,7 @@ async function handleLogin() {
 if (sessionId) {
   loginSection.style.display = "none";
   appSection.style.display = "";
+  requestAnim("idle");
   loadTodos("/api/todos/upcoming?days=7");
   loadReminders();
 } else {
@@ -639,7 +658,7 @@ if (chatSend) {
         body: JSON.stringify({ message, session_id: sessionId }),
       });
       if (!res.ok || !res.body) {
-        showErrorAnim();
+        requestAnim("think_end");
         throw new Error(`请求失败: ${res.status}`);
       }
 
@@ -649,6 +668,7 @@ if (chatSend) {
       let finalResult = null;
       let assistantText = "";
       let thinkingStarted = false;
+      let usedKbFlow = false;
       let streamLine = null;
 
       while (true) {
@@ -664,9 +684,20 @@ if (chatSend) {
           if (!line) continue;
           const payload = JSON.parse(line.slice(6));
 
+          if (payload.type === "anim") {
+            if (!thinkingStarted) {
+              thinkingStarted = true;
+              assistantTurn.expandThought();
+            }
+            const stage = payload.stage || "";
+            if (stage.startsWith("kb_")) usedKbFlow = true;
+            requestAnim(ANIM_GIFS[stage] ? stage : "thinking");
+            continue;
+          }
+
           if (!thinkingStarted && (payload.type === "status" || payload.type === "step" || payload.type === "delta")) {
             thinkingStarted = true;
-            startThinkAnim();
+            requestAnim("think_start");
             assistantTurn.expandThought();
           }
 
@@ -708,7 +739,8 @@ if (chatSend) {
             }
           } else if (payload.type === "final") {
             finalResult = payload.result;
-            stopThinkAnim();
+            // 知识库流程不播结束动画直接回待机；普通流程播思考结束
+            requestAnim(usedKbFlow ? "idle" : "think_end");
           }
         }
       }
@@ -737,7 +769,7 @@ if (chatSend) {
         assistantTurn.answerDiv.textContent = `回答：${assistantText || "未收到回复"}`;
       }
     } catch (error) {
-      showErrorAnim();
+      requestAnim("think_end");
       if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, ["请求失败"]);
       if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：错误: ${error.message}`;
     }

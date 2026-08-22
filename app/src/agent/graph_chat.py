@@ -127,6 +127,16 @@ def _push_progress(state: ChatState, msg: str, detail: dict | None = None):
             pass
 
 
+def _push_anim(state: ChatState, stage: str):
+    """向前端推送动画阶段切换事件（SSE 原样透传）。"""
+    q = _progress_queues.get(state.get("session_id", ""))
+    if q is not None:
+        try:
+            q.put_nowait({"type": "anim", "stage": stage})
+        except Exception:
+            pass
+
+
 def _set_progress_queue(session_id: str, q: Any):
     if q is not None:
         _progress_queues[session_id] = q
@@ -755,6 +765,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
         return state
 
     if action == "query_knowledge":
+        _push_anim(state, "kb_search_start")
         _push_progress(state, "正在搜索知识库...")
         user_q = (state.get("user_message") or "").strip()
         router_q = (args.get("question") or "").strip()
@@ -780,9 +791,10 @@ def _node_run_tool(state: ChatState) -> ChatState:
         ]
 
         if not citations:
-            # RAG miss 回退：进入 normal_chat，而不是直接回答“找不到”。
-            # query_knowledge miss 时，不能把 router 的“正在为您查询...”当成最终答案。
+            # RAG miss 回退：进入 normal_chat，而不是直接回答"找不到"。
+            # query_knowledge miss 时，不能把 router 的"正在为您查询..."当成最终答案。
             # 此时需要真正走一遍 normal_chat 生成可回答内容。
+            _push_anim(state, "think_resume")
             state["answer"], used_assistant = _build_normal_chat_answer(
                 state,
                 decision,
@@ -808,6 +820,8 @@ def _node_run_tool(state: ChatState) -> ChatState:
             )
             return state
 
+        _push_anim(state, "kb_found")
+        _push_anim(state, "kb_think_start")
         state["answer"] = rag_answer(
             user_q,
             citations,
