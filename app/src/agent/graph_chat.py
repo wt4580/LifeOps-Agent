@@ -28,6 +28,7 @@ from .memory.personal_memory import decide_proactive_advice
 from ..domain.dto.memory_dto import ProactiveAdviceDecision
 from ..common.md_loader import load_markdown_context
 from .post_chat_learn import run_learn
+from ..service.topic_service import build_focus_context, load_task_index, revive_topic
 
 # 流式推送：session_id → asyncio.Queue，图节点执行时实时推送，不入 checkpoint
 _progress_queues: dict[str, Any] = {}
@@ -353,11 +354,17 @@ def _node_decompose(state: ChatState) -> ChatState:
         "- create_account: 创建账户\n"
         "- ask_user_confirm_balance: 让用户确认更新余额\n"
         "- query_database: 执行只读 SQL 查询\n"
+        "- revive_topic: 用户明确提到之前讨论过的任务/话题时，找回该过往任务的记录来回答\n"
         "- normal_chat: 普通对话\n\n"
         "## 纯闲聊判断\n"
         "如果用户只是打招呼、寒暄、说心情、纯聊天，没有任何查询/操作意图：\n"
         '- action 设为 "normal_chat"\n'
         '- mode 设为 "quick"\n\n'
+        "## 过往任务恢复\n"
+        '当用户消息明确提到之前讨论过的任务/话题（如"上次说的会议""之前那个安排""刚才那个体检"）时：\n'
+        '- action 设为 "revive_topic"，args={topic: 用户提到的关键词或任务名}\n'
+        "- mode 设为 \"normal\"，needs_plan=false\n"
+        "- 只有用户主动提起过往任务时才这么做；用户没提的，normal_chat 即可，不要主动回顾。\n\n"
         "## 输出格式\n"
         "输出严格 JSON，不要 Markdown：\n"
         '{"action":"...","args":{...},"mode":"normal|quick","assistant_message":"","needs_plan":false}\n'
@@ -367,6 +374,7 @@ def _node_decompose(state: ChatState) -> ChatState:
         "user_message": user_msg,
         "recent_dialogue": _format_dialogue_with_times(dialogue),
         "available_topics": available_topics or [],
+        "past_tasks": load_task_index(state.get("session_id", "")),
     }
     raw = chat_completion(
         [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
@@ -499,7 +507,13 @@ def _build_normal_chat_answer(
             f"当前时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}。\n"
             "对话消息都带有 [时间] 标注：标注时间在近30分钟内的消息属于\"刚刚发生的对话\"（当前上下文），"
             "更早的属于\"以前的对话\"（背景记忆）。回答时优先依据最近对话与实时查询结果；"
-            "以前的对话仅作背景参考，不要把其中的信息当作当前状态，也不要复述很久以前的无关内容。"
+            "以前的对话仅作背景参考，不要把其中的信息当作当前状态，也不要复述很久以前的无关内容。\n"
+            "## 当前焦点规则\n"
+            "- 默认只关注\"当前任务焦点\"（正在进行的任务段，或最近的闲聊）。\n"
+            "- 本轮没有明确任务、用户也没有提到过去的事情时，只回答当前这一句；"
+            "严禁把之前的事项、待办、事件逐个罗列出来。\n"
+            "- 仅当用户本轮明确提起某个\"过往任务\"时，才去回答/回顾那个任务（此时相关任务记录已提供给你）。\n"
+            "- 涉及实时数据（天气/待办/日历/账目）时，优先基于实时查询结果回答，不要凭历史记忆编造。"
         ),
     }]
     md_context = load_markdown_context()
@@ -578,16 +592,24 @@ def _build_normal_chat_answer(
         context_parts.append("## 活跃目标\n" + "\n".join(goal_lines))
 
     if context_parts:
-        messages.append({"role": "system", "content": "## 用户长期记忆（背景资料，供了解用户，不代表当前状态）\n\n" + "\n\n".join(context_parts)})
+        messages.append({"role": "system", "content": "## 用户长期记忆（背景资料，仅在直接相关时引用，不要主动罗列）\n\n" + "\n\n".join(context_parts)})
 
     session_id = state.get("session_id", "")
-    dialogue = _load_dialogue_with_times(session_id, limit=RECENT_DIALOGUE_LIMIT)
-    if not dialogue:
-        dialogue = [
-            {"role": d.get("role"), "content": d.get("content"), "ts": ""}
-            for d in (state.get("recent_dialogue") or [])
-        ]
-    messages.extend(_format_dialogue_with_times(dialogue))
+    focus_messages, episode_overview = build_focus_context(session_id)
+    if episode_overview:
+        messages.append({
+            "role": "system",
+            "content": (
+                "## 过往任务（已结束，仅供参考。除非用户本轮明确提起其中某个任务，"
+                "否则不要把它当成当前重点，更不要主动罗列）\n" + "\n".join(episode_overview)
+            ),
+        })
+    if focus_messages:
+        messages.extend(_format_dialogue_with_times(focus_messages))
+    else:
+        dialogue = _load_dialogue_with_times(session_id, limit=RECENT_DIALOGUE_LIMIT)
+        if dialogue:
+            messages.extend(_format_dialogue_with_times(dialogue))
     messages.append({"role": "user", "content": "[刚刚] " + (state.get("effective_user_message") or state["user_message"])})
 
     q = _progress_queues.get(session_id)
@@ -712,6 +734,35 @@ def _node_run_tool(state: ChatState) -> ChatState:
         state["used_tool"] = "clarify"
         state["plan"] = []
         state["plan_index"] = 0
+        return state
+
+    if action == "revive_topic":
+        _push_progress(state, "正在找回过往任务记录...")
+        topic = args.get("topic") or args.get("episode_id") or state.get("user_message") or ""
+        result = revive_topic(state.get("session_id", ""), topic)
+        state["used_tool"] = "revive_topic"
+        state["plan"] = []
+        state["plan_index"] = 0
+        if not result:
+            state["answer"] = "我没找到这个话题的以往记录，你能再说具体一点吗？"
+            _push_delta(state, state["answer"])
+            _append_trace(state, _trace_step(step_type="tool", name="revive_topic", input={"topic": topic}, output={"found": False}))
+            return state
+        lines = [f"[{m.get('ts', '')}] {m.get('content', '')}" for m in result["messages"]]
+        revived_text = f"## 已恢复的过往任务：{result['topic']}\n" + "\n".join(lines)
+        if result.get("summary"):
+            revived_text = f"## 已恢复的过往任务：{result['topic']}\n任务摘要：{result['summary']}\n\n对话记录：\n" + "\n".join(lines)
+        state["answer"], _used = _build_normal_chat_answer(state, decision, plan_context=revived_text)
+        _push_delta(state, state["answer"])
+        _append_trace(
+            state,
+            _trace_step(
+                step_type="tool",
+                name="revive_topic",
+                input={"topic": topic},
+                output={"episode_id": result["episode_id"], "topic_found": result["topic"], "msgs": len(result["messages"])},
+            ),
+        )
         return state
 
     if action == "query_todos":
@@ -1856,7 +1907,18 @@ async def arun_chat_graph(
         if tasks and (detect_affirmation(user_message) or detect_rejection(user_message)):
             return await compiled_graph.ainvoke(Command(resume=user_message), config=config)
         if tasks:
-            await compiled_graph.aupdate_state(config, {"interrupt_message": None, "interrupt_answer": None})
+            # 用户发了非确认/取消消息而中断仍挂着（上一条的待办草案）：
+            # 清除旧草案，避免换话题后误把上一件事的东西入库。
+            await compiled_graph.aupdate_state(
+                config,
+                {
+                    "interrupt_message": None,
+                    "interrupt_answer": None,
+                    "proposal_id": None,
+                    "proposal": None,
+                    "proposal_confirmed": False,
+                },
+            )
 
         ctx = await aload_chat_checkpoint_context(compiled_graph, session_id)
         state = _build_initial_state(session_id=session_id, user_message=user_message, checkpoint_context=ctx, **kwargs)

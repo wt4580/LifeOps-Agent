@@ -147,6 +147,23 @@ def _ensure_memory_columns() -> None:
             conn.execute(text("ALTER TABLE memory_candidates ADD COLUMN insight_type VARCHAR(16) NOT NULL DEFAULT 'explicit'"))
 
 
+def _ensure_chat_message_columns() -> None:
+    """chat_messages 增量列迁移（现有库缺列时自动补齐）。"""
+    url = settings.database_url
+    if not url.startswith("sqlite:///"):
+        return
+    with engine.begin() as conn:
+        table_exists = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_messages'")
+        ).fetchone()
+        if not table_exists:
+            return
+        rows = conn.execute(text("PRAGMA table_info(chat_messages)")).fetchall()
+        existing = {r[1] for r in rows}
+        if "topic" not in existing:
+            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN topic VARCHAR(64)"))
+
+
 def init_db() -> None:
     _ensure_sqlite_dir()
     from ...domain.entity import chat_entity  # noqa: F401
@@ -155,3 +172,4 @@ def init_db() -> None:
     _ensure_memory_columns()
     _ensure_user_profile_columns()
     _ensure_life_events_columns()
+    _ensure_chat_message_columns()

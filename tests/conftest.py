@@ -18,6 +18,7 @@ def mock_all_llm_calls():
         "app.src.agent.time.time_parser",
         "app.src.agent.memory.memory_extractor",
         "app.src.agent.graph_chat",
+        "app.src.service.topic_service",
     ]
     patchers = []
     for mod in consumer_modules:

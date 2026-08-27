@@ -138,6 +138,14 @@ class Settings(BaseSettings):
     pushover_api_token: str = Field(default="", alias="PUSHOVER_API_TOKEN")
 
     # -------------------------
+    # 话题/任务焦点配置
+    # -------------------------
+    # 两次用户消息间隔超过该分钟数，视为切换到了新话题（自动结束上一个进行中的任务段）。
+    topic_switch_gap_minutes: int = Field(default=15, alias="TOPIC_SWITCH_GAP_MINUTES")
+    # 无进行中任务时，当前焦点保留最近的对话轮数（闲聊段短期窗口）。
+    chatter_focus_turns: int = Field(default=6, alias="CHATTER_FOCUS_TURNS")
+
+    # -------------------------
     # 定时推送计划
     # -------------------------
     # 晨间简报推送时间（HH:MM），空字符串表示不启用

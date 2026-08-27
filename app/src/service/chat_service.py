@@ -149,6 +149,13 @@ class ChatService:
             db.add(ChatMessage(session_id=session_id, role="assistant", content=answer))
             db.commit()
 
+        # D.5) 话题/任务焦点标注：判定任务段 vs 闲聊段，管理开启/关闭/快照。
+        try:
+            from ..service.topic_service import annotate_turn
+            annotate_turn(session_id, state, answer)
+        except Exception as exc:
+            logger.warning("topic annotate failed session=%s err=%s", session_id, exc)
+
         # E) 按轮次刷新摘要，并在必要时裁剪历史，控制长期上下文长度。
         await self._maybe_update_summary(session_id)
         self._maybe_prune_chat_history(session_id)
@@ -760,7 +767,7 @@ class ChatService:
                                 "- 按时间顺序概述讨论了什么\n\n"
                                 "## 关键决定与计划\n"
                                 "- 用户做出的决定、确认的计划\n\n"
-                                "## 待跟进话题\n"
+                                "## 遗留事项（仅在用户主动询问时参考）\n"
                                 "- 未完成或需后续关注的事项"
                             ),
                         },
@@ -795,7 +802,7 @@ class ChatService:
                 "- 按时间顺序概述主要讨论了什么\n\n"
                 "## 关键决定与计划\n"
                 "- 用户做出的决定、确认的计划\n\n"
-                "## 待跟进话题\n"
+                "## 遗留事项（仅在用户主动询问时参考）\n"
                 "- 未完成或需要后续关注的事项"
             )
 
@@ -857,7 +864,7 @@ class ChatService:
                             "- 按时间顺序概述讨论了什么\n\n"
                             "## 关键决定与计划\n"
                             "- 用户做出的决定、确认的计划\n\n"
-                            "## 待跟进话题\n"
+                            "## 遗留事项（仅在用户主动询问时参考）\n"
                             "- 未完成或需后续关注的事项"
                         ),
                     },

@@ -21,6 +21,38 @@ class ChatMessage(Base):
     role: Mapped[str] = mapped_column(String(16))
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # 该条消息所属任务段的话题标签；NULL=闲聊段（不建轨迹）
+    topic: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+
+
+class TopicEpisode(Base):
+    """任务段轨迹：仅记录"有状态的活"（待办/目标/提案/待确认状态）。
+
+    status: active=正在进行的任务段；closed=已结束（可被用户重新提起时恢复）。
+    """
+    __tablename__ = "topic_episodes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(16), default="task")
+    topic: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_active_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    summary_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class TopicEpisodeMessage(Base):
+    """任务段的对话快照：任务段关闭后，即使 chat_messages 被压缩删除也能恢复全文。"""
+    __tablename__ = "topic_episode_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    episode_id: Mapped[int] = mapped_column(Integer, index=True)
+    seq: Mapped[int] = mapped_column(Integer, default=0)
+    role: Mapped[str] = mapped_column(String(16))
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class TodoItem(Base):
