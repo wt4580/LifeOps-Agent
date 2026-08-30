@@ -77,6 +77,10 @@ def _ensure_todo_columns() -> None:
             conn.execute(text("ALTER TABLE todo_items ADD COLUMN is_completed BOOLEAN NOT NULL DEFAULT 0"))
         if "completed_at" not in existing:
             conn.execute(text("ALTER TABLE todo_items ADD COLUMN completed_at DATETIME"))
+        if "repeat_rule" not in existing:
+            conn.execute(text("ALTER TABLE todo_items ADD COLUMN repeat_rule VARCHAR(16)"))
+        if "repeat_until" not in existing:
+            conn.execute(text("ALTER TABLE todo_items ADD COLUMN repeat_until DATETIME"))
 
 
 def _ensure_life_events_columns() -> None:

@@ -62,6 +62,8 @@ class TodoItem(Base):
     session_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     title: Mapped[str] = mapped_column(String(255))
     due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    repeat_rule: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    repeat_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

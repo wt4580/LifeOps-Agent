@@ -39,19 +39,27 @@ from ..domain.entity.chatstate_entity import ChatState
 
 # 范围查询待办：当用户问“未来几天安排”时使用。
 def _query_todos(*, start: datetime, end: datetime) -> list[dict[str, Any]]:
+    from ..service.todo_service import TodoService
+
     with SessionLocal() as db:
         rows = (
             db.execute(
-                select(TodoItem)
-                .where(TodoItem.due_at != None)
-                .where(TodoItem.due_at >= start)
-                .where(TodoItem.due_at < end)
-                .order_by(TodoItem.due_at.asc())
+                select(TodoItem).order_by(TodoItem.due_at.asc())
             )
             .scalars()
             .all()
         )
-    return [{"title": r.title, "due_at": r.due_at.isoformat() if r.due_at else None} for r in rows]
+
+    today_start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    result: list[dict[str, Any]] = []
+    for r in rows:
+        if r.due_at is not None and start <= r.due_at < end:
+            result.append(r)
+        elif r.due_at is None and not r.is_completed:
+            result.append(r)
+        elif TodoService._is_recurring_active(r, start) and not TodoService._done_today(r, today_start):
+            result.append(r)
+    return [{"title": r.title, "due_at": r.due_at.isoformat() if r.due_at else None} for r in result]
 
 
 def _resolve_memory_owner_id(session_id: str) -> str:
@@ -345,6 +353,8 @@ def _node_decompose(state: ChatState) -> ChatState:
         "- query_calendar: 查日历日程\n"
         "- query_knowledge: 查知识库\n"
         "- propose_todo: 创建待办\n"
+"  - args 结构：{\"title\":\"动作导向短句\",\"text\":\"用户原话\",\"due_date\":\"YYYY-MM-DD|null\",\"due_time\":\"HH:MM|null\",\"start_date\":\"YYYY-MM-DD|null\",\"end_date\":\"YYYY-MM-DD|null\",\"repeat\":\"once|daily|weekly|null\",\"repeat_until\":\"YYYY-MM-DD|null\",\"duration_min\":\"分钟|null\"}\n"
+"  - 规则：日期可能以 start_date 形式给出，此时回填 due_date；\"接下来一周\\/每天\\/每周\"等周期信息放 repeat，结束日期放 repeat_until/end_date；具体钟点放 due_time；只有文字没有日期时间时全部为 null\n"
         "- decompose_goal: 拆解长期目标\n"
         "- clarify: 反问用户补充信息（身份/角色/缺少关键参数时使用）\n"
         "- revise_proposal: 修改待办草案\n"
@@ -629,6 +639,82 @@ def _build_normal_chat_answer(
     return result, False
 
 
+def _parse_due_value(raw: Any) -> datetime | None:
+    """把 propose_todo 字段里的日期/时间串解析成 datetime；无法解析返回 None。"""
+    if not raw:
+        return None
+    s = str(raw).strip().replace("T", " ")
+    if not s:
+        return None
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y/%m/%d",
+    ):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return None
+
+
+def _coerce_repeat(value: Any) -> str | None:
+    """把 LLM 给出的重复语义归一成 once/daily/weekly。"""
+    if not value:
+        return None
+    s = str(value).strip().lower()
+    if s in ("once", "daily", "weekly"):
+        return s
+    mapping = {"每天": "daily", "每日": "daily", "天天": "daily", "每周": "weekly"}
+    return mapping.get(s)
+
+
+def _build_proposal_item(args: dict, fallback_text: str = "") -> dict:
+    """由 propose_todo 的 args 组装一份待办草案 item（合并模型，含周期字段）。"""
+    title = (args.get("title") or "").strip()
+    item: dict = {
+        "title": title[:50] if title else ((fallback_text or "待办事项")[:50]),
+    }
+
+    due_date = (args.get("due_date") or args.get("date") or args.get("start_date") or "").strip() or None
+    due_time = (args.get("due_time") or args.get("time") or args.get("start_time") or "").strip() or None
+
+    due_val: str | None = None
+    if due_date and due_time:
+        due_val = f"{due_date} {due_time}"
+    elif due_date:
+        due_val = due_date
+    elif due_time:
+        try:
+            hh, mm, *_ = (due_time.split(":", 2) + ["0"] * 2)
+            candidate = datetime.now().replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+            if candidate <= datetime.now():
+                candidate = candidate + timedelta(days=1)
+            due_val = candidate.isoformat(sep=" ", timespec="seconds")
+        except (ValueError, IndexError):
+            due_val = None
+    if due_val:
+        item["due_at"] = due_val
+
+    repeat = _coerce_repeat(args.get("repeat"))
+    if repeat:
+        item["repeat"] = repeat
+    repeat_until = (args.get("repeat_until") or args.get("end_date") or "").strip() or None
+    if repeat_until:
+        item["repeat_until"] = repeat_until
+    if args.get("description"):
+        item["description"] = str(args["description"])[:200]
+    if args.get("duration_min"):
+        item["duration_min"] = args["duration_min"]
+    return item
+
+
 def _handle_interrupt_resume(state: ChatState, user_answer: str) -> ChatState:
     action = (state.get("decision") or {}).get("action", "")
     if action in ("propose_todo", "ask_user_confirm_proposal", "revise_proposal"):
@@ -641,17 +727,16 @@ def _handle_interrupt_resume(state: ChatState, user_answer: str) -> ChatState:
                 session_id = state.get("session_id", "")
                 with SessionLocal() as db:
                     for it in items:
-                        raw_due = it.get("due_at") or it.get("due_date")
-                        due_at = None
-                        if raw_due:
-                            try:
-                                due_at = datetime.fromisoformat(raw_due)
-                            except (ValueError, TypeError):
-                                due_at = None
+                        raw_due = it.get("due_at") or it.get("due_date") or it.get("start_date")
+                        due_at = _parse_due_value(raw_due)
+                        repeat_until = _parse_due_value(it.get("repeat_until") or it.get("end_date"))
                         db.add(TodoItem(
                             session_id=session_id,
                             title=it.get("title", ""),
                             due_at=due_at,
+                            repeat_rule=_coerce_repeat(it.get("repeat")),
+                            repeat_until=repeat_until,
+                            source="plan_proposal",
                         ))
                     db.commit()
             state["proposal_confirmed"] = True
@@ -1023,8 +1108,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
         if title:
             from uuid import uuid4
             proposal_id = str(uuid4())
-            due_date = args.get("due_date") or args.get("date")
-            proposal_payload = {"items": [{"title": title, "due_at": due_date}]}
+            proposal_payload = {"items": [_build_proposal_item(args, pending_text)]}
         else:
             proposal_id, proposal = propose_plan(pending_text)
             proposal_payload = proposal.model_dump()
@@ -1042,7 +1126,15 @@ def _node_run_tool(state: ChatState) -> ChatState:
                 lines.append(f"{i}. {title}{due_str}")
             confirm_text = "\n".join(lines)
         else:
-            confirm_text = "已生成待办草案，请确认是否加入待办。"
+            it = items[0] if items else {}
+            extra = ""
+            if it.get("repeat") and it.get("repeat_until"):
+                at = it.get("due_at", "")
+                if at:
+                    extra = f"\n{it.get('title','')}（生效至{it.get('repeat_until','')[:10]}）"
+                else:
+                    extra = f"\n{it.get('title','')}（自 {datetime.now().strftime('%m月%d日')} 起，至{it.get('repeat_until','')[:10]}）"
+            confirm_text = "已生成待办草案，请确认是否加入待办。" + extra
 
         _push_delta(state, confirm_text)
         _append_trace(
