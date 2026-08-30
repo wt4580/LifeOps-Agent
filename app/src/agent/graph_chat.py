@@ -353,7 +353,8 @@ def _node_decompose(state: ChatState) -> ChatState:
         "- query_knowledge: 查知识库\n"
         "- propose_todo: 创建待办\n"
 "  - args 结构：{\"title\":\"动作导向短句\",\"text\":\"用户原话\",\"due_date\":\"YYYY-MM-DD|null\",\"due_time\":\"HH:MM|null\",\"start_date\":\"YYYY-MM-DD|null\",\"end_date\":\"YYYY-MM-DD|null\",\"repeat\":\"once|daily|weekly|null\",\"repeat_until\":\"YYYY-MM-DD|null\",\"duration_min\":\"分钟|null\"}\n"
-"  - 规则：日期可能以 start_date 形式给出，此时回填 due_date；\"接下来一周\\/每天\\/每周\"等周期信息放 repeat，结束日期放 repeat_until/end_date；具体钟点放 due_time；只有文字没有日期时间时全部为 null\n"
+"  - 规则：日期可能以 start_date 形式给出，此时回填 due_date；\"每天\\/每周\"等周期信息放 repeat；具体钟点放 due_time；只有文字没有日期时间时全部为 null\n"
+"  - 重要：用户给出持续范围（\"接下来一周\\/一周\\/两周\\/未来N天\\/这几天\"等）时，必须计算 end_date：end_date = 开始日期 + 天数 - 1（一周=7天），并把 end_date 同写到 repeat_until。示例：今天是 2026-08-30，用户说\"接下来一周每天做2小时LeetCode\" → start_date=2026-08-31, end_date=2026-09-06, repeat=daily, repeat_until=2026-09-06, duration_min=120\n"
         "- decompose_goal: 拆解长期目标\n"
         "- clarify: 反问用户补充信息（身份/角色/缺少关键参数时使用）\n"
         "- revise_proposal: 修改待办草案\n"
@@ -665,6 +666,34 @@ def _coerce_repeat(value: Any) -> str | None:
     return mapping.get(s)
 
 
+def _infer_duration_days(text: str) -> int | None:
+    """从用户原话识别"持续时长"（含当天的总天数）。
+
+    例如"接下来一周"→7、"两周"→14、"未来三天"→3、"一个月"→30。
+    识别不出（如"每天跑步"的\"每天\"）返回 None。仅用于兜底，已明确的 end_date/repeat_until 优先。
+    """
+    if not text:
+        return None
+    _CN_DIGIT = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+    for pat, days in (
+        (r"(一周|一星期|一个礼拜|一礼拜)", 7),
+        (r"(两周|二周|两星期)", 14),
+        (r"(一个月|一月)", 30),
+    ):
+        if re.search(pat, text):
+            return days
+    m = re.search(
+        r"(?:接下来|未来|后面|往后)?\s*([0-9０-９]+|[一二两三四五六七八九十])\s*天",
+        text,
+    )
+    if m:
+        num = m.group(1)
+        days = int(num) if num.isdigit() else _CN_DIGIT.get(num)
+        if days:
+            return days
+    return None
+
+
 def _build_proposal_item(args: dict, fallback_text: str = "") -> dict:
     """由 propose_todo 的 args 组装一份待办草案 item（合并模型，含周期字段）。"""
     title = (args.get("title") or "").strip()
@@ -696,6 +725,15 @@ def _build_proposal_item(args: dict, fallback_text: str = "") -> dict:
     if repeat:
         item["repeat"] = repeat
     repeat_until = (args.get("repeat_until") or args.get("end_date") or "").strip() or None
+    if not repeat_until and repeat in ("daily", "weekly"):
+        days = _infer_duration_days(args.get("text") or args.get("title") or fallback_text)
+        if days:
+            base = _parse_due_value(
+                (args.get("start_date") or args.get("due_date") or args.get("date") or "").strip() or None
+            )
+            if base is None:
+                base = datetime.now()
+            repeat_until = (base.date() + timedelta(days=days - 1)).isoformat()
     if repeat_until:
         item["repeat_until"] = repeat_until
     if args.get("description"):

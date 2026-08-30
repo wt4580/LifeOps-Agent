@@ -330,14 +330,23 @@ function showProposal(proposalId, proposal) {
   if (Array.isArray(proposal)) {
     proposal.forEach((item, idx) => {
       content += `${idx + 1}. ${item.title}\n`;
-      if (item.repeat_rule) {
-        const ruleText = item.repeat_rule === "daily" ? "每日" : item.repeat_rule === "weekly" ? "每周" : item.repeat_rule;
-        const until = item.repeat_until ? item.repeat_until.slice(0, 10) : "";
-        content += `   周期: ${ruleText}${until ? `，至${until}` : ""}\n`;
+      if (item.repeat || item.repeat_rule) {
+        const rawRule = item.repeat || item.repeat_rule;
+        const ruleText = rawRule === "daily" ? "每日" : rawRule === "weekly" ? "每周" : rawRule;
+        const start = item.due_at ? String(item.due_at).slice(0, 10) : "";
+        const until = item.repeat_until ? String(item.repeat_until).slice(0, 10) : "";
+        let periodText = ruleText;
+        if (start && until) periodText = `${ruleText}（${start} 至 ${until}）`;
+        else if (until) periodText = `${ruleText}（至 ${until}）`;
+        content += `   周期: ${periodText}\n`;
       }
       if (item.due_at) {
-        const dueDate = new Date(item.due_at);
-        content += `   截止时间: ${dueDate.toLocaleString('zh-CN')}\n`;
+        const dueStr = String(item.due_at);
+        if (dueStr.length > 10) {
+          content += `   截止时间: ${new Date(item.due_at).toLocaleString('zh-CN')}\n`;
+        } else {
+          content += `   开始时间: ${new Date(item.due_at).toLocaleDateString('zh-CN')}\n`;
+        }
       }
       content += "\n";
     });
@@ -1027,13 +1036,11 @@ function renderTodoItems(items, { emptyText = "暂无待办", canToggle = true }
       const badge = document.createElement("span");
       badge.className = "todo-repeat-badge";
       const ruleText = todo.repeat_rule === "daily" ? "每日" : todo.repeat_rule === "weekly" ? "每周" : todo.repeat_rule;
-      let untilText = "";
-      if (todo.repeat_until) {
-        try {
-          untilText = `至${new Date(todo.repeat_until).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}`;
-        } catch (_) {}
-      }
-      badge.textContent = ruleText + untilText;
+      let startTag = "";
+      let untilTag = "";
+      if (todo.due_at) { try { startTag = new Date(todo.due_at).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }); } catch (_) {} }
+      if (todo.repeat_until) { try { untilTag = new Date(todo.repeat_until).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }); } catch (_) {} }
+      badge.textContent = startTag && untilTag ? `${ruleText}·${startTag}~${untilTag}` : `${ruleText}${untilTag ? `·至${untilTag}` : ""}`;
       title.appendChild(badge);
     }
 
