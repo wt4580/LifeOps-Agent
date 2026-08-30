@@ -156,7 +156,7 @@ app/src/
 ├── controller/               # API 路由层
 │   ├── chat_controller.py    # 聊天（标准 + SSE 流式）
 │   ├── speech_controller.py  # 语音识别接口
-│   ├── todo_controller.py    # 待办 / 提醒
+│   ├── todo_controller.py    # 待办
 │   ├── plan_controller.py    # 待办草案
 │   ├── bookkeeping_controller.py  # 记账
 │   ├── auth_controller.py    # 登录（生成 session_id）
@@ -260,8 +260,6 @@ python -m app.src
 | GET | `/api/todos/upcoming?days=7` | 未来待办 |
 | GET | `/api/todos/all` | 全部待办 |
 | POST | `/api/todos/{id}/status` | 更新完成状态 |
-| GET | `/api/reminders/pending` | 待提醒事项 |
-| POST | `/api/reminders/{id}/dismiss` | 忽略提醒 |
 | POST | `/api/index` | 知识库索引（含块摘要生成） |
 | POST | `/api/ask` | 知识库问答 |
 | POST | `/api/accounts` | 创建账户 |

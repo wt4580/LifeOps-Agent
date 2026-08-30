@@ -30,7 +30,6 @@ class ChatState(TypedDict, total=False):
 
     recent_events: list[dict[str, Any]]
     upcoming_todos: list[dict[str, Any]]
-    pending_reminders: list[dict[str, Any]]
     event_window_start: str | None
     event_window_end: str | None
 

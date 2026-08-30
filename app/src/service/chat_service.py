@@ -25,7 +25,6 @@ from ..agent.memory.personal_memory import (
 from ..agent.graph_chat import aload_chat_checkpoint_context, arun_chat_graph, load_chat_checkpoint_context
 from ..util.retrieval.retrieval import index_documents
 from ..common.config.log_config import logger
-from .todo_service import reminder_service
 from .session_queue import JOB_END, JOB_STOPPED, cancel_and_wait, submit_chat_job
 
 class ChatService:
@@ -79,19 +78,8 @@ class ChatService:
             session_id=memory_owner_id,
             now_dt=now_dt,
         )
-        pending_reminders = reminder_service.load_pending_reminders(memory_owner_id)
 
-        pre_steps = [
-            {
-                "type": "preprocess",
-                "name": "pending_reminders",
-                "ts": datetime.now().isoformat(timespec="seconds"),
-                "output": {
-                    "count": len(pending_reminders),
-                    "reminders": pending_reminders,
-                },
-            },
-        ]
+        pre_steps: list[dict] = []
 
           # C) 执行状态机：统一交给 LangGraph 处理路由、工具调用、HITL 和主动建议。
         # 将主动决策所需的上下文传递给 Graph，由 Graph 内部的 proactive_decision 节点处理。
@@ -114,7 +102,6 @@ class ChatService:
             recent_events=recent_events,
             important_events=important_events,
             upcoming_todos=upcoming_todos,
-            pending_reminders=pending_reminders,
             event_window_start=event_window_start,
             event_window_end=event_window_end,
         )
@@ -137,12 +124,6 @@ class ChatService:
         used_tool = state.get("used_tool")
         citations = state.get("citations") or []
         trace = state.get("trace")
-
-        # C.5) 从回答中提取"补充建议"并持久化为提醒（DB 时间退避）。
-        if answer:
-            advice_section = self._extract_advice_from_answer(answer)
-            if advice_section:
-                reminder_service.upsert_reminder(memory_owner_id, advice_section)
 
         # D) 保存助手消息：和 user 消息配对入库，方便后续摘要与回放。
         _push("正在保存对话...")
@@ -266,18 +247,6 @@ class ChatService:
                 )
         except Exception as exc:
             logger.warning("clear stale interrupt failed session=%s err=%s", session_id, exc)
-
-    @staticmethod
-    def _extract_advice_from_answer(answer: str) -> str | None:
-        """从回答中提取"补充建议"文本，若无则返回 None。"""
-        marker = "补充建议："
-        if marker not in answer:
-            return None
-        idx = answer.rfind(marker)
-        text = answer[idx + len(marker):].strip()
-        if not text:
-            return None
-        return text
 
     def _load_recent_dialogue(self, session_id: str, limit: int = 12) -> list[dict]:
         """读取最近 N 条对话消息。"""

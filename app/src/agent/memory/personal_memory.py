@@ -479,14 +479,13 @@ def decide_proactive_advice(
     assistant_answer: str,
     recent_events: list[dict],
     upcoming_todos: list[dict],
-    pending_reminders: list[dict] | None = None,
     profile_context: str,
     goals: list[dict] | None = None,
     now_iso: str,
     threshold: float,
     session_id: str | None = None,
 ) -> ProactiveAdviceDecision:
-    if not recent_events and not upcoming_todos and not profile_context and not pending_reminders and not goals:
+    if not recent_events and not upcoming_todos and not profile_context and not goals:
         return ProactiveAdviceDecision(score=0.0, should_add=False, advice=None, reasons=["无可用上下文"])
 
     system_prompt = (
@@ -516,7 +515,6 @@ def decide_proactive_advice(
         "profile_context": profile_context,
         "recent_events": recent_events,
         "upcoming_todos": upcoming_todos,
-        "pending_reminders": pending_reminders or [],
         "goals": goals or [],
     }
 

@@ -579,15 +579,6 @@ def _build_normal_chat_answer(
                 todo_lines.append(f"  {title}")
         context_parts.append("## 待办事项\n" + "\n".join(todo_lines))
 
-    pending_reminders = state.get("pending_reminders") or []
-    if pending_reminders:
-        reminder_lines = []
-        for rem in pending_reminders[:4]:
-            title = rem.get("title", "")
-            count = rem.get("remind_count", 0)
-            reminder_lines.append(f"  {title}（已提醒{count}次）")
-        context_parts.append("## 待提醒事项（AI 检测到需关注但未确认）\n" + "\n".join(reminder_lines))
-
     goals = state.get("goals") or []
     if goals:
         goal_lines = []
@@ -1492,25 +1483,11 @@ def _push_upcoming_todos(state: ChatState):
         logger.warning("push_service._push_upcoming_todos failed: %s", exc)
 
 
-def _push_pending_reminders(state: ChatState):
-    """DB 中到期的提醒也推送通知。"""
-    reminders = state.get("pending_reminders") or []
-    if not reminders:
-        return
-    try:
-        from ..service.push_service import push_reminder_due
-        for r in reminders[:3]:
-            push_reminder_due(r.get("content", ""), r.get("remind_count", 0))
-    except Exception as exc:
-        logger.warning("push_service._push_pending_reminders failed: %s", exc)
-
-
 # 主动决策节点：基于近期事件/待办/画像，决定是否追加主动建议。
 def _node_proactive_decision(state: ChatState) -> ChatState:
     _push_progress(state, "正在分析是否需要主动建议...")
     recent_events = state.get("recent_events", [])
     upcoming_todos = state.get("upcoming_todos", [])
-    pending_reminders = state.get("pending_reminders", [])
     profile_context = state.get("profile_context") or ""
 
     if not recent_events and not upcoming_todos:
@@ -1523,7 +1500,6 @@ def _node_proactive_decision(state: ChatState) -> ChatState:
             assistant_answer=state.get("answer", ""),
             recent_events=recent_events,
             upcoming_todos=upcoming_todos,
-            pending_reminders=pending_reminders,
             profile_context=profile_context,
             goals=state.get("goals"),
             now_iso=now_iso,
@@ -1554,7 +1530,6 @@ def _node_proactive_decision(state: ChatState) -> ChatState:
                 "reasons": decision.reasons,
                 "events_used": len(recent_events),
                 "upcoming_todos_total": len(upcoming_todos),
-                "pending_reminders": len(pending_reminders),
                 "now_iso": now_iso,
                 "event_window_start": state.get("event_window_start"),
                 "event_window_end": state.get("event_window_end"),
@@ -1892,7 +1867,6 @@ def _build_checkpoint_context(values: dict) -> dict:
         "proposal_confirmed": values.get("proposal_confirmed"),
         "interrupt_message": None,
         "interrupt_answer": None,
-        "pending_reminders": values.get("pending_reminders", []),
     }
 
 
@@ -1908,7 +1882,6 @@ def _build_initial_state(
     recent_events: list[dict] | None = None,
     important_events: list[dict] | None = None,
     upcoming_todos: list[dict] | None = None,
-    pending_reminders: list[dict] | None = None,
     event_window_start: str | None = None,
     event_window_end: str | None = None,
 ) -> ChatState:
@@ -1949,7 +1922,6 @@ def _build_initial_state(
         "recent_events": recent_events or [],
         "important_events": important_events or [],
         "upcoming_todos": upcoming_todos or [],
-        "pending_reminders": pending_reminders or [],
         "event_window_start": event_window_start,
         "event_window_end": event_window_end,
 

@@ -87,13 +87,6 @@ def _push_pushover(title: str, content: str) -> bool:
         return False
 
 
-def push_reminder_due(content: str, remind_count: int) -> bool:
-    """提醒到期时推送通知。"""
-    title = "LifeOps 提醒"
-    body = f"{content}\n(第{remind_count + 1}次提醒)"
-    return push_notification(title, body)
-
-
 def push_proactive_advice(advice: str, reasons: list[str]) -> bool:
     """主动建议通知（如即将到来的日程冲突等）。"""
     title = "LifeOps 小建议"

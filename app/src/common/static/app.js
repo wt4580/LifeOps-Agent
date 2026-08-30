@@ -124,7 +124,6 @@ function _stepSummary(step) {
   if (name === "profile_context") return `[画像] ${step.output?.profile_changed ? "已变更" : "无变更"}`;
   if (name === "personal_events") return `[事件] ${step.output?.inserted || 0}条新增`;
   if (name === "pre_graph_hint") return `[预分析] 完成`;
-  if (name === "pending_reminders") return `[提醒] ${step.output?.count || 0}条待提醒`;
   if (name === "finalize") return `[汇总] 已生成最终回答`;
   if (name === "quality_gate") return `[质量审查] ${step.output?.passed ? "通过" : "已修正"}`;
   if (name === "verify_step") return `[执行审查] ${step.output?.passed ? "通过" : "未通过"}`;
@@ -331,6 +330,11 @@ function showProposal(proposalId, proposal) {
   if (Array.isArray(proposal)) {
     proposal.forEach((item, idx) => {
       content += `${idx + 1}. ${item.title}\n`;
+      if (item.repeat_rule) {
+        const ruleText = item.repeat_rule === "daily" ? "每日" : item.repeat_rule === "weekly" ? "每周" : item.repeat_rule;
+        const until = item.repeat_until ? item.repeat_until.slice(0, 10) : "";
+        content += `   周期: ${ruleText}${until ? `，至${until}` : ""}\n`;
+      }
       if (item.due_at) {
         const dueDate = new Date(item.due_at);
         content += `   截止时间: ${dueDate.toLocaleString('zh-CN')}\n`;
@@ -364,6 +368,7 @@ if (closeProposal) {
 }
 
 // 确认待办草案
+let confirmBusy = false;
 if (confirmProposal) {
   confirmProposal.addEventListener("click", async () => {
     const proposalId = window.currentProposalId;
@@ -371,7 +376,13 @@ if (confirmProposal) {
       alert("没有可确认的草案");
       return;
     }
+    if (confirmBusy) {
+      alert("正在确认中，请稍候");
+      return;
+    }
 
+    confirmBusy = true;
+    confirmProposal.disabled = true;
     try {
       const res = await fetch("/api/chat/stream", {
         method: "POST",
@@ -386,120 +397,59 @@ if (confirmProposal) {
       const reader = res.body.getReader();
       const decoder = new TextDecoder("utf-8");
       let buffer = "";
+      let statusLine = null;
+      let finalResult = null;
+
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        buffer = buffer.split("\n\n").pop() || "";
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+        for (const part of parts) {
+          const line = part.split("\n").find((item) => item.startsWith("data: "));
+          if (!line) continue;
+          let payload;
+          try {
+            payload = JSON.parse(line.slice(6));
+          } catch (_) {
+            continue;
+          }
+          if (payload.type === "status") {
+            const msg = payload.message || "";
+            if (msg.startsWith("排队中")) {
+              if (!statusLine) {
+                statusLine = document.createElement("div");
+                statusLine.className = "todo-confirm-status";
+                statusLine.style.color = "#888";
+                proposalContent.appendChild(statusLine);
+              }
+              statusLine.textContent = msg;
+            }
+          } else if (payload.type === "final") {
+            finalResult = payload.result;
+          }
+        }
       }
 
-      appendChat("assistant", "✅ 待办已确认！");
+      const confirmed = finalResult && (finalResult.proposal_confirmed === true || finalResult.used_tool === "plan_gate_confirm");
       hideProposal();
       loadTodos("/api/todos/upcoming?days=7");
+
+      if (!finalResult) {
+        appendChat("assistant", "没有收到确认结果，请重试");
+        return;
+      }
+      const answerText = finalResult.answer || (confirmed ? "好的，已添加到待办。" : "已处理。");
+      appendChat("assistant", confirmed ? `✅ ${answerText}` : answerText);
     } catch (error) {
       alert(`确认失败: ${error.message}`);
+    } finally {
+      confirmBusy = false;
+      confirmProposal.disabled = false;
     }
   });
 }
-
-// ========================================
-// 提醒功能
-// ========================================
-const remindersOutput = document.getElementById("reminders-output");
-
-function _formatRemindTime(iso) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  const now = new Date();
-  const diffMs = d - now;
-  if (diffMs <= 0) return "已到期";
-  const hours = Math.floor(diffMs / 3600000);
-  const minutes = Math.floor((diffMs % 3600000) / 60000);
-  if (hours > 48) return `${Math.round(hours / 24)}天后`;
-  if (hours > 0) return `${hours}小时${minutes}分后`;
-  return `${minutes}分后`;
-}
-
-async function dismissReminder(reminderId, rowEl) {
-  try {
-    const res = await fetch(`/api/reminders/${reminderId}/dismiss`, { method: "POST" });
-    const data = await res.json();
-    if (res.ok) {
-      rowEl.remove();
-      const container = remindersOutput;
-      if (container && container.children.length === 0) {
-        container.innerHTML = '<div class="reminder-empty">暂无待提醒事项</div>';
-      }
-    } else {
-      alert(`取消失败: ${data.detail || "未知错误"}`);
-    }
-  } catch (error) {
-    alert(`网络错误: ${error.message}`);
-  }
-}
-
-function renderReminders(reminders) {
-  if (!remindersOutput) return;
-  remindersOutput.innerHTML = "";
-  if (!reminders || reminders.length === 0) {
-    remindersOutput.innerHTML = '<div class="reminder-empty">暂无待提醒事项</div>';
-    return;
-  }
-
-  // 标题
-  const header = document.createElement("div");
-  header.className = "reminder-group-title";
-  header.textContent = "提醒";
-  remindersOutput.appendChild(header);
-
-  reminders.forEach((rem) => {
-    const row = document.createElement("div");
-    row.className = "reminder-row";
-
-    const content = document.createElement("div");
-    content.className = "reminder-content";
-
-    const title = document.createElement("div");
-    title.className = "reminder-title";
-    title.textContent = rem.title;
-
-    const meta = document.createElement("div");
-    meta.className = "reminder-meta";
-    const nextStr = _formatRemindTime(rem.next_remind_at);
-    meta.textContent = `已提醒${rem.remind_count}次 · 下次${nextStr}`;
-
-    content.appendChild(title);
-    content.appendChild(meta);
-
-    const dismissBtn = document.createElement("button");
-    dismissBtn.className = "reminder-dismiss";
-    dismissBtn.textContent = "×";
-    dismissBtn.title = "忽略此提醒";
-    dismissBtn.addEventListener("click", () => dismissReminder(rem.id, row));
-
-    row.appendChild(content);
-    row.appendChild(dismissBtn);
-    remindersOutput.appendChild(row);
-  });
-}
-
-async function loadReminders() {
-  try {
-    const res = await fetch(`/api/reminders/pending?session_id=${sessionId}`);
-    const data = await res.json();
-    const result = data.result || data.data || {};
-    renderReminders(result.reminders || []);
-  } catch (error) {
-    if (remindersOutput) remindersOutput.textContent = `加载失败: ${error.message}`;
-  }
-}
-
-// 在加载待办后同时加载提醒
-const originalLoadTodos = loadTodos;
-loadTodos = async function(url) {
-  await originalLoadTodos(url);
-  await loadReminders();
-};
 
 // 拒绝待办草案
 if (rejectProposal) {
@@ -633,7 +583,6 @@ async function handleLogin() {
     appSection.style.display = "";
     requestAnim("idle");
     loadTodos("/api/todos/upcoming?days=7");
-    loadReminders();
   } catch (err) {
     console.error("Login error:", err);
   }
@@ -644,7 +593,6 @@ if (sessionId) {
   appSection.style.display = "";
   requestAnim("idle");
   loadTodos("/api/todos/upcoming?days=7");
-  loadReminders();
 } else {
   loginSection.style.display = "";
   appSection.style.display = "none";
@@ -870,6 +818,7 @@ async function sendChatMessage() {
   } finally {
     activeStream = null;
   }
+  return finalResult || null;
 }
 
 if (chatSend) {
@@ -1073,6 +1022,20 @@ function renderTodoItems(items, { emptyText = "暂无待办", canToggle = true }
     const title = document.createElement("div");
     title.className = "todo-title";
     title.textContent = todo.title;
+
+    if (todo.repeat_rule) {
+      const badge = document.createElement("span");
+      badge.className = "todo-repeat-badge";
+      const ruleText = todo.repeat_rule === "daily" ? "每日" : todo.repeat_rule === "weekly" ? "每周" : todo.repeat_rule;
+      let untilText = "";
+      if (todo.repeat_until) {
+        try {
+          untilText = `至${new Date(todo.repeat_until).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}`;
+        } catch (_) {}
+      }
+      badge.textContent = ruleText + untilText;
+      title.appendChild(badge);
+    }
 
     const due = document.createElement("div");
     due.className = "todo-due";
