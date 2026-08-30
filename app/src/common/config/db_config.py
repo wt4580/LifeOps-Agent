@@ -14,7 +14,7 @@ lifeops.db
 from __future__ import annotations
 
 from pathlib import Path
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 from .base_config import settings
@@ -29,6 +29,21 @@ class Base(DeclarativeBase):
 # 创建数据库引擎：
 # - 这里使用 `future=True` 启用 2.x 风格行为，减少兼容层歧义。
 engine = create_engine(settings.database_url, future=True)
+
+
+def _apply_sqlite_pragmas(dbapi_connection, connection_record) -> None:
+    """每个 SQLite 连接建立时统一设置：WAL + NORMAL 同步。
+
+    后台旁路（图后学习/记忆/摘要）与主流程分线程并发访问数据库，
+    WAL 让读者不被写者阻塞，NORMAL 同步降低每次提交的 fsync 开销。
+    """
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+
+
+if settings.database_url.startswith("sqlite:///"):
+    event.listen(engine, "connect", _apply_sqlite_pragmas)
 
 # 创建会话工厂：
 # - autoflush=False：避免查询前自动刷盘带来的“隐式写入”困惑。

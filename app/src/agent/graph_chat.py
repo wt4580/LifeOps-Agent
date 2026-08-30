@@ -27,7 +27,6 @@ from .time.time_parser import normalize_date_hint
 from .memory.personal_memory import decide_proactive_advice
 from ..domain.dto.memory_dto import ProactiveAdviceDecision
 from ..common.md_loader import load_markdown_context
-from .post_chat_learn import run_learn
 from ..service.topic_service import build_focus_context, load_task_index, revive_topic
 
 # 流式推送：session_id → asyncio.Queue，图节点执行时实时推送，不入 checkpoint
@@ -1623,8 +1622,11 @@ def _node_verify(state: ChatState) -> ChatState:
 
 
 def _node_quality_gate(state: ChatState) -> ChatState:
-    """最终回答质量审查：quick 模式跳过。"""
+    """最终回答质量审查：quick 模式跳过；HITL/计划确认等固定措辞轮次不再重写。"""
     if state.get("mode") == "quick":
+        return state
+    used_tool = state.get("used_tool")
+    if used_tool in {"plan_proposal", "plan_gate_confirm", "plan_gate_cancel", "plan_gate_wait", "interrupt_resume"}:
         return state
     _push_progress(state, "正在检查最终回答质量...")
     answer = (state.get("answer") or "").strip()
@@ -1711,17 +1713,6 @@ def _node_finalize(state: ChatState) -> ChatState:
             output={"used_tool": state.get("used_tool"), "has_proposal": bool(state.get("proposal_id"))},
         ),
     )
-
-    # 对话后学习：quick 模式跳过
-    if state.get("mode") != "quick":
-        try:
-            run_learn(
-                user_message=state.get("user_message", ""),
-                assistant_answer=state.get("answer", ""),
-                session_id=state.get("session_id"),
-            )
-        except Exception as exc:
-            logger.debug("post_chat_learn failed: %s", exc)
 
     return state
 

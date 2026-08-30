@@ -2,8 +2,9 @@
 from __future__ import annotations
 import asyncio
 import json
+import threading
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 from sqlalchemy import select, func, delete
 from ..common.config.db_config import SessionLocal
@@ -15,6 +16,7 @@ from ..domain.entity.chat_entity import (
 )
 from ..common.config.llm_config import chat_completion
 from ..agent.memory.memory_extractor import extract_memory_from_dialogue
+from ..agent.post_chat_learn import run_learn
 from ..agent.memory.personal_memory import (
     build_profile_context,
     extract_personal_events,
@@ -52,8 +54,6 @@ class ChatService:
                 progress_queue.put_nowait(msg)
 
         session_id = session_id or str(uuid4())
-        # 优先使用 checkpointer 中恢复的上下文，避免只依赖数据库回读。
-        checkpoint_context = await aload_chat_checkpoint_context(get_chat_graph(), session_id) if get_chat_graph() else {}
 
         # A) 用户消息先落库，保证审计链完整。
         _push("正在保存消息...")
@@ -90,7 +90,6 @@ class ChatService:
         
         _push("正在进入思考流程...")
         chat_graph = get_chat_graph()
-        checkpoint_context = await aload_chat_checkpoint_context(chat_graph, session_id) if chat_graph else {}
 
         state = await arun_chat_graph(
             compiled_graph=chat_graph,
@@ -105,17 +104,7 @@ class ChatService:
             event_window_start=event_window_start,
             event_window_end=event_window_end,
         )
-        # 图后条件提取：非 quick 模式才运行 extraction
-        if state.get("mode") != "quick":
-            _push("正在提取画像和事件...")
-            recent_for_profile = checkpoint_context.get("recent_dialogue") or self._load_recent_dialogue(session_id, limit=12)
-            now_iso = datetime.now().isoformat(timespec="seconds")
-            profile_patch = extract_profile_facts(message, recent_for_profile, now_iso=now_iso, session_id=session_id)
-            if profile_patch:
-                self._upsert_user_profile(memory_owner_id, profile_patch.model_dump())
-            personal = extract_personal_events(message, recent_for_profile, now_iso=now_iso, session_id=session_id)
-            if personal and personal.items:
-                self._store_personal_events(memory_owner_id, message, [item.model_dump() for item in personal.items])
+        # 图后条件提取改由后台旁路(_spawn_post_graph)处理，主路径不再等待。
 
         answer = state.get("answer") or ""
         proposal_id = state.get("proposal_id")
@@ -131,47 +120,17 @@ class ChatService:
             db.add(ChatMessage(session_id=session_id, role="assistant", content=answer))
             db.commit()
 
-        # D.5) 话题/任务焦点标注：判定任务段 vs 闲聊段，管理开启/关闭/快照。
-        try:
-            from ..service.topic_service import annotate_turn
-            annotate_turn(session_id, state, answer)
-        except Exception as exc:
-            logger.warning("topic annotate failed session=%s err=%s", session_id, exc)
+        # 图后旁路：学习/标注/摘要/记忆/反思等放独立后台线程执行，主响应立即返回，
+        # 不再等这些 LLM 密集任务跑完（缓解"回答慢约一分钟"）。
+        self._spawn_post_graph(
+            session_id=session_id,
+            memory_owner_id=memory_owner_id,
+            message=message,
+            state=state,
+            answer=answer,
+            progress=_push,
+        )
 
-        # E) 按轮次刷新摘要，并在必要时裁剪历史，控制长期上下文长度。
-        await self._maybe_update_summary(session_id)
-        self._maybe_prune_chat_history(session_id)
-
-        # F) 旁路增强：抽取结构化记忆候选，但不阻塞主响应返回。
-        _push("正在提取记忆...")
-        latest_checkpoint_context = await aload_chat_checkpoint_context(get_chat_graph(), session_id) if get_chat_graph() else {}
-        dialogue = latest_checkpoint_context.get("recent_dialogue") or self._load_recent_dialogue(session_id, limit=8)
-        extraction = extract_memory_from_dialogue(dialogue)
-
-        # G) 周期性深度反思：分析所有积累数据，推断隐含模式并更新画像。
-        _push("正在分析深层模式...")
-        await self._maybe_deep_reflection(session_id, memory_owner_id)
-
-        # H) 定期清理过时数据，防止表无限膨胀。
-        self._cleanup_counter += 1
-        if self._cleanup_counter % self.cleanup_interval == 0:
-            self._maybe_cleanup_stale_data()
-        if extraction:
-            with SessionLocal() as db:
-                for item in extraction.items:
-                    db.add(
-                        MemoryCandidate(
-                            kind=item.kind,
-                            title=item.title,
-                            occurred_at=item.occurred_at,
-                            notes=item.notes,
-                            confidence=item.confidence,
-                            insight_type=item.insight_type,
-                        )
-                    )
-                db.commit()
-
-            # G) 返回前端所需结果。
         return {
             "answer": answer,
             "session_id": session_id,
@@ -181,6 +140,105 @@ class ChatService:
             "citations": citations,
             "trace": trace,
         }
+
+    def _spawn_post_graph(
+        self,
+        session_id: str,
+        memory_owner_id: str,
+        message: str,
+        state: dict,
+        answer: str,
+        progress: Callable[[str], None],
+    ) -> None:
+        """把与主回复无关的后台工作丢到独立线程，避免阻塞 SSE 尾部与下一条消息。
+
+        后台任务只读写数据库/画像 markdown，不再触碰 LangGraph checkpoint，
+        因此不会和同一会话下一条消息的图执行互相覆盖。
+        """
+
+        async def _run_all() -> None:
+            recent_dialogue = state.get("recent_dialogue") or self._load_recent_dialogue(session_id, limit=12)
+
+            # 对话后学习：push 信息进 memo/skills/user_summary markdown。
+            if state.get("mode") != "quick":
+                try:
+                    run_learn(
+                        user_message=state.get("user_message", "") or message,
+                        assistant_answer=answer,
+                        session_id=session_id,
+                    )
+                except Exception as exc:
+                    logger.debug("post_chat_learn failed: %s", exc)
+
+            # C.4) 图后条件提取：非 quick 模式才运行画像/事件提取。
+            if state.get("mode") != "quick":
+                try:
+                    progress("正在提取画像和事件...")
+                    now_iso = datetime.now().isoformat(timespec="seconds")
+                    profile_patch = extract_profile_facts(message, recent_dialogue, now_iso=now_iso, session_id=session_id)
+                    if profile_patch:
+                        self._upsert_user_profile(memory_owner_id, profile_patch.model_dump())
+                    personal = extract_personal_events(message, recent_dialogue, now_iso=now_iso, session_id=session_id)
+                    if personal and personal.items:
+                        self._store_personal_events(memory_owner_id, message, [item.model_dump() for item in personal.items])
+                except Exception as exc:
+                    logger.warning("extract profile/events failed session=%s err=%s", session_id, exc)
+
+            # D.5) 话题/任务焦点标注：判定任务段 vs 闲聊段，管理开启/关闭/快照。
+            try:
+                from ..service.topic_service import annotate_turn
+                annotate_turn(session_id, state, answer)
+            except Exception as exc:
+                logger.warning("topic annotate failed session=%s err=%s", session_id, exc)
+
+            # E) 按轮次刷新摘要，并在必要时裁剪历史，控制长期上下文长度。
+            try:
+                progress("正在刷新摘要...")
+                await self._maybe_update_summary(session_id)
+                self._maybe_prune_chat_history(session_id)
+            except Exception as exc:
+                logger.warning("summary refresh failed session=%s err=%s", session_id, exc)
+
+            # F) 旁路增强：抽取结构化记忆候选，但不阻塞主响应返回。
+            try:
+                progress("正在提取记忆...")
+                extraction = extract_memory_from_dialogue(recent_dialogue)
+                if extraction:
+                    with SessionLocal() as db:
+                        for item in extraction.items:
+                            db.add(
+                                MemoryCandidate(
+                                    kind=item.kind,
+                                    title=item.title,
+                                    occurred_at=item.occurred_at,
+                                    notes=item.notes,
+                                    confidence=item.confidence,
+                                    insight_type=item.insight_type,
+                                )
+                            )
+                        db.commit()
+            except Exception as exc:
+                logger.warning("memory extraction failed session=%s err=%s", session_id, exc)
+
+            # G) 周期性深度反思：分析所有积累数据，推断隐含模式并更新画像。
+            try:
+                progress("正在分析深层模式...")
+                await self._maybe_deep_reflection(session_id, memory_owner_id)
+            except Exception as exc:
+                logger.warning("deep reflection failed session=%s err=%s", session_id, exc)
+
+            # H) 定期清理过时数据，防止表无限膨胀。
+            self._cleanup_counter += 1
+            if self._cleanup_counter % self.cleanup_interval == 0:
+                self._maybe_cleanup_stale_data()
+
+        def _worker() -> None:
+            try:
+                asyncio.run(_run_all())
+            except Exception as exc:
+                logger.warning("post_graph worker failed session=%s err=%s", session_id, exc)
+
+        threading.Thread(target=_worker, name=f"postgraph-{session_id[:8]}", daemon=True).start()
 
     async def chat_stream(self, message: str, session_id: str | None = None):
         """流式聊天：同一 session 的并发请求会排队串行执行。
