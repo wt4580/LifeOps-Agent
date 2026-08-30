@@ -687,7 +687,7 @@ def _handle_interrupt_resume(state: ChatState, user_answer: str) -> ChatState:
         pending = state.get("pending_balance_update")
         if detect_affirmation(user_answer) and pending:
             try:
-                from ..service.bookkeeping_service import bookkeeping_service
+                from ..service.booakkeeping_service import bookkeeping_service
                 result = bookkeeping_service.set_account_balance(
                     account_id=pending["id"], balance=pending["new_balance"], session_id=state["session_id"]
                 )

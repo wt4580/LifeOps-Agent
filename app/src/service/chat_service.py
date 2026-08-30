@@ -26,6 +26,7 @@ from ..agent.graph_chat import aload_chat_checkpoint_context, arun_chat_graph, l
 from ..util.retrieval.retrieval import index_documents
 from ..common.config.log_config import logger
 from .todo_service import reminder_service
+from .session_queue import JOB_END, JOB_STOPPED, cancel_and_wait, submit_chat_job
 
 class ChatService:
     """聊天核心服务"""
@@ -201,26 +202,70 @@ class ChatService:
         }
 
     async def chat_stream(self, message: str, session_id: str | None = None):
-        progress_queue: asyncio.Queue = asyncio.Queue()
-        task = asyncio.create_task(self.chat(message=message, session_id=session_id, progress_queue=progress_queue))
+        """流式聊天：同一 session 的并发请求会排队串行执行。
 
-        while not task.done():
-            drained = False
-            while True:
-                try:
-                    msg = progress_queue.get_nowait()
-                    if isinstance(msg, dict):
-                        yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
-                    else:
-                        yield f"data: {json.dumps({'type': 'status', 'message': msg}, ensure_ascii=False)}\n\n"
-                    drained = True
-                except asyncio.QueueEmpty:
-                    break
-            if not task.done():
-                await asyncio.sleep(0.3 if not drained else 0.05)
+        排队规则：先到先服务。若前面还有任务在处理/等待，本请求先向下游
+        推一条"排队中"状态，轮到后才真正开始执行，避免同线程双跑
+        导致 LangGraph checkpoint 互相覆盖。
+        """
+        normalized = (session_id or "").strip() or str(uuid4())
+        events: asyncio.Queue = asyncio.Queue()
 
-        result = await task
-        yield f"data: {json.dumps({'type': 'final', 'result': result}, ensure_ascii=False)}\n\n"
+        queued = submit_chat_job(
+            normalized,
+            events,
+            lambda: self.chat(message=message, session_id=normalized, progress_queue=events),
+        )
+
+        if queued:
+            yield (
+                f"data: {json.dumps({'type': 'status', 'message': '排队中：上一条还在处理，处理完会自动接着回答…'}, ensure_ascii=False)}\n\n"
+            )
+
+        while True:
+            item = await events.get()
+            if item is JOB_END:
+                break
+            if item is JOB_STOPPED:
+                yield f"data: {json.dumps({'type': 'status', 'message': '（已停止）'}, ensure_ascii=False)}\n\n"
+                break
+            if isinstance(item, dict):
+                yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'status', 'message': item}, ensure_ascii=False)}\n\n"
+
+    async def stop_current_chat(self, session_id: str | None = None) -> dict:
+        """打断当前正在处理的消息。
+
+        只取消正在执行的那一条；排队中的消息不受影响，会按顺序继续。
+        取消后清理可能残留的中断状态，避免下一条消息撞上悬空的 HITL。
+        """
+        sid = (session_id or "").strip() or str(uuid4())
+        stopped = await cancel_and_wait(sid)
+        if stopped:
+            await self._clear_stale_interrupt(sid)
+        return {"stopped": stopped}
+
+    async def _clear_stale_interrupt(self, session_id: str) -> None:
+        graph = get_chat_graph()
+        if graph is None:
+            return
+        try:
+            config = {"configurable": {"thread_id": session_id}}
+            current_state = await graph.aget_state(config)
+            if getattr(current_state, "tasks", None):
+                await graph.aupdate_state(
+                    config,
+                    {
+                        "interrupt_message": None,
+                        "interrupt_answer": None,
+                        "proposal_id": None,
+                        "proposal": None,
+                        "proposal_confirmed": False,
+                    },
+                )
+        except Exception as exc:
+            logger.warning("clear stale interrupt failed session=%s err=%s", session_id, exc)
 
     @staticmethod
     def _extract_advice_from_answer(answer: str) -> str | None:

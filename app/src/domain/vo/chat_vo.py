@@ -27,3 +27,13 @@ class ChatVo(BaseModel):
            value = value.strip()
 
         return value
+
+class ChatStopVo(BaseModel):
+    """打断入参。
+
+    session_id:
+      - 需要打断的消息所属会话 ID。
+      - 不传时视为空会话（兜底）。
+    """
+
+    session_id: Optional[str] = Field(None, description="会话 ID")

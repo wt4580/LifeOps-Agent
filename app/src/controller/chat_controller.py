@@ -5,7 +5,7 @@ from ..service.chat_service import ChatService
 
 router = APIRouter()
 
-from ..domain.vo.chat_vo import ChatVo
+from ..domain.vo.chat_vo import ChatVo, ChatStopVo
 from ..domain.dto.chat_dto import ChatDto
 from ..common.config.log_config import logger
 
@@ -38,3 +38,10 @@ async def chat_stream(req: ChatVo):
             yield event
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/api/chat/stop")
+async def chat_stop(req: ChatStopVo):
+    """打断当前正在处理的消息（排队中的消息不受影响，按顺序继续）。"""
+    result = await ChatService().stop_current_chat(req.session_id)
+    return success_response(data=result)

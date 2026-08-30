@@ -228,6 +228,25 @@ function appendAssistantTurn() {
   thoughtToggle.className = "assistant-thought-toggle";
   thoughtToggle.textContent = "收起";
 
+  const stopBtn = document.createElement("button");
+  stopBtn.type = "button";
+  stopBtn.className = "assistant-stop-btn";
+  stopBtn.textContent = "停止";
+  stopBtn.hidden = true;
+  let stopPending = false;
+  stopBtn.addEventListener("click", () => {
+    abortActiveStream();
+    if (stopPending) return;
+    stopPending = true;
+    stopBtn.disabled = true;
+    stopBtn.textContent = "停止中…";
+    fetch("/api/chat/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
+    }).catch(() => {});
+  });
+
   const thoughtDiv = document.createElement("div");
   thoughtDiv.className = "assistant-thought collapsed";
   setThoughtLines(thoughtDiv, ["正在分析你的问题..."]);
@@ -258,13 +277,27 @@ function appendAssistantTurn() {
 
   thoughtHeader.appendChild(thoughtLabel);
   thoughtHeader.appendChild(thoughtToggle);
+  thoughtHeader.appendChild(stopBtn);
 
   wrapper.appendChild(thoughtHeader);
   wrapper.appendChild(thoughtDiv);
   wrapper.appendChild(answerDiv);
   chatLog.appendChild(wrapper);
   chatLog.scrollTop = chatLog.scrollHeight;
-  return { wrapper, thoughtDiv, answerDiv, thoughtToggle, expandThought, collapseThought };
+  return {
+    wrapper,
+    thoughtDiv,
+    answerDiv,
+    thoughtToggle,
+    expandThought,
+    collapseThought,
+    stopBtn,
+    setStopVisible(visible) {
+      stopBtn.hidden = !visible;
+      stopBtn.disabled = stopPending;
+      stopBtn.textContent = stopPending ? "停止中…" : "停止";
+    },
+  };
 }
 
 function setThoughtLines(thoughtDiv, lines) {
@@ -642,138 +675,205 @@ if (logoutBtn) {
 // ========================================
 // 聊天功能
 // ========================================
-if (chatSend) {
-  chatSend.addEventListener("click", async () => {
-    const message = chatInput.value.trim();
-    if (!message) return;
-    
-    appendChat("user", message);
-    chatInput.value = "";
-    const assistantTurn = appendAssistantTurn();
-    
-    try {
-      const res = await fetch("/api/chat/stream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, session_id: sessionId }),
-      });
-      if (!res.ok || !res.body) {
-        requestAnim("think_end");
-        throw new Error(`请求失败: ${res.status}`);
+let activeStream = null;
+
+function abortActiveStream() {
+  if (activeStream && !activeStream.aborted) {
+    activeStream.aborted = true;
+    try { activeStream.controller.abort(); } catch (_) { /* noop */ }
+  }
+}
+
+async function sendChatMessage() {
+  const message = chatInput.value.trim();
+  if (!message) return;
+
+  appendChat("user", message);
+  chatInput.value = "";
+  const assistantTurn = appendAssistantTurn();
+
+  const controller = new AbortController();
+  activeStream = { controller, aborted: false };
+
+  let stopped = false;
+  let queued = false;
+  let finalResult = null;
+  let assistantText = "";
+  let thinkingStarted = false;
+  let usedKbFlow = false;
+  let streamLine = null;
+
+  function showStopIfActive() {
+    if (stopped || finalResult) return;
+    assistantTurn.setStopVisible(!queued);
+  }
+  function hideStop() {
+    assistantTurn.setStopVisible(false);
+  }
+
+  try {
+    const res = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, session_id: sessionId }),
+      signal: controller.signal,
+    });
+    if (!res.ok || !res.body) {
+      requestAnim("think_end");
+      throw new Error(`请求失败: ${res.status}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      let chunk;
+      try {
+        chunk = await reader.read();
+      } catch (err) {
+        if (err && (err.name === "AbortError") && activeStream && activeStream.aborted) {
+          stopped = true;
+          break;
+        }
+        throw err;
       }
+      const { value, done } = chunk;
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
-      let finalResult = null;
-      let assistantText = "";
-      let thinkingStarted = false;
-      let usedKbFlow = false;
-      let streamLine = null;
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() || "";
 
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+      for (const part of parts) {
+        const line = part.split("\n").find((item) => item.startsWith("data: "));
+        if (!line) continue;
+        let payload;
+        try {
+          payload = JSON.parse(line.slice(6));
+        } catch (_) {
+          continue;
+        }
 
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() || "";
-
-        for (const part of parts) {
-          const line = part.split("\n").find((item) => item.startsWith("data: "));
-          if (!line) continue;
-          const payload = JSON.parse(line.slice(6));
-
-          if (payload.type === "anim") {
-            if (!thinkingStarted) {
-              thinkingStarted = true;
-              assistantTurn.expandThought();
-            }
-            const stage = payload.stage || "";
-            if (stage.startsWith("kb_")) usedKbFlow = true;
-            requestAnim(ANIM_GIFS[stage] ? stage : "thinking");
-            continue;
-          }
-
-          if (!thinkingStarted && (payload.type === "status" || payload.type === "step" || payload.type === "delta")) {
+        if (payload.type === "anim") {
+          if (!thinkingStarted) {
             thinkingStarted = true;
-            requestAnim("think_start");
             assistantTurn.expandThought();
           }
+          const stage = payload.stage || "";
+          if (stage.startsWith("kb_")) usedKbFlow = true;
+          requestAnim(ANIM_GIFS[stage] ? stage : "thinking");
+          continue;
+        }
 
-          if (payload.type === "delta") {
-            assistantText += payload.delta || "";
-            if (assistantTurn?.thoughtDiv) {
-              if (!streamLine) {
-                streamLine = document.createElement("div");
-                streamLine.className = "thought-line";
-                streamLine.dataset.stream = "true";
-                streamLine.style.color = "#555";
-                assistantTurn.thoughtDiv.appendChild(streamLine);
-              }
-              streamLine.textContent = assistantText;
+        if (!thinkingStarted && (payload.type === "status" || payload.type === "step" || payload.type === "delta")) {
+          thinkingStarted = true;
+          requestAnim("think_start");
+          assistantTurn.expandThought();
+        }
+
+        if (payload.type === "delta") {
+          assistantText += payload.delta || "";
+          if (assistantTurn?.thoughtDiv) {
+            if (!streamLine) {
+              streamLine = document.createElement("div");
+              streamLine.className = "thought-line";
+              streamLine.dataset.stream = "true";
+              streamLine.style.color = "#555";
+              assistantTurn.thoughtDiv.appendChild(streamLine);
             }
-          } else if (payload.type === "status") {
+            streamLine.textContent = assistantText;
+          }
+        } else if (payload.type === "status") {
+          const msg = payload.message || "";
+          if (msg === "（已停止）") {
+            stopped = true;
+            hideStop();
+          } else if (msg.startsWith("排队中")) {
+            queued = true;
+            if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, [msg]);
+          } else {
+            queued = false;
+            showStopIfActive();
             if (assistantTurn?.thoughtDiv) {
               let firstLine = assistantTurn.thoughtDiv.querySelector(".thought-line");
               if (!firstLine) {
-                setThoughtLines(assistantTurn.thoughtDiv, [payload.message || "正在思考..."]);
+                setThoughtLines(assistantTurn.thoughtDiv, [msg || "正在思考..."]);
               } else {
-                firstLine.textContent = payload.message || "正在思考...";
+                firstLine.textContent = msg || "正在思考...";
               }
             }
-          } else if (payload.type === "step") {
-            if (assistantTurn?.thoughtDiv) {
-              const lines = assistantTurn.thoughtDiv.querySelectorAll(".thought-line");
-              const lastLine = lines[lines.length - 1];
-              const text = payload.message || "";
-              if (lastLine && lastLine.textContent === text) continue;
-              const newLine = document.createElement("div");
-              newLine.className = "thought-line";
-              newLine.textContent = text;
-              if (lastLine && lastLine.textContent.startsWith("正在") && lastLine.dataset.stream !== "true") {
-                lastLine.textContent = text;
-              } else {
-                assistantTurn.thoughtDiv.appendChild(newLine);
-              }
+          }
+        } else if (payload.type === "step") {
+          queued = false;
+          showStopIfActive();
+          if (assistantTurn?.thoughtDiv) {
+            const lines = assistantTurn.thoughtDiv.querySelectorAll(".thought-line");
+            const lastLine = lines[lines.length - 1];
+            const text = payload.message || "";
+            if (lastLine && lastLine.textContent === text) continue;
+            const newLine = document.createElement("div");
+            newLine.className = "thought-line";
+            newLine.textContent = text;
+            if (lastLine && lastLine.textContent.startsWith("正在") && lastLine.dataset.stream !== "true") {
+              lastLine.textContent = text;
+            } else {
+              assistantTurn.thoughtDiv.appendChild(newLine);
             }
-          } else if (payload.type === "final") {
-            finalResult = payload.result;
-            // 知识库流程不播结束动画直接回待机；普通流程播思考结束
-            requestAnim(usedKbFlow ? "idle" : "think_end");
           }
+        } else if (payload.type === "error") {
+          hideStop();
+          requestAnim("think_end");
+          if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：错误: ${payload.message || "未知错误"}`;
+        } else if (payload.type === "final") {
+          finalResult = payload.result;
+          hideStop();
+          // 知识库流程不播结束动画直接回待机；普通流程播思考结束
+          requestAnim(usedKbFlow ? "idle" : "think_end");
         }
       }
-
-      if (finalResult) {
-        const finalAnswer = finalResult.answer || assistantText || "";
-        assistantTurn.collapseThought();
-        if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：${finalAnswer}`;
-        if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, buildThoughtLines(finalResult.trace, finalResult));
-
-        if (finalResult.proposal_id && finalResult.proposal && finalResult.used_tool === "plan_proposal") {
-          showProposal(finalResult.proposal_id, finalResult.proposal);
-        }
-
-        if (Array.isArray(finalResult.citations) && finalResult.citations.length > 0) {
-          showRag();
-          const askTabBtn = document.querySelector('[data-tab="ask"]');
-          if (askTabBtn) askTabBtn.click();
-          if (askAnswer) {
-            askAnswer.classList.remove("hidden");
-            askAnswer.textContent = finalResult.answer;
-          }
-          renderCitations(finalResult.citations);
-        }
-      } else if (assistantTurn?.answerDiv) {
-        assistantTurn.answerDiv.textContent = `回答：${assistantText || "未收到回复"}`;
-      }
-    } catch (error) {
-      requestAnim("think_end");
-      if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, ["请求失败"]);
-      if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：错误: ${error.message}`;
     }
-  });
+
+    if (stopped) {
+      hideStop();
+      requestAnim("idle");
+      if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, ["（已停止）"]);
+      if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：已停止`;
+    } else if (finalResult) {
+      const finalAnswer = finalResult.answer || assistantText || "";
+      assistantTurn.collapseThought();
+      if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：${finalAnswer}`;
+      if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, buildThoughtLines(finalResult.trace, finalResult));
+
+      if (finalResult.proposal_id && finalResult.proposal && finalResult.used_tool === "plan_proposal") {
+        showProposal(finalResult.proposal_id, finalResult.proposal);
+      }
+
+      if (Array.isArray(finalResult.citations) && finalResult.citations.length > 0) {
+        showRag();
+        const askTabBtn = document.querySelector('[data-tab="ask"]');
+        if (askTabBtn) askTabBtn.click();
+        if (askAnswer) {
+          askAnswer.classList.remove("hidden");
+          askAnswer.textContent = finalResult.answer;
+        }
+        renderCitations(finalResult.citations);
+      }
+    } else if (assistantTurn?.answerDiv) {
+      assistantTurn.answerDiv.textContent = `回答：${assistantText || "未收到回复"}`;
+    }
+  } catch (error) {
+    hideStop();
+    requestAnim("think_end");
+    if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, ["请求失败"]);
+    if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：错误: ${error.message}`;
+  } finally {
+    activeStream = null;
+  }
+}
+
+if (chatSend) {
+  chatSend.addEventListener("click", sendChatMessage);
 }
 
 document.addEventListener("keydown", function(e) {

@@ -430,6 +430,29 @@ body {
   border-color: var(--border-strong);
 }
 
+.assistant-stop-btn {
+  border: 1px solid var(--danger, #c64b4b);
+  background: transparent;
+  color: var(--danger, #c64b4b);
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  padding: 2px 12px;
+  margin-left: 6px;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease);
+  font-family: var(--font-sans);
+  letter-spacing: 0.02em;
+}
+
+.assistant-stop-btn:hover:not(:disabled) {
+  background: rgba(198, 75, 75, 0.1);
+}
+
+.assistant-stop-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .assistant-thought {
   font-size: 12px;
   color: var(--fg-muted);
