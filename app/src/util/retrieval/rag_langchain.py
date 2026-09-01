@@ -338,6 +338,16 @@ def _load_vector_store():
     )
 
 
+def _log_rerank_results(channel: str, query: str, hits: list[LCRetrievalHit]) -> None:
+    """记录检索/重排后的候选结果，便于排查为何某些 chunk 排前。"""
+    for i, h in enumerate(hits, start=1):
+        snippet = (h.snippet or "").strip().replace("\n", " ")[:80]
+        logger.info(
+            "rerank[%d] rank=%d reason=%s score=%.4f path=%s page=%s chunk=%s snippet=%s",
+            channel, i, h.reason, h.score, h.path, h.page, h.chunk_id, snippet,
+        )
+
+
 def search_with_rerank(query: str, *, top_k: int, candidate_k: int) -> list[LCRetrievalHit]:
     """执行向量检索 + 可选重排。
 
@@ -372,7 +382,9 @@ def search_with_rerank(query: str, *, top_k: int, candidate_k: int) -> list[LCRe
     reranker = _reranker()
     if reranker is None:
         candidates.sort(key=lambda x: x.score, reverse=True)
-        return candidates[:top_k]
+        candidates = candidates[:top_k]
+        _log_rerank_results("vector", query, candidates)
+        return candidates
 
     inputs = [[query, c.snippet] for c in candidates]
     rerank_scores = reranker.predict(inputs)
@@ -381,4 +393,6 @@ def search_with_rerank(query: str, *, top_k: int, candidate_k: int) -> list[LCRe
         c.reason = "vector-rerank"
 
     candidates.sort(key=lambda x: x.score, reverse=True)
-    return candidates[:top_k]
+    candidates = candidates[:top_k]
+    _log_rerank_results("vector-rerank", query, candidates)
+    return candidates

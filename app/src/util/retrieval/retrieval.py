@@ -456,6 +456,7 @@ def _rewrite_query(query: str, session_id: str = "") -> str:
         if len(words) > 20:
             logger.warning("rewrite query too many words (%d), fallback to original: %s", len(words), cleaned[:80])
             return query
+        logger.info("rewrite query: %r -> %r", query, cleaned)
         return cleaned
     except Exception as exc:
         logger.warning("query rewrite failed: %s", exc)
@@ -794,6 +795,7 @@ def rag_answer(
     """把候选证据拼成 Context，交给 LLM 生成带引用回答。"""
 
     if not citations:
+        logger.info("rag_answer evidence: no citations, return no-evidence template")
         return settings.rag_no_evidence_template
 
     # 证据强度门槛基于统一的 0-100 相关度得分；weak 以上才算有效证据。
@@ -803,11 +805,24 @@ def rag_answer(
     semantic_channel = any("vector" in (c.reason or "") for c in citations)
     if semantic_channel:
         if not any((c.snippet or "").strip() for c in citations):
+            logger.info(
+                "rag_answer evidence: semantic channel but empty snippets score=%.2f strong=%d, no-evidence",
+                best_score, strong_count,
+            )
             return settings.rag_no_evidence_template
     else:
         rich_snippet_count = sum(1 for c in citations if len((c.snippet or "").strip()) >= 30)
         if strong_count == 0 and best_score < weak_threshold and rich_snippet_count < 2:
+            logger.info(
+                "rag_answer evidence: weak support score=%.2f strong=%d rich_snippets=%d, no-evidence",
+                best_score, strong_count, rich_snippet_count,
+            )
             return settings.rag_no_evidence_template
+
+    logger.info(
+        "rag_answer evidence: pass score=%.2f strong=%d semantic=%s citations=%d",
+        best_score, strong_count, semantic_channel, len(citations),
+    )
 
     window_size = 2
     context_lines: list[str] = []
