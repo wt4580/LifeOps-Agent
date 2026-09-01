@@ -523,6 +523,7 @@ def _build_normal_chat_answer(
             "- 本轮没有明确任务、用户也没有提到过去的事情时，只回答当前这一句；"
             "严禁把之前的事项、待办、事件逐个罗列出来。\n"
             "- 仅当用户本轮明确提起某个\"过往任务\"时，才去回答/回顾那个任务（此时相关任务记录已提供给你）。\n"
+            "- 引用任何事件、待办、过往任务时，注意其时间标注与当前时间的差距，不要把过去的事项当成当前正在发生的事。\n"
             "- 涉及实时数据（天气/待办/日历/账目）时，优先基于实时查询结果回答，不要凭历史记忆编造。"
         ),
     }]
@@ -538,7 +539,7 @@ def _build_normal_chat_answer(
     if state.get("summary"):
         summary = state["summary"]
         if not summary.startswith("##"):
-            summary = f"## 对话摘要（历史记录，仅供了解用户背景，不代表当前状态）\n{summary}"
+            summary = f"## 对话摘要（历史记录，仅供了解用户背景，不代表当前状态）\n注意：摘要中的事项可能已过期，引用前请核对时间，不要直接当成当前安排。\n{summary}"
         context_parts.append(summary)
 
     important_events = state.get("important_events") or []
@@ -1592,6 +1593,8 @@ _MAX_CYCLES = 4  # 全局最大 decompose→run_tool→verify 循环次数，防
 
 def _node_verify(state: ChatState) -> ChatState:
     """审查单步工具执行结果，不通过时标记 retry。"""
+    if state.get("mode") == "quick":
+        return state
     action = (state.get("decision") or {}).get("action", "")
     if action not in _VERIFYABLE_ACTIONS:
         return state

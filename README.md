@@ -9,10 +9,7 @@
 ### 聊天与待办确认
 
 ![聊天界面](docs/screenshots/chat.png)
-
-### 语音输入
-
-![语音输入](docs/screenshots/voice.png)
+![代办确认](docs/screenshots/todo.png)
 
 ### 知识库问答
 
