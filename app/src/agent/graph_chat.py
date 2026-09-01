@@ -409,6 +409,10 @@ def _node_decompose(state: ChatState) -> ChatState:
                 "assistant_message": data.get("assistant_message", ""),
                 "trace": {"intent": "plan_step", "why": first.get("purpose", "多步分解子任务")},
             }
+            logger.info(
+                "decompose plan session=%s steps=%d first_action=%s first_purpose=%s",
+                state.get("session_id"), len(steps), first.get("action"), first.get("purpose", ""),
+            )
         else:
             state["plan"] = []
             state["plan_index"] = 0
@@ -418,6 +422,10 @@ def _node_decompose(state: ChatState) -> ChatState:
                 "assistant_message": data.get("assistant_message", ""),
                 "trace": {"intent": "llm_decide", "why": data.get("reason", "LLM 决策")},
             }
+            logger.info(
+                "decompose decide session=%s mode=%s action=%s why=%s",
+                state.get("session_id"), state.get("mode"), data.get("action") or "normal_chat", data.get("reason", ""),
+            )
     except Exception as exc:
         logger.warning("decompose failed session=%s input=%s raw=%s err=%s", state.get("session_id"), user_msg[:40], cleaned, exc)
         state["plan"] = []
@@ -838,6 +846,11 @@ def _node_run_tool(state: ChatState) -> ChatState:
     decision = state.get("decision") or {"action": "normal_chat", "args": {}, "assistant_message": ""}
     action = decision.get("action", "normal_chat")
     args = decision.get("args") or {}
+    trace_why = (state.get("decision") or {}).get("trace", {}).get("why", "")
+    logger.info(
+        "run_tool action=%s session=%s mode=%s why=%s args=%s",
+        action, state.get("session_id"), state.get("mode"), trace_why, json.dumps(args, ensure_ascii=False)[:200],
+    )
 
     if action == "clarify":
         question = (decision.get("assistant_message") or "").strip()
@@ -1647,7 +1660,9 @@ def _node_verify(state: ChatState) -> ChatState:
         ).strip()
         data = json.loads(text)
         passed = data.get("passed", True)
-        if not passed:
+        if passed:
+            logger.info("verify passed for %s session=%s", action, state["session_id"])
+        else:
             issues = data.get("issues", [])
             suggestion = data.get("fix_suggestion", "")
             retry_count = state.get("retry_count", 0)
@@ -1658,12 +1673,15 @@ def _node_verify(state: ChatState) -> ChatState:
                     "fix_suggestion": suggestion,
                     "step_index": plan_index,
                 }
-                logger.info("verify failed for %s (retry %d/%d): %s", action, retry_count + 1, _MAX_RETRIES, issues)
+                logger.info(
+                    "verify failed for %s (retry %d/%d): %s fix_suggestion=%s",
+                    action, retry_count + 1, _MAX_RETRIES, issues, suggestion,
+                )
             else:
                 logger.warning("verify failed for %s after %d retries, skipping", action, _MAX_RETRIES)
                 state["retry_info"] = None
     except Exception as exc:
-        logger.debug("verify check skipped for %s: %s", action, exc)
+        logger.info("verify check skipped for %s: %s", action, exc)
     return state
 
 
@@ -1705,9 +1723,16 @@ def _node_quality_gate(state: ChatState) -> ChatState:
             fix = data.get("fix", "").strip()
             if fix:
                 state["answer"] = fix
-                logger.info("quality gate fixed answer (was: %s...)", answer[:60])
+                logger.info(
+                    "quality gate fixed answer (was: %s..., now: %s...)",
+                    answer[:60], fix[:120],
+                )
+            else:
+                logger.info("quality gate rejected answer but empty fix, kept original")
+        else:
+            logger.info("quality gate passed for action=%s", used_tool)
     except Exception as exc:
-        logger.debug("quality gate skipped: %s", exc)
+        logger.info("quality gate skipped: %s", exc)
     return state
 
 

@@ -121,7 +121,7 @@ def chat_completion(
         cleaned = normalize_llm_output(raw)
 
     elapsed = time.time() - start
-    preview = (cleaned[:120] + "...") if cleaned and len(cleaned) > 120 else (cleaned or "(empty)")
+    preview = (cleaned[:300] + "...") if cleaned and len(cleaned) > 300 else (cleaned or "(empty)")
     if not cleaned:
         logger.warning(
             "LLM 返回仅含不可见字符 finish=%s scenario=%s",
