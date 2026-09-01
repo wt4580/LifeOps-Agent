@@ -4,17 +4,9 @@
 
 ## 界面预览
 
-> 截图说明：请将前端截图放入 `docs/screenshots/` 目录，并替换下方图片路径（文件名可自定）。
-
-### 聊天与待办确认
-
 ![聊天界面](docs/screenshots/chat.png)
-![代办确认](docs/screenshots/todo.png)
 
-### 知识库问答
-
-![知识库](docs/screenshots/knowledge.png)
-
+·  
 ## 核心特性
 
 - **多轮对话** — LangGraph 状态机编排，支持工具路由、多步计划分解、HITL 人机确认
