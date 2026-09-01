@@ -223,6 +223,28 @@ def _node_load_context(state: ChatState) -> ChatState:
     return state
 
 
+_BUSINESS_DB_TABLES = {
+    "user_profiles": "用户画像：height_cm/weight_kg/age/gender/occupation/city/goals 等个人信息",
+    "todo_items": "待办事项：title/due_at/is_completed/repeat_rule/repeat_until",
+    "calendar_events": "日历日程：title/start_at/end_at/location",
+    "life_events": "生活事件：category/title/event_time/amount/importance/tags",
+    "accounts": "账户：name/balance",
+    "transactions": "账目收支：amount/category/description/transaction_at",
+    "goal_items": "长期目标：title/category/status/progress_pct/sub_goals",
+    "conversation_summaries": "历史对话摘要：summary_text（了解用户过往话题）",
+    "memory_candidates": "记忆条目：kind/title/occurred_at/notes（偏好/模式/事件）",
+    "chat_messages": "历史聊天记录：role/content/created_at",
+}
+
+
+def _business_db_inventory_text() -> str:
+    """生成业务库可查询表清单，供 decompose 决策时判断答案是否已在库中。"""
+    lines = ["业务数据库（business）可查询的业务表（除 user_profiles 外均带 session_id 字段，需用用户 session_id 过滤）："]
+    for table, desc in _BUSINESS_DB_TABLES.items():
+        lines.append(f"- {table}: {desc}")
+    return "\n".join(lines)
+
+
 def _node_decompose(state: ChatState) -> ChatState:
     msg = (state.get("user_message") or "").strip()
 
@@ -335,14 +357,21 @@ def _node_decompose(state: ChatState) -> ChatState:
             for d in (state.get("recent_dialogue") or [])[-6:]
         ]
 
+    session_id = state.get("session_id", "")
+    db_inventory = _business_db_inventory_text()
     system = (
         "你是一个智能决策引擎。理解用户意图，决定使用哪个工具，以及是否需要拆解成多步执行。\n\n"
+        "## 核心原则：先查库自己解决，查不到再问用户\n"
+        "- 回答任何问题前，先评估：用户想知道的答案，是否可能已存在于业务库某张表（用户画像、待办、日程、事件、账户、账目、目标、历史对话摘要等）。\n"
+        "- 若存在查询线索，优先拆成多步：先用 query_database 查相关表，再基于查到的结果作答（normal_chat / query_knowledge）。不要一见缺少参数就反问。\n"
+        "- query_database 查业务表时，必须用输入中提供的 session_id 过滤（SQL 里加 WHERE 限定该用户的数据）。\n"
+        "- 只有确认库里确实不存在该信息、且只有用户本人能提供时，才使用 clarify 反问。\n\n"
         "## 需要拆解的场景\n"
         '- 用户确认/要求同时执行多个操作（如"都干""全做"）\n'
         "- 需要查询多个不同信息才能回答（天气+日程、日程+待办等）\n"
         "- 需要查信息→生成待办的多步流程\n"
-        "- 缺少关键信息需反问（如查天气没提城市）\n"
-        "- 用户身份/角色信息不明确时反问（如不确定是实习生还是正式员工）\n\n"
+        "- 问题答案可能已在库里，需要先 query_database 查表再回答\n"
+        "- 缺少关键信息。但注意：先考虑该信息是否已在库中（如画像里的身高体重/城市/职业/目标），在库则直接使用，不得反问\n\n"
         "## 不需要拆解的场景\n"
         "- 一个工具就能完成的请求\n"
         "- 纯聊天的请求\n\n"
@@ -382,9 +411,11 @@ def _node_decompose(state: ChatState) -> ChatState:
     )
     payload = {
         "user_message": user_msg,
+        "session_id": session_id,
         "recent_dialogue": _format_dialogue_with_times(dialogue),
         "available_topics": available_topics or [],
-        "past_tasks": load_task_index(state.get("session_id", "")),
+        "past_tasks": load_task_index(session_id),
+        "business_db_inventory": db_inventory,
     }
     raw = chat_completion(
         [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],

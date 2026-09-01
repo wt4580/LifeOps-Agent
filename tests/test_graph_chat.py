@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from app.src.agent.graph_chat import (
+    _business_db_inventory_text,
     _build_proposal_item,
     _infer_duration_days,
     _is_bare_confirmation_text,
@@ -165,3 +166,20 @@ class TestIsPrevTodoQuery:
     def test_no_message(self):
         state = {"user_message": "", "recent_dialogue": []}
         assert not _is_prev_todo_query(state)
+
+
+class TestBusinessDbInventoryText:
+    def test_contains_all_key_tables(self):
+        text = _business_db_inventory_text()
+        for table in ("user_profiles", "todo_items", "life_events",
+                       "accounts", "transactions", "goal_items",
+                       "calendar_events", "chat_messages",
+                       "conversation_summaries", "memory_candidates"):
+            assert table in text
+
+    def test_mentions_session_id_filter(self):
+        text = _business_db_inventory_text()
+        assert "session_id" in text
+
+    def test_not_empty(self):
+        assert len(_business_db_inventory_text()) > 100
