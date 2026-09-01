@@ -47,6 +47,42 @@ class Citation:
     section_path: str | None = None
     summary: str | None = None
     chunk_id: int | None = None
+    relatedness: str = "low"
+
+
+# ---------------------------------------------------------------------------
+# 相关度得分约定（统一 0-100 尺度）
+# - 各召回通道的原始分规范化为 0-100，语义 = "该证据与问题的相关度得分"。
+# - 强/弱/低参考阈值见 base_config（rag_score_strong=70 / rag_score_weak=30）。
+# - 向量/重排通道最可信（×0.85）；BM25 词面匹配次之；文件名命中最弱（封顶低分）。
+# ---------------------------------------------------------------------------
+_VECTOR_SCORE_MAX = 85.0   # 向量 1/(1+d)∈(0,1] 映射上限
+_BM25_SCORE_MAX = 60.0     # BM25 词面得分映射上限（弱于向量）
+_PATH_HIT_SCORE = 25.0     # 文件名完整命中（低于 weak 阈值，属低参考）
+_PATH_STEM_SCORE = 15.0    # 文件名词干命中
+_PATH_SCORE_CAP = 28.0     # 文件名通道单条封顶（永不超过 weak 阈值，杜绝假强相关）
+
+
+def _classes_score(value: float) -> str:
+    """由 0-100 得分给出强/弱/低相关标签。"""
+    strong = getattr(settings, "rag_score_strong", 70)
+    weak = getattr(settings, "rag_score_weak", 30)
+    if value >= strong:
+        return "strong"
+    if value >= weak:
+        return "weak"
+    return "low"
+
+
+def _norm_vector(score: float) -> float:
+    """向量/重排通道映射到 0-100：原始分 clamp 到 [0,1] 后 ×85（封顶）。"""
+    if score is None:
+        return 0.0
+    try:
+        clamped = min(max(float(score), 0.0), 1.0)
+    except (TypeError, ValueError):
+        clamped = 0.0
+    return clamped * _VECTOR_SCORE_MAX
 
 
 def _hash_text(text: str) -> str:
@@ -477,16 +513,19 @@ def _path_recall(rows: list[DocumentChunk], query: str, top_k: int) -> list[Cita
             hl = h.lower()
             if hl in path_lower or hl == base_lower:
                 hit = True
-                score += 10.0
+                if score < _PATH_HIT_SCORE:
+                    score = _PATH_HIT_SCORE
 
         for h in hints:
             stem = os.path.splitext(h)[0].lower()
             if stem and stem in q_lower and stem in path_lower:
                 hit = True
-                score += 2.0
+                if score < _PATH_STEM_SCORE:
+                    score = _PATH_STEM_SCORE
 
         if not hit:
             continue
+        score = min(score, _PATH_SCORE_CAP)
 
         scored.append(
             Citation(
@@ -494,6 +533,7 @@ def _path_recall(rows: list[DocumentChunk], query: str, top_k: int) -> list[Cita
                 page=r.page,
                 snippet=r.chunk_text or "",
                 score=score,
+                relatedness=_classes_score(score),
                 reason="path",
                 source_type=getattr(r, "source_type", None),
                 doc_topic=getattr(r, "doc_topic", None),
@@ -521,16 +561,22 @@ def _bm25_recall(rows: list[DocumentChunk], query: str, top_k: int, reason: str)
 
     min_score = getattr(settings, "rag_evidence_min_score", 0.02)
 
+    def _norm_bm25(s: float) -> float:
+        # BM25 原始分无量纲，饱和度映射到 0-60：s>=1 即达上限，弱于向量通道。
+        return float(min(s, 1.0)) * _BM25_SCORE_MAX
+
     citations: list[Citation] = []
     for r, s in zip(rows, scores):
         if s < min_score:
             continue
+        norm = _norm_bm25(s)
         citations.append(
             Citation(
                 path=r.file_path,
                 page=r.page,
                 snippet=r.chunk_text or "",
-                score=float(s),
+                score=norm,
+                relatedness=_classes_score(norm),
                 reason=reason,
                 source_type=getattr(r, "source_type", None),
                 doc_topic=getattr(r, "doc_topic", None),
@@ -563,6 +609,8 @@ def _merge_rank(*lists: list[Citation], top_k: int) -> list[Citation]:
                     merged[key].reason = "rewrite-bm25"
 
     out = list(merged.values())
+    for o in out:
+        o.relatedness = _classes_score(o.score)
     out.sort(key=lambda x: x.score, reverse=True)
     return out[:top_k]
 
@@ -570,7 +618,7 @@ def _merge_rank(*lists: list[Citation], top_k: int) -> list[Citation]:
 def _rrf_fuse(*lists: list[Citation], top_k: int, k: int = 60) -> list[Citation]:
     """RRF 融合：对不同召回通道做稳健排序融合。
 
-    RRF 分数仅用于排序；展示的 score 字段保留原始相似度（向量分优先）。
+    RRF 分数仅用于排序；展示的 score 字段保留规范化的相关度得分（0-100）。
     """
 
     fused: dict[tuple[str, int | None, str], Citation] = {}
@@ -607,6 +655,7 @@ def _rrf_fuse(*lists: list[Citation], top_k: int, k: int = 60) -> list[Citation]
         key = (o.path, o.page, o.snippet)
         if key in display_score:
             o.score = display_score[key]
+        o.relatedness = _classes_score(o.score)
 
     return out[:top_k]
 
@@ -627,7 +676,8 @@ def _search_langchain(query: str, top_k: int) -> list[Citation]:
                 path=h.path,
                 page=h.page,
                 snippet=h.snippet,
-                score=h.score,
+                score=_norm_vector(h.score),
+                relatedness=_classes_score(_norm_vector(h.score)),
                 reason=h.reason,
                 source_type=h.source_type,
                 doc_topic=h.doc_topic,
@@ -746,17 +796,17 @@ def rag_answer(
     if not citations:
         return settings.rag_no_evidence_template
 
-    # 证据强度门槛原本针对 BM25 分数尺度；向量距离分 1/(1+d) 与 CrossEncoder logits 与 0.02 不可比，
-    # 否则会误杀「已有命中」的语义检索结果。
+    # 证据强度门槛基于统一的 0-100 相关度得分；weak 以上才算有效证据。
     best_score = max(c.score for c in citations)
-    strong_count = sum(1 for c in citations if c.score >= settings.rag_evidence_min_score)
+    weak_threshold = getattr(settings, "rag_score_weak", 30)
+    strong_count = sum(1 for c in citations if c.score >= weak_threshold)
     semantic_channel = any("vector" in (c.reason or "") for c in citations)
     if semantic_channel:
         if not any((c.snippet or "").strip() for c in citations):
             return settings.rag_no_evidence_template
     else:
         rich_snippet_count = sum(1 for c in citations if len((c.snippet or "").strip()) >= 30)
-        if strong_count == 0 and best_score < settings.rag_evidence_min_score and rich_snippet_count < 2:
+        if strong_count == 0 and best_score < weak_threshold and rich_snippet_count < 2:
             return settings.rag_no_evidence_template
 
     window_size = 2

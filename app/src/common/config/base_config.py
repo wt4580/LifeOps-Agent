@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     rag_chunk_size: int = Field(default=600, alias="RAG_CHUNK_SIZE")
     rag_chunk_overlap: int = Field(default=120, alias="RAG_CHUNK_OVERLAP")
     rag_evidence_min_score: float = Field(default=0.02, alias="RAG_EVIDENCE_MIN_SCORE")
+    # 相关度得分阈值（统一 0-100 尺度）：>= 强 为强相关；>= 弱 为弱相关；否则为低参考。
+    rag_score_strong: float = Field(default=70, alias="RAG_SCORE_STRONG")
+    rag_score_weak: float = Field(default=30, alias="RAG_SCORE_WEAK")
     rag_no_evidence_template: str = Field(
         default="当前证据不足以支持确定结论。我可以继续按关键词重检，或请你提供更具体的文件名/术语。",
         alias="RAG_NO_EVIDENCE_TEMPLATE",

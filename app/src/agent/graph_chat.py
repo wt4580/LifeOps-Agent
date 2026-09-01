@@ -948,6 +948,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
                 "page": c.page,
                 "snippet": c.snippet,
                 "score": c.score,
+                "relatedness": c.relatedness,
                 "reason": c.reason,
                 "source_type": c.source_type,
                 "doc_topic": c.doc_topic,

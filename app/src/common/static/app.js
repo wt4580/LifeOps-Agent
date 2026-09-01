@@ -193,10 +193,19 @@ function renderCitations(citations) {
   if (!citations || citations.length === 0) return;
   
   citations.forEach((cite, idx) => {
-    const div = document.createElement("div");
-    div.className = "citation";
-    div.textContent = `${cite.path} (相似度: ${(cite.score * 100).toFixed(0)}%)`;
-    askCitations.appendChild(div);
+    const details = document.createElement("details");
+    details.className = "citation";
+    details.classList.add(`cite-${cite.relatedness || "low"}`);
+    const summ = document.createElement("summary");
+    const page = cite.page ? ` · 第 ${cite.page} 页` : "";
+    const relLabel = { strong: "强相关", weak: "弱相关", low: "低参考" }[cite.relatedness || "low"] || "低参考";
+    summ.textContent = `${cite.path}${page}（相关度: ${Math.round(cite.score || 0)} · ${relLabel}）`;
+    const body = document.createElement("div");
+    body.className = "citation-body";
+    body.textContent = cite.snippet || "(无正文)";
+    details.appendChild(summ);
+    details.appendChild(body);
+    askCitations.appendChild(details);
   });
 }
 

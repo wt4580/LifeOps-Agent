@@ -1074,6 +1074,50 @@ body {
   transition: all var(--duration-fast) var(--ease);
 }
 
+.citation summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  position: relative;
+}
+
+.citation summary::-webkit-details-marker {
+  display: none;
+}
+
+.citation summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: var(--space-2);
+  transition: transform var(--duration-fast) var(--ease);
+}
+
+.citation[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.citation-body {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px dashed var(--border);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
+}
+
+.citation.cite-strong {
+  border-color: var(--primary-border);
+  background: var(--primary-subtle);
+}
+
+.citation.cite-weak {
+  border-color: var(--border);
+}
+
+.citation.cite-low {
+  opacity: 0.75;
+}
+
 .citation:hover {
   border-color: var(--primary-border);
   background: var(--primary-subtle);
