@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.src.agent.memory.memory_extractor import extract_memory_from_dialogue
+from app.src.agent.memory.memory_extractor import extract_memory_from_dialogue, _extract_json_object
 from app.src.agent.memory.personal_memory import (
     ProactiveAdviceDecision,
     _normalize_event_time_or_now,
@@ -202,3 +202,62 @@ class TestExtractMemoryFromDialogue:
             assert result is not None
             assert len(result.items) == 1
             assert result.items[0].kind == "meeting"
+
+    def test_returns_extraction_on_prose_wrapped_json(self):
+        # 复现日志中的场景：模型在 JSON 前后夹带了一大段自然语言回答（减肥方案），
+        # 原本直接 json.loads 会解析失败，现在应从正文中提取 JSON 片段。
+        mock_response = (
+            "减肥是个系统工程，尤其你现在正处于研三秋招备战期……\n"
+            '{"items": [{"kind": "event", "title": "启动LeetCode刷题",'
+            ' "occurred_at": "2026-08-31", "notes": null,'
+            ' "confidence": 1.0, "insight_type": "explicit"}]}\n'
+            "希望对你有所帮助！"
+        )
+        with patch(
+            "app.src.agent.memory.memory_extractor.chat_completion",
+            return_value=mock_response,
+        ):
+            result = extract_memory_from_dialogue(
+                [{"role": "user", "content": "我8月31日启动LeetCode刷题"}]
+            )
+            assert result is not None
+            assert len(result.items) == 1
+            assert result.items[0].kind == "event"
+            assert result.items[0].title == "启动LeetCode刷题"
+
+    def test_returns_extraction_on_code_fenced_json(self):
+        with patch(
+            "app.src.agent.memory.memory_extractor.chat_completion",
+            return_value='```json\n{"items": [{"kind": "preference", "title": "喜欢清淡",'
+            ' "occurred_at": null, "notes": null,'
+            ' "confidence": 0.8, "insight_type": "inferred"}]}\n```',
+        ):
+            result = extract_memory_from_dialogue(
+                [{"role": "user", "content": "我喜欢吃清淡的"}]
+            )
+            assert result is not None
+            assert len(result.items) == 1
+            assert result.items[0].kind == "preference"
+
+
+class TestExtractJsonObject:
+    def test_plain_object(self):
+        assert _extract_json_object('{"a": 1}') == {"a": 1}
+
+    def test_object_with_prose_prefix(self):
+        assert _extract_json_object('结果如下：\n{"a": 1}\n好的') == {"a": 1}
+
+    def test_code_fenced_object(self):
+        assert _extract_json_object('```json\n{"a": 1}\n```') == {"a": 1}
+
+    def test_nested_braces(self):
+        assert _extract_json_object('{"items": [{"kind": "meeting"}]}') == {
+            "items": [{"kind": "meeting"}]
+        }
+
+    def test_no_object_returns_none(self):
+        assert _extract_json_object("没有 JSON，只有散文") is None
+
+    def test_empty_returns_none(self):
+        assert _extract_json_object("") is None
+        assert _extract_json_object(None) is None

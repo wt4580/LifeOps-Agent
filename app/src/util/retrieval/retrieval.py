@@ -871,7 +871,10 @@ def rag_answer(
         "例如菜谱/指南中的食物不能被表述成‘用户已经吃过’。\n"
         "只有当 Context 明确出现‘用户本人记录/我今天吃了/个人日志’等证据时，才能描述为用户已发生事实。\n"
         "## 个性化约束\n"
-        "若提供了 PROFILE/PROFILE_HINT，可用于个性化表达，但不得与 Context 冲突，也不得把文档建议误写成用户历史。"
+        "若提供了 PROFILE/PROFILE_HINT，可用于个性化表达，但不得与 Context 冲突，也不得把文档建议误写成用户历史。\n"
+        "## 时间约束\n"
+        "当前日期时间以 RuntimeContext 中的 now_local 为准。PROFILE/PROFILE_HINT 等资料里出现的日期（如某月某日启动某事）"
+        "是历史信息，描述时应明确其发生时间，禁止把历史日期当作“今天/最近”。"
     )
     messages = [
         {"role": "system", "content": system_prompt},

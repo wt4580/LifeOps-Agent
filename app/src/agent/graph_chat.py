@@ -1623,15 +1623,19 @@ def _node_verify(state: ChatState) -> ChatState:
         "输出严格 JSON：\n"
         '{"passed": true|false, "issues": ["问题描述"], "fix_suggestion": "如何修复"}'
     )
+    profile_ctx = state.get("profile_context") or ""
     payload = {
         "user_request": user_msg,
         "step_action": action,
         "step_purpose": step_purpose,
         "step_result": answer[:800],
+        "user_profile": profile_ctx if profile_ctx else None,
         "rules": [
             "结果不能为空或仅含错误信息",
             "结果应该与用户请求和步骤目的相关",
             "不要对用户身份（实习生/正式员工/其他）做假设——只检查结果本身是否有效",
+            "若 user_profile 提供的用户数据（身高/体重/年龄/目标/最近安排等）出现在结果中，属于允许的个性化，不算幻觉；"
+            "只有 user_profile 中不存在的、且与工具结果无关的数据才可能是编造。",
         ],
     }
     try:
