@@ -72,7 +72,13 @@ def extract_memory_from_dialogue(dialogue: list[dict]) -> MemoryExtraction | Non
         data = _extract_json_object(content)
         if data is None:
             raise json.JSONDecodeError("no JSON object found", content, 0)
-        return MemoryExtraction.model_validate(data)
+        result = MemoryExtraction.model_validate(data)
+        items = result.items or []
+        logger.info(
+            "memory extraction ok dialogue_len=%s items=%d kinds=%s",
+            len(dialogue), len(items), [x.kind for x in items],
+        )
+        return result
     except (json.JSONDecodeError, ValidationError) as exc:
         logger.warning("Memory extraction failed dialogue_len=%s err=%s", len(dialogue), exc)
         return None

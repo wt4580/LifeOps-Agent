@@ -168,7 +168,7 @@ class ChatService:
                         session_id=session_id,
                     )
                 except Exception as exc:
-                    logger.debug("post_chat_learn failed: %s", exc)
+                    logger.info("post_chat_learn failed: %s", exc)
 
             # C.4) 图后条件提取：非 quick 模式才运行画像/事件提取。
             if state.get("mode") != "quick":

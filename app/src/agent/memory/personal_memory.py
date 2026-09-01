@@ -58,7 +58,12 @@ def _llm_extract(
 
         if text and text.upper() != "NONE":
             try:
-                return parse(text)
+                parsed = parse(text)
+                logger.info(
+                    "extract ok context=%s attempt=%d result=%s",
+                    diagnose_context, attempt + 1, json.dumps(parsed, ensure_ascii=False, default=str)[:300],
+                )
+                return parsed
             except (json.JSONDecodeError, ValidationError) as exc:
                 logger.warning(
                     "FAIL %s attempt=%d/%d err=%s",

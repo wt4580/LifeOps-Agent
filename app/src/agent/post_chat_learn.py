@@ -84,18 +84,22 @@ def run_learn(
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
-        logger.debug("post_chat_learn: LLM 返回非 JSON, 跳过: raw=%s", raw[:80])
+        logger.info("post_chat_learn: LLM 返回非 JSON, 跳过: raw=%s", raw[:120])
         return
 
     if not data.get("has_update"):
+        logger.info("post_chat_learn: 无更新, 跳过")
         return
 
     target = data.get("target", "")
     content = data.get("content", "")
     if target not in ("AGENT_MEMO", "SKILLS", "USER_SUMMARY"):
-        logger.debug("post_chat_learn: 未知 target=%s, 跳过", target)
+        logger.info("post_chat_learn: 未知 target=%s, 跳过", target)
         return
     if not content.strip():
+        logger.info("post_chat_learn: 更新内容为空, 跳过")
         return
+
+    logger.info("post_chat_learn: 产生更新 target=%s content=%s", target, content.strip().replace("\n", " ")[:120])
 
     _write_markdown(f"{target}.md", content.strip())
