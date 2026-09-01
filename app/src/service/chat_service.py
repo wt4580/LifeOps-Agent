@@ -327,33 +327,43 @@ class ChatService:
         return session_id
     
     def _load_user_profile(self, session_id: str) -> dict | None:
-        """读取用户画像，并还原成普通字典供上层使用。"""
+        """读取用户画像，并还原成普通字典供上层使用。
+
+        自动读取 UserProfile 模型上定义的全部字段（不再逐个硬编码）：
+        - 列名以 _json 结尾的字段，自动 json.loads 成列表，并以去掉 _json 后缀的名字返回
+          （如 preferences_json -> preferences）；解析失败则返回空列表。
+        - 其余普通列原样返回（id/session_id 等元数据列剔除）。
+        这样之后 LLM 往画像里加任何新列都会自动被读取，无需手动维护字段清单。
+        """
         with SessionLocal() as db:
             row = (
                 db.execute(select(UserProfile).where(UserProfile.session_id == session_id).limit(1))
                 .scalars()
                 .first()
             )
-        
-        if not row:
+
+        if row is None:
             return None
-        
-        try:
-            preferences = json.loads(row.preferences_json) if row.preferences_json else []
-        except json.JSONDecodeError:
-            preferences = []
-        try:
-            conditions = json.loads(row.conditions_json) if row.conditions_json else []
-        except json.JSONDecodeError:
-            conditions = []
-        
-        return {
-            "height_cm": row.height_cm,
-            "weight_kg": row.weight_kg,
-            "preferences": preferences,
-            "conditions": conditions,
-            "notes": row.notes,
-        }
+
+        def _safe_json(raw):
+            if not raw:
+                return []
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return []
+
+        result: dict = {}
+        for col in UserProfile.__table__.columns:
+            name = col.name
+            if name in ("id", "session_id", "updated_at"):
+                continue
+            value = getattr(row, name, None)
+            if name.endswith("_json"):
+                result[name[:-5]] = _safe_json(value)
+            else:
+                result[name] = value
+        return result
     
     def _upsert_user_profile(self, session_id: str, patch: dict | None) -> bool:
         """增量更新用户画像。

@@ -412,6 +412,7 @@ def _node_decompose(state: ChatState) -> ChatState:
     payload = {
         "user_message": user_msg,
         "session_id": session_id,
+        "profile_context": state.get("profile_context", ""),
         "recent_dialogue": _format_dialogue_with_times(dialogue),
         "available_topics": available_topics or [],
         "past_tasks": load_task_index(session_id),
