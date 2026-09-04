@@ -1,0 +1,212 @@
+{
+  "meta": {
+    "n_cases": 10,
+    "timestamp": "2026-09-04 16:15:37"
+  },
+  "metrics": {
+    "action_exact_accuracy": 0.7,
+    "exact_or_in_plan_accuracy": 0.9,
+    "correct": 7,
+    "n": 10
+  },
+  "per_action": {
+    "record_expense": {
+      "n": 1,
+      "hit": 1,
+      "acc": 1.0
+    },
+    "query_expenses": {
+      "n": 1,
+      "hit": 1,
+      "acc": 1.0
+    },
+    "query_accounts": {
+      "n": 1,
+      "hit": 1,
+      "acc": 1.0
+    },
+    "create_account": {
+      "n": 1,
+      "hit": 1,
+      "acc": 1.0
+    },
+    "query_knowledge": {
+      "n": 1,
+      "hit": 1,
+      "acc": 1.0
+    },
+    "propose_todo": {
+      "n": 1,
+      "hit": 0,
+      "acc": 0.0
+    },
+    "query_todos": {
+      "n": 1,
+      "hit": 0,
+      "acc": 0.0
+    },
+    "query_weather": {
+      "n": 1,
+      "hit": 1,
+      "acc": 1.0
+    },
+    "query_calendar": {
+      "n": 1,
+      "hit": 1,
+      "acc": 1.0
+    },
+    "normal_chat": {
+      "n": 1,
+      "hit": 0,
+      "acc": 0.0
+    }
+  },
+  "details": [
+    {
+      "type": "route",
+      "query": "帮我记一下今天中午午餐花了25块，记到餐饮分类",
+      "expect_action": "record_expense",
+      "gold": [
+        "餐饮",
+        "25"
+      ],
+      "got_action": "record_expense",
+      "mode": "quick",
+      "plan_actions": [],
+      "hit": true,
+      "partial": false
+    },
+    {
+      "type": "route",
+      "query": "我这个月一共花了多少钱，帮我统计一下",
+      "expect_action": "query_expenses",
+      "gold": [
+        "统计"
+      ],
+      "got_action": "query_expenses",
+      "mode": "normal",
+      "plan_actions": [],
+      "hit": true,
+      "partial": false
+    },
+    {
+      "type": "route",
+      "query": "我现在账户里一共有多少钱",
+      "expect_action": "query_accounts",
+      "gold": [
+        "账户",
+        "余额"
+      ],
+      "got_action": "query_accounts",
+      "mode": "quick",
+      "plan_actions": [],
+      "hit": true,
+      "partial": false
+    },
+    {
+      "type": "route",
+      "query": "帮我建一个招商银行的账户",
+      "expect_action": "create_account",
+      "gold": [
+        "账户"
+      ],
+      "got_action": "create_account",
+      "mode": "normal",
+      "plan_actions": [],
+      "hit": true,
+      "partial": false
+    },
+    {
+      "type": "route",
+      "query": "我身高170体重76，算一下我的BMI，属不属于肥胖",
+      "expect_action": "query_knowledge",
+      "gold": [
+        "BMI"
+      ],
+      "got_action": "query_knowledge",
+      "mode": "normal",
+      "plan_actions": [],
+      "hit": true,
+      "partial": false
+    },
+    {
+      "type": "route",
+      "query": "我们下周一到下周五每天晚上要学习两小时算法，帮我排进日程",
+      "expect_action": "propose_todo",
+      "gold": [
+        "学习",
+        "算法",
+        "每天晚上"
+      ],
+      "got_action": "query_database",
+      "mode": "normal",
+      "plan_actions": [
+        "query_database",
+        "query_calendar",
+        "propose_todo"
+      ],
+      "hit": false,
+      "partial": true
+    },
+    {
+      "type": "route",
+      "query": "查一下我这周还剩哪些待办没做",
+      "expect_action": "query_todos",
+      "gold": [
+        "待办"
+      ],
+      "got_action": "query_database",
+      "mode": "normal",
+      "plan_actions": [
+        "query_database",
+        "normal_chat"
+      ],
+      "hit": false,
+      "partial": false
+    },
+    {
+      "type": "route",
+      "query": "明天上海天气怎么样",
+      "expect_action": "query_weather",
+      "gold": [
+        "上海",
+        "天气"
+      ],
+      "got_action": "query_weather",
+      "mode": "quick",
+      "plan_actions": [],
+      "hit": true,
+      "partial": false
+    },
+    {
+      "type": "route",
+      "query": "这个周末我有什么安排",
+      "expect_action": "query_calendar",
+      "gold": [
+        "日程",
+        "周末"
+      ],
+      "got_action": "query_calendar",
+      "mode": "normal",
+      "plan_actions": [],
+      "hit": true,
+      "partial": false
+    },
+    {
+      "type": "route",
+      "query": "早上好，今天想喝点什么呢",
+      "expect_action": "normal_chat",
+      "gold": [
+        "闲聊"
+      ],
+      "got_action": "query_database",
+      "mode": "normal",
+      "plan_actions": [
+        "query_database",
+        "normal_chat"
+      ],
+      "hit": false,
+      "partial": true
+    }
+  ]
+}

@@ -616,46 +616,59 @@ def _merge_rank(*lists: list[Citation], top_k: int) -> list[Citation]:
     return out[:top_k]
 
 
+def _basename_of(path: str) -> str:
+    return os.path.basename(path or "")
+
+
 def _rrf_fuse(*lists: list[Citation], top_k: int, k: int = 60) -> list[Citation]:
-    """RRF 融合：对不同召回通道做稳健排序融合。
+    """召回融合（按规范相关度得分排序，通道可信度已内建在分数上界内）。
 
-    RRF 分数仅用于排序；展示的 score 字段保留规范化的相关度得分（0-100）。
+    背景：向量/重排通道已被规范化为 0-85（最可信），BM25 封顶 60，路径封顶 28，
+    这一信任层级本身就体现在分数上。若再用纯“排名倒数”的 RRF 去排序，会导致
+    “排在向量第 6、但词法第 1”的文档（如 career_plan）压过“向量第 1”的真正命中
+    （如 productivity_todo，向量分 84 vs 4）——词法通道那点加成在分数上微不足道，
+    却在排名上足以翻盘。故这里改为：按每文档的规范相关度得分为主排序，
+    每文档只出一个代表块；分数天然让向量命中上位，词法/路径仅作为召回补充。
     """
-
-    fused: dict[tuple[str, int | None, str], Citation] = {}
     rrf_score: dict[tuple[str, int | None, str], float] = {}
     display_score: dict[tuple[str, int | None, str], float] = {}
 
+    # 每个文档保留一份代表 Citation（优先向量块），并记下该文档的最佳相关度得分
+    best_per_doc: dict[str, Citation] = {}
+    score_per_doc: dict[str, float] = {}
     for l in lists:
         for rank, c in enumerate(l, start=1):
             key = (c.path, c.page, c.snippet)
+            doc = _basename_of(c.path)
             is_vector = "vector" in (c.reason or "")
-            if key not in fused:
-                fused[key] = Citation(
-                    path=c.path, page=c.page, snippet=c.snippet, score=0.0, reason=c.reason,
-                    source_type=c.source_type, doc_topic=c.doc_topic,
-                    section_title=c.section_title, section_path=c.section_path, summary=c.summary,
-                )
-            else:
-                if c.reason not in fused[key].reason:
-                    fused[key].reason = f"{fused[key].reason}+{c.reason}"
-            # 展示分数：向量分覆盖 BM25/路径分；非向量通道取最大值
+            disp = c.score
             if is_vector:
-                display_score[key] = c.score
+                display_score[key] = disp
+                if doc not in best_per_doc or "vector" not in (best_per_doc[doc].reason or ""):
+                    best_per_doc[doc] = c
+                if disp > score_per_doc.get(doc, -1.0):
+                    score_per_doc[doc] = disp
             else:
-                display_score[key] = max(display_score.get(key, 0.0), c.score)
-            rrf_score[key] = rrf_score.get(key, 0.0) + (1.0 / (k + rank))
+                # 词法/路径通道：仅当该文档在向量里没有更高命中时才采用其分数
+                display_score[key] = max(display_score.get(key, 0.0), disp)
+                if doc not in best_per_doc:
+                    best_per_doc[doc] = c
+                if doc not in score_per_doc and disp > score_per_doc.get(doc, -1.0):
+                    score_per_doc[doc] = disp
 
-    for key, score in rrf_score.items():
-        fused[key].score = score
+    ranked_docs = sorted(score_per_doc, key=lambda d: score_per_doc[d], reverse=True)
 
-    out = list(fused.values())
-    out.sort(key=lambda x: x.score, reverse=True)
+    out: list[Citation] = []
+    for doc in ranked_docs:
+        best = best_per_doc.get(doc)
+        if best is None:
+            continue
+        best.score = score_per_doc[doc]
+        out.append(best)
+        if len(out) >= top_k:
+            break
 
     for o in out:
-        key = (o.path, o.page, o.snippet)
-        if key in display_score:
-            o.score = display_score[key]
         o.relatedness = _classes_score(o.score)
 
     return out[:top_k]

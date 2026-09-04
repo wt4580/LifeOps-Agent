@@ -343,7 +343,7 @@ def _log_rerank_results(channel: str, query: str, hits: list[LCRetrievalHit]) ->
     for i, h in enumerate(hits, start=1):
         snippet = (h.snippet or "").strip().replace("\n", " ")[:80]
         logger.info(
-            "rerank[%d] rank=%d reason=%s score=%.4f path=%s page=%s chunk=%s snippet=%s",
+            "rerank[%s] rank=%d reason=%s score=%.4f path=%s page=%s chunk=%s snippet=%s",
             channel, i, h.reason, h.score, h.path, h.page, h.chunk_id, snippet,
         )
 

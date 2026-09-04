@@ -268,6 +268,60 @@ python -m pytest tests/ -v
 
 测试覆盖 planner、agent_router、graph_chat、memory、time_parser 的核心逻辑及所有 DTO 校验。LLM 调用在 `conftest.py` 中自动 mock。
 
+## 性能评估
+
+针对「对外可展示的硬性性能指标」提供一整套可复现的评估脚本：检索质量（B 类）与任务/路由（C 类）。评估集按自建知识库（`E:\work\knowledge_for_test` 下的 txt）设计，ground truth 由知识库作者标注，自洽可复现。评估会调用**真实 LLM**（与生产完全一致，有 API 成本），因此请使用完整环境运行：
+
+```powershell
+# 运行环境：lifeops conda 环境（已安装 sentence_transformers / faiss-cpu / langchain-community 等）
+E:\Anaconda\envs\lifeops\python.exe -m app.eval.run_retrieval   # 检索质量评估
+E:\Anaconda\envs\lifeops\python.exe -m app.eval.run_task        # 任务/路由评估（真实 LLM 路由）
+E:\Anaconda\envs\lifeops\python.exe -m app.eval.report          # 把 JSON 报告渲染成 markdown
+```
+
+评估代码位于 `app/eval/`：`cases.py`（评估集）、`metrics.py`（指标计算）、`run_retrieval.py` / `run_task.py`（运行器，支持增量落盘）、`report.py`（markdown 渲染）。报告输出到 `app/eval/reports/*.json/.md`。
+
+### 指标口径（为什么看 "Recall@1/3/5"）
+
+每次查询，系统返回按相关度排序的 N 条候选文档，我们检查「正确答案有没有出现在前 k 条里」：
+
+| 指标 | 含义 |
+| --- | --- |
+| **Recall@1** | 返回的**第 1 条**（最自信）就是正确答案的比例 —— 最严、最能反映"第一刀准不准" |
+| **Recall@3** | 前 **3 条**里有正确答案的比例 |
+| **Recall@5** | 前 **5 条**里有正确答案的比例 |
+| **MRR** | 首个正确答案的排名倒数均值（全未命中记 0）—— 衡量"正确答案排得有多靠前" |
+| **NDCG@k** | 排序质量指标，奖励相关文档排在前面 |
+
+一句话：**@ 后的数字越大要求越宽松**（@1 只看第一条，@5 前五条沾边就算），因此数值通常 @1 ≤ @3 ≤ @5 逐级升高，说明"正确答案基本都在返回列表里，只是偶尔不在第一刀"。
+
+### 当前结果（生产路径 hybrid + 重排）
+
+**检索质量（46 条 case）**
+
+| 指标 | 分值 |
+| --- | --- |
+| Recall@1 | 0.891 |
+| Recall@3 | 0.978 |
+| Recall@5 | 1.000 |
+| MRR | 0.932 |
+| NDCG@5 | 0.935 |
+
+**任务/路由（10 条 case，真实 LLM 路由 `_node_decompose`）**
+
+- 动作精确匹配准确率：**0.700**
+- 精确命中或落入多步计划：**0.900**
+
+> 说明：路由的 3 条非精确命中，均为路由器「先查库自己解决」的设计原则——对模糊指令优先走 `query_database` 兜底（其中 2 条期望动作仍在多步计划内），并非检索失败。
+
+### 已知修复：混合检索融合 bug
+
+检索评估过程中诊断并修复了一个生产缺陷（`app/src/util/retrieval/retrieval.py` 的 `_rrf_fuse`）。
+
+**原实现**用「排名倒数求和（RRF）」融合 4 个检索通道，但词法通道（`bm25` / `rewrite-bm25` / 路径）本质是同一强相关信号的多份拷贝，高度重叠时会**重复计票**：例如查询「GTD 方法的核心流程」时，错答案 `career_plan.txt` 在词法通道排 1/2/3（多份叠加），反而压过「向量通道排第 1」（得分 84.66）的真正答案 `productivity_todo.txt`，导致把 GTD 错误路由到 career_plan。
+
+**处理方式**：不再用排名倒数相加，改为**直接按规范相关度得分（0-100）排序**，且每个文档只出一个代表块。分数上界本身已内建信任层级（向量 85 > BM25 60 > 路径 28），因此拿高分的真·语义命中天然排在前面。修复后 GTD、LeetCode 等此前错配的查询全部正确命中；`pytest`（175 项）零回归。
+
 ## 可选依赖说明
 
 ### Tesseract OCR
