@@ -22,11 +22,24 @@ def _is_hit(path: str, expected: list[str]) -> bool:
     return base in expected
 
 
+def _unique_basename_paths(ranked_paths: list[str]) -> list[str]:
+    """按文件名去重并保持首次出现顺序（同一文件的多个 chunk 只算一次命中）。"""
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in ranked_paths:
+        base = p.replace("\\", "/").split("/")[-1]
+        if base in seen:
+            continue
+        seen.add(base)
+        out.append(p)
+    return out
+
+
 def recall_at_k(ranked_paths: list[str], expected: list[str], k: int) -> float:
     """前 k 条结果中是否至少命中一个期望文档 -> 0.0 / 1.0。"""
     if not expected:
         return 0.0
-    for p in ranked_paths[:k]:
+    for p in _unique_basename_paths(ranked_paths)[:k]:
         if _is_hit(p, expected):
             return 1.0
     return 0.0
@@ -34,7 +47,7 @@ def recall_at_k(ranked_paths: list[str], expected: list[str], k: int) -> float:
 
 def mrr(ranked_paths: list[str], expected: list[str]) -> float:
     """首个命中文档的 1/rank，全未命中为 0。"""
-    for i, p in enumerate(ranked_paths, start=1):
+    for i, p in enumerate(_unique_basename_paths(ranked_paths), start=1):
         if _is_hit(p, expected):
             return 1.0 / i
     return 0.0
@@ -43,7 +56,7 @@ def mrr(ranked_paths: list[str], expected: list[str]) -> float:
 def dcg_at_k(ranked_paths: list[str], expected: list[str], k: int) -> float:
     """DCG：相关文档的位置越靠前、增益越高（log2 折扣）。"""
     dcg = 0.0
-    for i, p in enumerate(ranked_paths[:k], start=1):
+    for i, p in enumerate(_unique_basename_paths(ranked_paths)[:k], start=1):
         if _is_hit(p, expected):
             dcg += 1.0 / math.log2(i + 1)
     return dcg

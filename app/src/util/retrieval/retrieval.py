@@ -9,7 +9,7 @@
 支持的检索后端：
 - bm25：传统关键词检索（默认、稳定）
 - langchain：向量检索 + 可选重排
-- hybrid：多路召回融合（path + bm25 + rewrite + vector）
+- hybrid：BM25 与向量双路召回，标准 RRF 融合后 cross-encoder 重排（主流三段式）
 """
 
 import hashlib
@@ -593,21 +593,15 @@ def _bm25_recall(rows: list[DocumentChunk], query: str, top_k: int, reason: str)
 
 
 def _merge_rank(*lists: list[Citation], top_k: int) -> list[Citation]:
-    """简单融合：按 key 去重，保留高分与更优 reason。"""
+    """简单融合：按 key 去重，保留得分更高的 Citation。"""
 
     merged: dict[tuple[str, int | None, str], Citation] = {}
     for l in lists:
         for c in l:
             key = (c.path, c.page, c.snippet)
-            if key not in merged:
+            existing = merged.get(key)
+            if existing is None or c.score > existing.score:
                 merged[key] = c
-            else:
-                if c.score > merged[key].score:
-                    merged[key].score = c.score
-                if merged[key].reason != "path" and c.reason == "path":
-                    merged[key].reason = "path"
-                elif merged[key].reason == "bm25" and c.reason == "rewrite-bm25":
-                    merged[key].reason = "rewrite-bm25"
 
     out = list(merged.values())
     for o in out:
@@ -616,66 +610,72 @@ def _merge_rank(*lists: list[Citation], top_k: int) -> list[Citation]:
     return out[:top_k]
 
 
-def _basename_of(path: str) -> str:
-    return os.path.basename(path or "")
-
-
 def _rrf_fuse(*lists: list[Citation], top_k: int, k: int = 60) -> list[Citation]:
-    """召回融合（按规范相关度得分排序，通道可信度已内建在分数上界内）。
+    """Reciprocal Rank Fusion：按排名倒数求和融合多个召回列表。
 
-    背景：向量/重排通道已被规范化为 0-85（最可信），BM25 封顶 60，路径封顶 28，
-    这一信任层级本身就体现在分数上。若再用纯“排名倒数”的 RRF 去排序，会导致
-    “排在向量第 6、但词法第 1”的文档（如 career_plan）压过“向量第 1”的真正命中
-    （如 productivity_todo，向量分 84 vs 4）——词法通道那点加成在分数上微不足道，
-    却在排名上足以翻盘。故这里改为：按每文档的规范相关度得分为主排序，
-    每文档只出一个代表块；分数天然让向量命中上位，词法/路径仅作为召回补充。
+    主流混合检索（BM25 + 向量）的默认融合算法（Cormack et al., SIGIR 2009）。
+    RRF 只看排名不看原始得分，天然规避了 BM25 与向量得分尺度不可比的问题：
+    score(d) = Σ 1/(k + rank(d))，k 默认 60 无需调参。
+
+    相比旧版“按规范分排序”：同一份证据只在一路里出现时，排名位置即其贡献；
+    同一 chunk 在“向量(query)”与“向量(rewritten)”两路都命中时会被合理累计，
+    因为它来自两次不同查询的独立检索，而非同一查询的多份拷贝重复计票。
     """
-    rrf_score: dict[tuple[str, int | None, str], float] = {}
-    display_score: dict[tuple[str, int | None, str], float] = {}
-
-    # 每个文档保留一份代表 Citation（优先向量块），并记下该文档的最佳相关度得分
-    best_per_doc: dict[str, Citation] = {}
-    score_per_doc: dict[str, float] = {}
+    rrf: dict[tuple[str, int | None, str], float] = {}
+    best: dict[tuple[str, int | None, str], Citation] = {}
     for l in lists:
         for rank, c in enumerate(l, start=1):
             key = (c.path, c.page, c.snippet)
-            doc = _basename_of(c.path)
-            is_vector = "vector" in (c.reason or "")
-            disp = c.score
-            if is_vector:
-                display_score[key] = disp
-                if doc not in best_per_doc or "vector" not in (best_per_doc[doc].reason or ""):
-                    best_per_doc[doc] = c
-                if disp > score_per_doc.get(doc, -1.0):
-                    score_per_doc[doc] = disp
-            else:
-                # 词法/路径通道：仅当该文档在向量里没有更高命中时才采用其分数
-                display_score[key] = max(display_score.get(key, 0.0), disp)
-                if doc not in best_per_doc:
-                    best_per_doc[doc] = c
-                if doc not in score_per_doc and disp > score_per_doc.get(doc, -1.0):
-                    score_per_doc[doc] = disp
+            rrf[key] = rrf.get(key, 0.0) + 1.0 / (k + rank)
+            if key not in best or c.score > best[key].score:
+                best[key] = c
 
-    ranked_docs = sorted(score_per_doc, key=lambda d: score_per_doc[d], reverse=True)
-
+    ordered = sorted(rrf, key=rrf.get, reverse=True)
     out: list[Citation] = []
-    for doc in ranked_docs:
-        best = best_per_doc.get(doc)
-        if best is None:
-            continue
-        best.score = score_per_doc[doc]
-        out.append(best)
+    for key in ordered:
+        cit = best[key]
+        out.append(cit)
         if len(out) >= top_k:
             break
-
-    for o in out:
-        o.relatedness = _classes_score(o.score)
-
     return out[:top_k]
 
 
+def _lc_hit_to_citation(h) -> Citation:
+    """把 langchain 侧的检索命中转成上层 Citation。"""
+    return Citation(
+        path=h.path,
+        page=h.page,
+        snippet=h.snippet,
+        score=_norm_vector(h.score),
+        relatedness=_classes_score(_norm_vector(h.score)),
+        reason=h.reason,
+        source_type=h.source_type,
+        doc_topic=h.doc_topic,
+        section_title=h.section_title,
+        section_path=h.section_path,
+        chunk_id=h.chunk_id,
+    )
+
+
+def _vector_recall(query: str, top_k: int) -> list[Citation]:
+    """向量召回（不重排）。失败时返回空列表，不抛异常中断。"""
+
+    try:
+        from .rag_langchain import vector_recall
+    except Exception as exc:
+        logger.warning("langchain backend import failed: %s", exc)
+        return []
+
+    try:
+        hits = vector_recall(query, candidate_k=top_k)
+        return [_lc_hit_to_citation(h) for h in hits]
+    except Exception as exc:
+        logger.warning("langchain retrieval failed: %s", exc)
+        return []
+
+
 def _search_langchain(query: str, top_k: int) -> list[Citation]:
-    """调用向量后端检索（失败时返回空列表，不抛异常中断）。"""
+    """调用向量后端（召回 + 重排）。失败时返回空列表，不抛异常中断。"""
 
     try:
         from .rag_langchain import search_with_rerank
@@ -685,25 +685,63 @@ def _search_langchain(query: str, top_k: int) -> list[Citation]:
 
     try:
         hits = search_with_rerank(query, top_k=top_k, candidate_k=settings.rag_candidate_k)
-        return [
-            Citation(
-                path=h.path,
-                page=h.page,
-                snippet=h.snippet,
-                score=_norm_vector(h.score),
-                relatedness=_classes_score(_norm_vector(h.score)),
-                reason=h.reason,
-                source_type=h.source_type,
-                doc_topic=h.doc_topic,
-                section_title=h.section_title,
-                section_path=h.section_path,
-                chunk_id=h.chunk_id,
-            )
-            for h in hits
-        ]
+        return [_lc_hit_to_citation(h) for h in hits]
     except Exception as exc:
         logger.warning("langchain retrieval failed: %s", exc)
         return []
+
+
+def _rerank_fused(query: str, citations: list[Citation], *, top_k: int) -> list[Citation]:
+    """对 RRF 融合后的候选做 cross-encoder 重排，返回 top_k。
+
+    若未启用重排器，则按当前得分排序返回 top_k。
+    """
+
+    if not citations:
+        return []
+
+    try:
+        from .rag_langchain import rerank_hits, LCRetrievalHit
+    except Exception as exc:
+        logger.warning("langchain backend import failed: %s", exc)
+        return citations[:top_k]
+
+    hits = [
+        LCRetrievalHit(
+            path=c.path,
+            page=c.page,
+            snippet=c.snippet or "",
+            score=c.score,
+            reason=c.reason or "",
+            section_path=getattr(c, "section_path", None),
+            source_type=getattr(c, "source_type", None),
+            doc_topic=getattr(c, "doc_topic", None),
+            section_title=getattr(c, "section_title", None),
+            chunk_id=c.chunk_id,
+        )
+        for c in citations
+    ]
+
+    try:
+        reranked = rerank_hits(query, hits, top_k=top_k)
+    except Exception as exc:
+        logger.warning("rerank fused failed: %s", exc)
+        return citations[:top_k]
+
+    by_key: dict[tuple, Citation] = {}
+    for c in citations:
+        by_key[(c.path, c.page, c.snippet)] = c
+
+    out: list[Citation] = []
+    for h in reranked:
+        c = by_key.get((h.path, h.page, h.snippet))
+        if c is None:
+            continue
+        c.score = _norm_vector(h.score)
+        c.relatedness = _classes_score(c.score)
+        c.reason = h.reason if "rerank" in (h.reason or "") else c.reason
+        out.append(c)
+    return out
 
 
 def _apply_document_summary_filter(rows: list) -> list:
@@ -760,38 +798,39 @@ def search_chunks(query: str, top_k: int = 5, session_id: str = "") -> list[Cita
 
     rewritten = _rewrite_query(query, session_id=session_id)
 
-    path_hits = _path_recall(rows, query, top_k=max(top_k, 8)) if rows else []
-    bm25_hits = _bm25_recall(rows, query, top_k=max(top_k, 8), reason="bm25") if rows else []
-    rewrite_hits = _bm25_recall(rows, rewritten, top_k=max(top_k, 8), reason="rewrite-bm25") if rows else []
+    candidate_k = max(top_k, settings.rag_candidate_k)
+    bm25_hits = _bm25_recall(rows, query, top_k=candidate_k, reason="bm25") if rows else []
 
     if backend == "langchain":
-        vector_hits = _search_langchain(query, top_k=max(top_k, settings.rag_candidate_k))
+        vector_hits = _search_langchain(query, top_k=candidate_k)
         if vector_hits:
             logger.info("Search backend=langchain hits=%s", len(vector_hits))
             return vector_hits[:top_k]
-        return _merge_rank(path_hits, rewrite_hits, bm25_hits, top_k=top_k)
+        return _merge_rank(bm25_hits, top_k=top_k)
 
     if backend == "hybrid":
-        vector_hits = _search_langchain(query, top_k=max(top_k, settings.rag_candidate_k))
-        merged = _rrf_fuse(path_hits, rewrite_hits, bm25_hits, vector_hits, top_k=top_k)
+        # Stage 1: 双路召回 —— BM25(query) + 向量(query) + 向量(rewritten) 查询扩展
+        vector_a = _vector_recall(query, top_k=candidate_k)
+        vector_b = _vector_recall(rewritten, top_k=candidate_k) if rewritten and rewritten != query else []
+        vector_hits = _merge_rank(*[v for v in (vector_a, vector_b) if v], top_k=candidate_k)
+        # Stage 2: 标准 RRF 融合（k=60，只看排名不看原始得分）
+        fused = _rrf_fuse(bm25_hits, vector_hits, top_k=candidate_k)
+        # Stage 3: cross-encoder 重排融合候选，取最终 top_k
+        merged = _rerank_fused(query, fused, top_k=top_k)
         logger.info(
-            "Search backend=hybrid merged=%s (path=%s bm25=%s rewrite=%s vector=%s rewritten=%r)",
+            "Search backend=hybrid merged=%s (bm25=%s vector=%s rewritten=%r)",
             len(merged),
-            len(path_hits),
             len(bm25_hits),
-            len(rewrite_hits),
             len(vector_hits),
             rewritten,
         )
         return merged
 
-    merged = _merge_rank(path_hits, rewrite_hits, bm25_hits, top_k=top_k)
+    merged = _merge_rank(bm25_hits, top_k=top_k)
     logger.info(
-        "Search backend=bm25 merged=%s (path=%s bm25=%s rewrite=%s rewritten=%r)",
+        "Search backend=bm25 merged=%s (bm25=%s rewritten=%r)",
         len(merged),
-        len(path_hits),
         len(bm25_hits),
-        len(rewrite_hits),
         rewritten,
     )
     return merged

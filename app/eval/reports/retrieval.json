@@ -3,16 +3,16 @@
     "n_cases": 46,
     "top_k": 5,
     "backend": "hybrid",
-    "timestamp": "2026-09-04 15:52:10"
+    "timestamp": "2026-09-05 15:48:26"
   },
   "metrics": {
-    "recall@1": 0.8913,
-    "recall@3": 0.9783,
+    "recall@1": 0.913,
+    "recall@3": 1.0,
     "recall@5": 1.0,
-    "mrr": 0.9319,
-    "ndcg@1": 0.8913,
-    "ndcg@3": 0.9221,
-    "ndcg@5": 0.9349
+    "mrr": 0.9493,
+    "ndcg@1": 0.913,
+    "ndcg@3": 0.9438,
+    "ndcg@5": 0.9438
   },
   "rerank_gain_recall1": 0.913,
   "details": [
@@ -27,10 +27,10 @@
       "mrr": 1.0,
       "top_paths": [
         "health_base.txt",
-        "career_plan.txt",
-        "cooking_base.txt",
-        "finance_saving.txt",
-        "career_resume.txt"
+        "health_base.txt",
+        "health_fitness.txt",
+        "scenario_coach.txt",
+        "health_base.txt"
       ]
     },
     {
@@ -44,10 +44,10 @@
       "mrr": 1.0,
       "top_paths": [
         "health_base.txt",
-        "career_plan.txt",
-        "cooking_base.txt",
-        "finance_saving.txt",
-        "career_resume.txt"
+        "health_base.txt",
+        "health_fitness.txt",
+        "health_base.txt",
+        "scenario_coach.txt"
       ]
     },
     {
@@ -64,7 +64,7 @@
         "cooking_base.txt",
         "health_base.txt",
         "scenario_coach.txt",
-        "career_plan.txt"
+        "health_base.txt"
       ]
     },
     {
@@ -78,8 +78,8 @@
       "mrr": 1.0,
       "top_paths": [
         "health_base.txt",
-        "career_resume.txt",
-        "cooking_base.txt",
+        "health_base.txt",
+        "health_base.txt",
         "scenario_coach.txt",
         "health_fitness.txt"
       ]
@@ -96,9 +96,9 @@
       "top_paths": [
         "health_base.txt",
         "cooking_base.txt",
-        "finance_saving.txt",
-        "health_fitness.txt",
-        "life_habits.txt"
+        "health_base.txt",
+        "personal_goals.txt",
+        "cooking_base.txt"
       ]
     },
     {
@@ -112,10 +112,10 @@
       "mrr": 1.0,
       "top_paths": [
         "health_fitness.txt",
+        "health_fitness.txt",
+        "health_fitness.txt",
         "cooking_base.txt",
-        "health_base.txt",
-        "life_habits.txt",
-        "career_resume.txt"
+        "scenario_coach.txt"
       ]
     },
     {
@@ -129,10 +129,10 @@
       "mrr": 1.0,
       "top_paths": [
         "health_fitness.txt",
-        "career_plan.txt",
-        "cooking_base.txt",
-        "cooking_recipes.txt",
-        "finance_base.txt"
+        "health_fitness.txt",
+        "health_fitness.txt",
+        "scenario_coach.txt",
+        "life_habits.txt"
       ]
     },
     {
@@ -146,10 +146,10 @@
       "mrr": 1.0,
       "top_paths": [
         "health_fitness.txt",
+        "health_fitness.txt",
         "cooking_base.txt",
-        "learning_leetcode.txt",
-        "life_habits.txt",
-        "career_resume.txt"
+        "scenario_coach.txt",
+        "scenario_coach.txt"
       ]
     },
     {
@@ -164,9 +164,9 @@
       "top_paths": [
         "scenario_coach.txt",
         "finance_base.txt",
-        "career_plan.txt",
-        "finance_saving.txt",
-        "cooking_base.txt"
+        "finance_base.txt",
+        "finance_base.txt",
+        "finance_base.txt"
       ]
     },
     {
@@ -180,10 +180,10 @@
       "mrr": 1.0,
       "top_paths": [
         "finance_base.txt",
-        "career_plan.txt",
-        "career_resume.txt",
         "finance_saving.txt",
-        "cooking_recipes.txt"
+        "scenario_coach.txt",
+        "finance_base.txt",
+        "finance_base.txt"
       ]
     },
     {
@@ -197,10 +197,10 @@
       "mrr": 1.0,
       "top_paths": [
         "finance_base.txt",
+        "finance_base.txt",
         "scenario_coach.txt",
-        "career_plan.txt",
-        "career_resume.txt",
-        "cooking_base.txt"
+        "shopping_decision.txt",
+        "cooking_recipes.txt"
       ]
     },
     {
@@ -214,10 +214,10 @@
       "mrr": 1.0,
       "top_paths": [
         "finance_saving.txt",
-        "career_resume.txt",
-        "cooking_recipes.txt",
-        "learning_leetcode.txt",
-        "scenario_career.txt"
+        "scenario_coach.txt",
+        "scenario_coach.txt",
+        "travel_packing.txt",
+        "finance_saving.txt"
       ]
     },
     {
@@ -232,9 +232,9 @@
       "top_paths": [
         "finance_saving.txt",
         "scenario_coach.txt",
+        "scenario_career.txt",
         "career_plan.txt",
-        "cooking_base.txt",
-        "finance_base.txt"
+        "finance_saving.txt"
       ]
     },
     {
@@ -248,10 +248,10 @@
       "mrr": 1.0,
       "top_paths": [
         "finance_saving.txt",
+        "scenario_coach.txt",
         "finance_base.txt",
-        "learning_leetcode.txt",
-        "learning_method.txt",
-        "career_plan.txt"
+        "finance_saving.txt",
+        "finance_base.txt"
       ]
     },
     {
@@ -268,7 +268,7 @@
         "scenario_career.txt",
         "productivity_todo.txt",
         "personal_goals.txt",
-        "career_plan.txt"
+        "productivity_todo.txt"
       ]
     },
     {
@@ -282,10 +282,10 @@
       "mrr": 1.0,
       "top_paths": [
         "productivity_todo.txt",
-        "career_plan.txt",
-        "career_resume.txt",
-        "cooking_recipes.txt",
-        "finance_saving.txt"
+        "scenario_career.txt",
+        "scenario_career.txt",
+        "scenario_coach.txt",
+        "learning_leetcode.txt"
       ]
     },
     {
@@ -299,10 +299,10 @@
       "mrr": 1.0,
       "top_paths": [
         "productivity_todo.txt",
-        "career_plan.txt",
-        "career_resume.txt",
-        "cooking_base.txt",
-        "cooking_recipes.txt"
+        "scenario_career.txt",
+        "scenario_coach.txt",
+        "life_habits.txt",
+        "personal_goals.txt"
       ]
     },
     {
@@ -317,9 +317,9 @@
       "top_paths": [
         "productivity_focus.txt",
         "learning_method.txt",
-        "career_resume.txt",
-        "cooking_base.txt",
-        "cooking_recipes.txt"
+        "productivity_focus.txt",
+        "life_habits.txt",
+        "personal_goals.txt"
       ]
     },
     {
@@ -333,10 +333,10 @@
       "mrr": 1.0,
       "top_paths": [
         "productivity_focus.txt",
-        "career_plan.txt",
-        "career_resume.txt",
-        "cooking_base.txt",
-        "cooking_recipes.txt"
+        "life_habits.txt",
+        "personal_goals.txt",
+        "productivity_focus.txt",
+        "productivity_focus.txt"
       ]
     },
     {
@@ -350,10 +350,10 @@
       "mrr": 1.0,
       "top_paths": [
         "productivity_focus.txt",
-        "career_plan.txt",
-        "career_resume.txt",
-        "cooking_base.txt",
-        "cooking_recipes.txt"
+        "learning_leetcode.txt",
+        "finance_base.txt",
+        "learning_leetcode.txt",
+        "productivity_focus.txt"
       ]
     },
     {
@@ -367,10 +367,10 @@
       "mrr": 1.0,
       "top_paths": [
         "learning_method.txt",
-        "career_plan.txt",
-        "cooking_base.txt",
-        "finance_base.txt",
-        "health_fitness.txt"
+        "learning_method.txt",
+        "scenario_career.txt",
+        "learning_method.txt",
+        "learning_method.txt"
       ]
     },
     {
@@ -384,10 +384,10 @@
       "mrr": 1.0,
       "top_paths": [
         "learning_method.txt",
-        "career_plan.txt",
-        "career_resume.txt",
-        "cooking_recipes.txt",
-        "health_fitness.txt"
+        "learning_method.txt",
+        "learning_method.txt",
+        "scenario_career.txt",
+        "career_plan.txt"
       ]
     },
     {
@@ -402,9 +402,9 @@
       "top_paths": [
         "learning_leetcode.txt",
         "scenario_career.txt",
-        "cooking_base.txt",
-        "cooking_recipes.txt",
-        "finance_base.txt"
+        "learning_leetcode.txt",
+        "productivity_todo.txt",
+        "learning_method.txt"
       ]
     },
     {
@@ -412,16 +412,16 @@
       "expected": [
         "learning_leetcode.txt"
       ],
-      "recall@1": 0.0,
-      "recall@3": 0.0,
+      "recall@1": 1.0,
+      "recall@3": 1.0,
       "recall@5": 1.0,
-      "mrr": 0.2,
+      "mrr": 1.0,
       "top_paths": [
-        "career_plan.txt",
-        "career_resume.txt",
+        "learning_leetcode.txt",
+        "scenario_career.txt",
         "finance_base.txt",
-        "finance_saving.txt",
-        "learning_leetcode.txt"
+        "learning_leetcode.txt",
+        "career_resume.txt"
       ]
     },
     {
@@ -435,10 +435,10 @@
       "mrr": 1.0,
       "top_paths": [
         "learning_leetcode.txt",
-        "career_resume.txt",
-        "cooking_base.txt",
-        "finance_saving.txt",
-        "productivity_focus.txt"
+        "productivity_focus.txt",
+        "learning_leetcode.txt",
+        "learning_leetcode.txt",
+        "scenario_career.txt"
       ]
     },
     {
@@ -452,10 +452,10 @@
       "mrr": 1.0,
       "top_paths": [
         "cooking_base.txt",
+        "cooking_base.txt",
         "cooking_recipes.txt",
-        "health_base.txt",
-        "career_plan.txt",
-        "career_resume.txt"
+        "scenario_coach.txt",
+        "cooking_base.txt"
       ]
     },
     {
@@ -469,10 +469,10 @@
       "mrr": 1.0,
       "top_paths": [
         "cooking_base.txt",
-        "cooking_recipes.txt",
+        "health_fitness.txt",
         "health_base.txt",
-        "career_resume.txt",
-        "health_fitness.txt"
+        "health_base.txt",
+        "health_base.txt"
       ]
     },
     {
@@ -486,10 +486,10 @@
       "mrr": 1.0,
       "top_paths": [
         "cooking_recipes.txt",
-        "cooking_base.txt",
-        "finance_saving.txt",
+        "cooking_recipes.txt",
+        "productivity_focus.txt",
         "learning_method.txt",
-        "personal_goals.txt"
+        "cooking_recipes.txt"
       ]
     },
     {
@@ -503,10 +503,10 @@
       "mrr": 1.0,
       "top_paths": [
         "cooking_recipes.txt",
-        "learning_leetcode.txt",
-        "learning_method.txt",
-        "personal_goals.txt",
-        "cooking_base.txt"
+        "cooking_recipes.txt",
+        "cooking_recipes.txt",
+        "cooking_recipes.txt",
+        "cooking_recipes.txt"
       ]
     },
     {
@@ -520,10 +520,10 @@
       "mrr": 1.0,
       "top_paths": [
         "shopping_warranty.txt",
+        "shopping_warranty.txt",
+        "shopping_decision.txt",
         "finance_base.txt",
-        "finance_saving.txt",
-        "learning_method.txt",
-        "career_resume.txt"
+        "shopping_warranty.txt"
       ]
     },
     {
@@ -537,10 +537,10 @@
       "mrr": 1.0,
       "top_paths": [
         "shopping_warranty.txt",
-        "finance_base.txt",
-        "finance_saving.txt",
-        "learning_leetcode.txt",
-        "career_plan.txt"
+        "shopping_warranty.txt",
+        "shopping_warranty.txt",
+        "shopping_decision.txt",
+        "finance_base.txt"
       ]
     },
     {
@@ -554,10 +554,10 @@
       "mrr": 1.0,
       "top_paths": [
         "shopping_decision.txt",
-        "cooking_recipes.txt",
-        "finance_base.txt",
-        "finance_saving.txt",
-        "career_plan.txt"
+        "shopping_decision.txt",
+        "shopping_decision.txt",
+        "shopping_warranty.txt",
+        "productivity_focus.txt"
       ]
     },
     {
@@ -571,10 +571,10 @@
       "mrr": 1.0,
       "top_paths": [
         "shopping_decision.txt",
-        "cooking_recipes.txt",
         "finance_base.txt",
-        "travel_plan.txt",
-        "career_resume.txt"
+        "shopping_decision.txt",
+        "shopping_decision.txt",
+        "shopping_decision.txt"
       ]
     },
     {
@@ -588,10 +588,10 @@
       "mrr": 1.0,
       "top_paths": [
         "travel_plan.txt",
-        "career_plan.txt",
-        "career_resume.txt",
-        "cooking_base.txt",
-        "cooking_recipes.txt"
+        "productivity_focus.txt",
+        "travel_plan.txt",
+        "travel_plan.txt",
+        "travel_packing.txt"
       ]
     },
     {
@@ -605,10 +605,10 @@
       "mrr": 1.0,
       "top_paths": [
         "travel_packing.txt",
+        "travel_packing.txt",
+        "travel_packing.txt",
         "shopping_warranty.txt",
-        "career_plan.txt",
-        "cooking_base.txt",
-        "finance_base.txt"
+        "travel_packing.txt"
       ]
     },
     {
@@ -623,9 +623,9 @@
       "top_paths": [
         "travel_packing.txt",
         "shopping_warranty.txt",
-        "cooking_recipes.txt",
-        "finance_base.txt",
-        "health_fitness.txt"
+        "shopping_warranty.txt",
+        "travel_packing.txt",
+        "travel_packing.txt"
       ]
     },
     {
@@ -640,9 +640,9 @@
       "top_paths": [
         "scenario_career.txt",
         "career_resume.txt",
-        "learning_leetcode.txt",
-        "career_plan.txt",
-        "productivity_todo.txt"
+        "career_resume.txt",
+        "career_resume.txt",
+        "learning_leetcode.txt"
       ]
     },
     {
@@ -656,10 +656,10 @@
       "mrr": 1.0,
       "top_paths": [
         "career_resume.txt",
-        "career_plan.txt",
+        "career_resume.txt",
+        "career_resume.txt",
         "scenario_career.txt",
-        "learning_leetcode.txt",
-        "productivity_todo.txt"
+        "learning_leetcode.txt"
       ]
     },
     {
@@ -674,8 +674,8 @@
       "top_paths": [
         "career_plan.txt",
         "personal_goals.txt",
-        "career_resume.txt",
-        "scenario_coach.txt",
+        "career_plan.txt",
+        "personal_goals.txt",
         "scenario_career.txt"
       ]
     },
@@ -690,10 +690,10 @@
       "mrr": 1.0,
       "top_paths": [
         "life_habits.txt",
+        "life_habits.txt",
+        "life_habits.txt",
         "productivity_focus.txt",
-        "scenario_career.txt",
-        "cooking_base.txt",
-        "cooking_recipes.txt"
+        "life_habits.txt"
       ]
     },
     {
@@ -710,7 +710,7 @@
         "scenario_coach.txt",
         "productivity_todo.txt",
         "career_plan.txt",
-        "scenario_career.txt"
+        "personal_goals.txt"
       ]
     },
     {
@@ -726,8 +726,8 @@
         "personal_goals.txt",
         "productivity_todo.txt",
         "scenario_coach.txt",
-        "finance_base.txt",
-        "finance_saving.txt"
+        "personal_goals.txt",
+        "personal_goals.txt"
       ]
     },
     {
@@ -743,10 +743,10 @@
       "mrr": 1.0,
       "top_paths": [
         "scenario_coach.txt",
-        "scenario_career.txt",
-        "productivity_focus.txt",
-        "productivity_todo.txt",
-        "career_plan.txt"
+        "scenario_coach.txt",
+        "scenario_coach.txt",
+        "personal_goals.txt",
+        "cooking_base.txt"
       ]
     },
     {
@@ -762,10 +762,10 @@
       "mrr": 1.0,
       "top_paths": [
         "scenario_career.txt",
-        "learning_leetcode.txt",
-        "personal_goals.txt",
-        "career_plan.txt",
-        "career_resume.txt"
+        "scenario_career.txt",
+        "scenario_career.txt",
+        "scenario_career.txt",
+        "learning_leetcode.txt"
       ]
     },
     {
@@ -780,10 +780,10 @@
       "mrr": 1.0,
       "top_paths": [
         "life_habits.txt",
+        "life_habits.txt",
         "scenario_career.txt",
         "learning_method.txt",
-        "career_plan.txt",
-        "career_resume.txt"
+        "life_habits.txt"
       ]
     },
     {
@@ -800,8 +800,8 @@
         "productivity_focus.txt",
         "life_habits.txt",
         "personal_goals.txt",
-        "scenario_coach.txt",
-        "productivity_todo.txt"
+        "productivity_focus.txt",
+        "scenario_coach.txt"
       ]
     }
   ]

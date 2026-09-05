@@ -6,7 +6,7 @@ from __future__ import annotations
 
 核心能力：
 1) 从 SQLite document_chunks 表加载已切分文本，构建本地 FAISS 向量索引。
-2) 查询时先向量召回，再可选 cross-encoder 重排。
+2) 查询时先向量召回（vector_recall），再可选 cross-encoder 重排（rerank_hits）。
 
 设计原则：
 - 不破坏原有 `retrieval.py` 接口；
@@ -348,18 +348,13 @@ def _log_rerank_results(channel: str, query: str, hits: list[LCRetrievalHit]) ->
         )
 
 
-def search_with_rerank(query: str, *, top_k: int, candidate_k: int) -> list[LCRetrievalHit]:
-    """执行向量检索 + 可选重排。
-
-    - 第一阶段：向量召回 candidate_k 条候选。
-    - 第二阶段：若启用 reranker，则对候选打相关性分并重排。
-    - 最终返回 top_k 条。
-    """
+def vector_recall(query: str, *, candidate_k: int) -> list[LCRetrievalHit]:
+    """第一阶段召回：向量检索 candidate_k 条候选（不做重排）。"""
     vs = _load_vector_store()
     if vs is None:
         return []
 
-    pairs = vs.similarity_search_with_score(query, k=max(top_k, candidate_k))
+    pairs = vs.similarity_search_with_score(query, k=candidate_k)
     if not pairs:
         return []
 
@@ -379,20 +374,38 @@ def search_with_rerank(query: str, *, top_k: int, candidate_k: int) -> list[LCRe
             chunk_id=chunk_id,
         ))
 
+    candidates.sort(key=lambda x: x.score, reverse=True)
+    return candidates
+
+
+def rerank_hits(query: str, hits: list[LCRetrievalHit], *, top_k: int) -> list[LCRetrievalHit]:
+    """第三阶段重排：对候选打相关性分并重排，返回 top_k 条。
+
+    未启用 reranker 时，仅按召回分排序返回 top_k。
+    """
+    if not hits:
+        return []
+
     reranker = _reranker()
     if reranker is None:
-        candidates.sort(key=lambda x: x.score, reverse=True)
-        candidates = candidates[:top_k]
-        _log_rerank_results("vector", query, candidates)
-        return candidates
+        hits.sort(key=lambda x: x.score, reverse=True)
+        hits = hits[:top_k]
+        _log_rerank_results("vector", query, hits)
+        return hits
 
-    inputs = [[query, c.snippet] for c in candidates]
+    inputs = [[query, c.snippet] for c in hits]
     rerank_scores = reranker.predict(inputs)
-    for c, rs in zip(candidates, rerank_scores):
+    for c, rs in zip(hits, rerank_scores):
         c.score = float(rs)
         c.reason = "vector-rerank"
 
-    candidates.sort(key=lambda x: x.score, reverse=True)
-    candidates = candidates[:top_k]
-    _log_rerank_results("vector-rerank", query, candidates)
-    return candidates
+    hits.sort(key=lambda x: x.score, reverse=True)
+    hits = hits[:top_k]
+    _log_rerank_results("vector-rerank", query, hits)
+    return hits
+
+
+def search_with_rerank(query: str, *, top_k: int, candidate_k: int) -> list[LCRetrievalHit]:
+    """向量召回 + 重排，兼容旧入口（用于纯向量基线对比）。"""
+    hits = vector_recall(query, candidate_k=candidate_k)
+    return rerank_hits(query, hits, top_k=top_k)

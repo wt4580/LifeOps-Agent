@@ -295,17 +295,35 @@ E:\Anaconda\envs\lifeops\python.exe -m app.eval.report          # 把 JSON 报�
 
 一句话：**@ 后的数字越大要求越宽松**（@1 只看第一条，@5 前五条沾边就算），因此数值通常 @1 ≤ @3 ≤ @5 逐级升高，说明"正确答案基本都在返回列表里，只是偶尔不在第一刀"。
 
+### 检索架构（主流三段式）
+
+生产路径 `search_chunks`（hybrid backend）遵循行业标准的 RAG 检索三段式：
+
+```
+用户查询
+  → Stage 1 双路召回（Dual Retrieval）
+       · BM25(query)              词面精确匹配
+       · 向量(query) + 向量(rewritten)  LLM 查询改写做向量侧 query expansion（rewrite 不再喂 BM25）
+  → Stage 2 融合（Fusion）
+       · Reciprocal Rank Fusion（RRF），k=60
+       · score(d) = Σ 1/(k + rank(d))，只看排名不看原始得分，规避 BM25 与向量尺度不可比
+  → Stage 3 交叉编码器重排（Cross-Encoder Rerank）
+       · bge-reranker-base 对融合后的 top-N 候选逐条打相关性分，取最终 top_k
+```
+
+各环节对应代码：`_vector_recall` / `_bm25_recall`（Stage 1）、`_rrf_fuse`（Stage 2，`retrieval.py`）、`rerank_hits`（Stage 3，`rag_langchain.py`）。
+
 ### 当前结果（生产路径 hybrid + 重排）
 
 **检索质量（46 条 case）**
 
 | 指标 | 分值 |
 | --- | --- |
-| Recall@1 | 0.891 |
-| Recall@3 | 0.978 |
+| Recall@1 | 0.913 |
+| Recall@3 | 1.000 |
 | Recall@5 | 1.000 |
-| MRR | 0.932 |
-| NDCG@5 | 0.935 |
+| MRR | 0.949 |
+| NDCG@5 | 0.944 |
 
 **任务/路由（10 条 case，真实 LLM 路由 `_node_decompose`）**
 
@@ -314,13 +332,21 @@ E:\Anaconda\envs\lifeops\python.exe -m app.eval.report          # 把 JSON 报�
 
 > 说明：路由的 3 条非精确命中，均为路由器「先查库自己解决」的设计原则——对模糊指令优先走 `query_database` 兜底（其中 2 条期望动作仍在多步计划内），并非检索失败。
 
-### 已知修复：混合检索融合 bug
+### 已知修复：混合检索融合 bug & 回归主流 RRF
 
-检索评估过程中诊断并修复了一个生产缺陷（`app/src/util/retrieval/retrieval.py` 的 `_rrf_fuse`）。
+**背景**：初期实现用「排名倒数求和（RRF）」融合 4 个检索通道，但词法通道（`bm25` / `rewrite-bm25` / 路径）本质是同一强相关信号的多份拷贝，高度重叠时会**重复计票**：例如查询「GTD 方法的核心流程」时，错答案 `career_plan.txt` 在词法通道排 1/2/3（多份叠加），反而压过「向量通道排第 1」（得分 84.66）的真正答案 `productivity_todo.txt`，导致把 GTD 错误路由到 career_plan。
 
-**原实现**用「排名倒数求和（RRF）」融合 4 个检索通道，但词法通道（`bm25` / `rewrite-bm25` / 路径）本质是同一强相关信号的多份拷贝，高度重叠时会**重复计票**：例如查询「GTD 方法的核心流程」时，错答案 `career_plan.txt` 在词法通道排 1/2/3（多份叠加），反而压过「向量通道排第 1」（得分 84.66）的真正答案 `productivity_todo.txt`，导致把 GTD 错误路由到 career_plan。
+**根因**：RRF 把"同一信号的多份拷贝"当成了"多份独立证据"。主流的做法里，RRF 的输入应当只有**互补的两路**（BM25 + 向量），同源改写不应作为独立通道。
 
-**处理方式**：不再用排名倒数相加，改为**直接按规范相关度得分（0-100）排序**，且每个文档只出一个代表块。分数上界本身已内建信任层级（向量 85 > BM25 60 > 路径 28），因此拿高分的真·语义命中天然排在前面。修复后 GTD、LeetCode 等此前错配的查询全部正确命中；`pytest`（175 项）零回归。
+**处理方式（回归主流三段式）**：
+1. 通道重排：删掉独立的 `rewrite-bm25` 通道——LLM 查询改写（`_rewrite_query`）改为**向量侧 query expansion**（`向量(query)` + `向量(rewritten)`）。
+2. 去掉文件名/路径通道。
+3. `_rrf_fuse` 恢复标准 RRF（`score(d) = Σ 1/(k+rank)`，k=60），输入为干净的 `BM25` 与 `向量` 两路。
+4. 融合后接 cross-encoder 重排（`rerank_hits`），与主流架构一致。
+
+**结果**：GTD、LeetCode 等此前错配的查询全部正确命中；检索评估 Recall@1 由 0.891 提升到 0.913；`pytest`（175 项）零回归。
+
+> 另修复了评估指标 `dcg_at_k` 的重复计分：按文件 ground truth 评估时，同一文件的多个 chunk 只计 1 次命中（NDCG 回到 [0,1] 语义）。
 
 ## 可选依赖说明
 
