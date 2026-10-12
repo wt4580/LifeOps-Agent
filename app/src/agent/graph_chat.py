@@ -268,7 +268,6 @@ def _node_decompose(state: ChatState) -> ChatState:
                     args["city"] = fix_suggestion
                     step["args"] = args
             state["retry_info"] = None
-            state["retry_count"] = 0  # 重置，让同一步骤可以重新尝试
             state["decision"] = {
                 "action": step["action"],
                 "args": step.get("args") or {},
@@ -279,7 +278,6 @@ def _node_decompose(state: ChatState) -> ChatState:
         # quick 模式无 plan：直接沿用上一次 decision
         prev = state.get("decision") or {}
         state["retry_info"] = None
-        state["retry_count"] = 0
         state["decision"] = {
             "action": prev.get("action", "normal_chat"),
             "args": prev.get("args") or {},
@@ -309,6 +307,7 @@ def _node_decompose(state: ChatState) -> ChatState:
     plan_index = state.get("plan_index", 0)
     if plan and plan_index < len(plan):
         step = plan[plan_index]
+        state["retry_count"] = 0  # 进入新步骤，重试计数归零
         state["decision"] = {
             "action": step["action"],
             "args": step.get("args") or {},

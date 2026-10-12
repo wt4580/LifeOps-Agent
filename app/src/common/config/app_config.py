@@ -145,7 +145,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"]
     )
     register_routers(app)  # 注册所有路由
-    
+
     return app
 
 
