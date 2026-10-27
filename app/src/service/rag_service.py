@@ -33,7 +33,7 @@ class RAGService:
         
         return result
     
-    def ask_question(self, question: str) -> dict:
+    def ask_question(self, question: str, session_id: str | None = None) -> dict:
         """基于知识库回答问题
         
         Args:
@@ -44,8 +44,8 @@ class RAGService:
         """
         logger.info("Processing RAG question: %s", question[:100])
 
-        citations = search_chunks(question, top_k=settings.rag_top_k)
-        answer_text = rag_answer(question, citations)
+        citations = search_chunks(question, top_k=settings.rag_top_k, session_id=session_id or "")
+        answer_text = rag_answer(question, citations, session_id=session_id)
 
         return {
             "answer": answer_text,

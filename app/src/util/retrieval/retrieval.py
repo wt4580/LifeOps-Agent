@@ -16,7 +16,8 @@ import hashlib
 import json
 import os
 import re
-import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ from ...common.config.knowledge_db_config import KnowledgeSessionLocal
 from ...domain.entity.knowledge_entity import Document, DocumentChunk
 from ...common.config.llm_config import chat_completion
 from ...common.config.base_config import settings
+from ...common.harness.context import background_context, TurnLimitExceeded
 from ..ingest.scanner import scan_documents
 
 
@@ -120,6 +122,8 @@ def _infer_doc_topic(path: str) -> str:
 def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
     """执行 SQLite 侧的文本索引构建（路径+页码+文本哈希去重）。"""
 
+    if not Path(settings.docs_dir).is_dir():
+        raise ValueError("知识库目录不存在，保留现有索引")
     docs = scan_documents(settings.docs_dir)
     inserted = 0
     skipped = 0
@@ -128,24 +132,38 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
         if rebuild:
             db.query(Document).delete()
             deleted = db.query(DocumentChunk).delete()
-            db.commit()
             logger.info("Rebuild index: cleared documents + document_chunks deleted=%s", deleted)
+
+        paths = {doc.path for doc in docs}
+        if paths:
+            db.query(DocumentChunk).filter(~DocumentChunk.file_path.in_(paths)).delete(synchronize_session=False)
+            db.query(Document).filter(~Document.file_path.in_(paths)).delete(synchronize_session=False)
+        else:
+            db.query(DocumentChunk).delete()
+            db.query(Document).delete()
 
         for doc in docs:
             source_type = _infer_source_type(doc.path)
             doc_topic = _infer_doc_topic(doc.path)
+            existing_rows = db.execute(select(DocumentChunk).where(DocumentChunk.file_path == doc.path)).scalars().all()
+            old_signatures = [(r.page, r.chunk_hash) for r in existing_rows]
+            new_signatures = list(dict.fromkeys((chunk.page, _hash_text(chunk.text)) for chunk in doc.chunks))
+            if old_signatures == new_signatures:
+                skipped += len(new_signatures)
+                continue
+            db.query(DocumentChunk).filter(DocumentChunk.file_path == doc.path).delete(synchronize_session=False)
+            record = db.execute(select(Document).where(Document.file_path == doc.path)).scalars().first()
+            if record is not None:
+                record.summary = None
+                record.outline = None
+            seen = set()
             for chunk in doc.chunks:
                 chunk_hash = _hash_text(chunk.text)
-                exists = db.execute(
-                    select(DocumentChunk).where(
-                        DocumentChunk.file_path == doc.path,
-                        DocumentChunk.page == chunk.page,
-                        DocumentChunk.chunk_hash == chunk_hash,
-                    ).limit(1)
-                ).scalars().first()
-                if exists:
+                signature = (chunk.page, chunk_hash)
+                if signature in seen:
                     skipped += 1
                     continue
+                seen.add(signature)
                 db.add(
                     DocumentChunk(
                         file_path=doc.path,
@@ -162,6 +180,8 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
                     )
                 )
                 inserted += 1
+        db.flush()
+        db.query(Document).filter(~Document.file_path.in_(select(DocumentChunk.file_path))).delete(synchronize_session=False)
         db.commit()
 
     return inserted, skipped
@@ -241,8 +261,21 @@ def _sync_document_records() -> None:
         db.commit()
 
 
+_SUMMARY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="document-summary")
+
+
 def _generate_document_summaries() -> None:
-    """对缺少摘要的 Document 记录逐批生成文件级摘要（LLM 生成），不限量"""
+    try:
+        with background_context("knowledge-index", operation="document_summary"):
+            _generate_document_summaries_batch()
+    except TurnLimitExceeded:
+        logger.info("Document summary budget reached; remaining summaries deferred")
+    except Exception as exc:
+        logger.warning("Document summary task failed: %s", type(exc).__name__)
+
+
+def _generate_document_summaries_batch() -> None:
+    """生成缺少的文件摘要并逐份提交；任务预算由外层入口管理。"""
     with KnowledgeSessionLocal() as db:
         docs = db.execute(
             select(Document).where(Document.summary == None)
@@ -274,9 +307,11 @@ def _generate_document_summaries() -> None:
                             f"内容片段：{snippet}"
                         )}],
                         temperature=0.0,
+                        runtime_context={"scenario": "document_summary"},
                     ).strip()[:120]
                     if answer:
                         doc.summary = answer
+                        db.commit()
                         total_updated += 1
                 except Exception as exc:
                     logger.warning("Document summary failed for %s: %s", doc.file_path, exc)
@@ -350,7 +385,9 @@ def index_documents(*, rebuild: bool = False, reset: bool = False) -> dict:
 
     if backend in {"langchain", "hybrid"}:
         try:
-            from .rag_langchain import build_vector_index
+            from .rag_langchain import build_vector_index, _load_vector_store
+
+            _load_vector_store.cache_clear()
 
             vec = build_vector_index(root_dir=settings.docs_dir, rebuild=rebuild)
             result.update(vec)
@@ -358,9 +395,11 @@ def index_documents(*, rebuild: bool = False, reset: bool = False) -> dict:
             logger.warning("Vector index build failed, keep sqlite index only: %s", exc)
             result["vector_error"] = str(exc)
 
-    if inserted > 0 or rebuild:
-        _sync_document_records()
-        threading.Thread(target=_generate_document_summaries, daemon=True).start()
+    _sync_document_records()
+    with KnowledgeSessionLocal() as db:
+        pending_summaries = db.execute(select(func.count()).select_from(Document).where(Document.summary.is_(None))).scalar_one()
+    if pending_summaries:
+        _SUMMARY_EXECUTOR.submit(_generate_document_summaries)
 
     elapsed = (datetime.now(timezone.utc) - start).total_seconds()
     logger.info(
@@ -372,7 +411,7 @@ def index_documents(*, rebuild: bool = False, reset: bool = False) -> dict:
         reset,
         backend,
     )
-    result["summary_generation"] = "background"
+    result["summary_generation"] = "background" if pending_summaries else "complete"
     return result
 
 
@@ -699,6 +738,8 @@ def _rerank_fused(query: str, citations: list[Citation], *, top_k: int) -> list[
 
     if not citations:
         return []
+    if not settings.rag_use_rerank:
+        return citations[:top_k]
 
     try:
         from .rag_langchain import rerank_hits, LCRetrievalHit
@@ -744,8 +785,10 @@ def _rerank_fused(query: str, citations: list[Citation], *, top_k: int) -> list[
     return out
 
 
-def _apply_document_summary_filter(rows: list) -> list:
+def _apply_document_summary_filter(rows: list, query: str) -> list:
     """用文档摘要做轻量预过滤：查询词匹配文档摘要则只保留该文档的 chunks。"""
+    if not rows:
+        return rows
     with KnowledgeSessionLocal() as db:
         docs = db.execute(
             select(Document.file_path, Document.summary)
@@ -754,14 +797,11 @@ def _apply_document_summary_filter(rows: list) -> list:
     if not docs:
         return rows
 
-    corpus = [_tokenize(d.summary) for d in docs if d.summary]
+    corpus = [_tokenize(d.summary) for d in docs if d.summary and _tokenize(d.summary)]
     if not corpus:
         return rows
-    tokens = _tokenize(" ".join(_tokenize(rows[0].chunk_text or "") if hasattr(rows[0], 'chunk_text') else ""))
-    # 用查询词匹配文档摘要
-    query_tokens = _tokenize(" ".join(_tokenize(d.summary[:200]) for d in docs if d.summary))
     # 简化：用文档摘要 BM25 匹配查询
-    doc_map = {d.file_path: d.summary for d in docs if d.summary}
+    doc_map = {d.file_path: d.summary for d in docs if d.summary and _tokenize(d.summary)}
     doc_paths = list(doc_map.keys())
     doc_texts = [doc_map[p] for p in doc_paths]
     doc_corpus_tokens = [_tokenize(t) for t in doc_texts]
@@ -775,7 +815,8 @@ def _apply_document_summary_filter(rows: list) -> list:
         return rows
     # 保留命中文档的 file_path 集合
     keep_paths = set(p for p, s in matched)
-    filtered = [r for r in rows if r.file_path in keep_paths]
+    # A bounded summary task may leave some files unfinished; retain their text.
+    filtered = [r for r in rows if r.file_path in keep_paths or r.file_path not in doc_map]
     if filtered:
         logger.info("Document summary filter: %d/%d rows kept for %d matched docs",
                      len(filtered), len(rows), len(keep_paths))
@@ -794,7 +835,7 @@ def search_chunks(query: str, top_k: int = 5, session_id: str = "") -> list[Cita
     if not rows and backend in {"bm25", "hybrid"}:
         return []
 
-    rows = _apply_document_summary_filter(rows)
+    rows = _apply_document_summary_filter(rows, query)
 
     rewritten = _rewrite_query(query, session_id=session_id)
 
@@ -843,6 +884,7 @@ def rag_answer(
     profile_context: str | None = None,
     pre_advice: str | None = None,
     on_token: Callable[[str], None] | None = None,
+    session_id: str | None = None,
 ) -> str:
     """把候选证据拼成 Context，交给 LLM 生成带引用回答。"""
 
@@ -955,6 +997,7 @@ def rag_answer(
         temperature=0.2,
         runtime_context={
             "scenario": "rag_answer",
+            "session_id": session_id,
             "evidence_best_score": round(best_score, 6),
             "evidence_strong_count": strong_count,
         },

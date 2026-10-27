@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
+import hashlib
 from datetime import datetime
 from pathlib import Path
 
 from ..common.config.llm_config import chat_completion
+from ..common.config.base_config import settings
+from ..common.harness.context import ensure_turn_active
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_DIR = Path(settings.personal_memory_dir)
+_WRITE_LOCK = threading.Lock()
 
 _LEARN_SYSTEM_PROMPT = (
     "你是个人助手的自我学习引擎。分析本轮对话，判断是否有值得改进或记住的信息。\n\n"
@@ -20,38 +26,37 @@ _LEARN_SYSTEM_PROMPT = (
 )
 
 
-def _write_markdown(target: str, content: str) -> bool:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    path = DATA_DIR / target
+def _write_markdown(target: str, content: str, session_id: str | None = None) -> bool:
+    with _WRITE_LOCK:
+        return _append_markdown(target, content, session_id)
+
+
+def _append_markdown(target: str, content: str, session_id: str | None = None) -> bool:
+    directory = DATA_DIR if session_id is None else DATA_DIR / "sessions" / hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / target
     try:
         original = path.read_text(encoding="utf-8") if path.exists() else ""
-    except OSError:
-        original = ""
+    except OSError as exc:
+        logger.warning("读取学习记录失败，保留原文件: %s", exc)
+        return False
 
     ts = datetime.now().isoformat(timespec="seconds")
-    if "---" in original:
-        lines = original.splitlines()
-        updated: list[str] = []
-        frontmatter_done = False
-        for line in lines:
-            if line.strip() == "---" and not frontmatter_done:
-                updated.append("---")
-                updated.append(f"updated_at: {ts}")
-                frontmatter_done = True
-            elif frontmatter_done and not line.startswith("---"):
-                continue
-            elif line.strip().startswith("updated_at:"):
-                continue
-            elif line.strip() == "---" and frontmatter_done:
-                break
-            else:
-                updated.append(line)
-        body = "\n".join(updated) + f"\n\n---\n{content}"
-    else:
-        body = f"---\nupdated_at: {ts}\n---\n\n{original}\n\n---\n{content}"
+    lines = original.splitlines()
+    metadata = []
+    if lines and lines[0].strip() == "---":
+        end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+        if end is not None:
+            metadata = [line for line in lines[1:end] if not line.startswith("updated_at:")]
+            original = "\n".join(lines[end + 1:])
+    header = "\n".join(["---", *metadata, f"updated_at: {ts}", "---"])
+    body = f"{header}\n\n{original.strip()}\n\n---\n{content}"
 
     try:
-        path.write_text(body.strip() + "\n", encoding="utf-8")
+        temporary = path.with_suffix(".md.tmp")
+        temporary.write_text(body.strip() + "\n", encoding="utf-8")
+        ensure_turn_active()
+        os.replace(temporary, path)
         logger.info("post_chat_learn: 已更新 %s", target)
         return True
     except OSError as exc:
@@ -102,4 +107,4 @@ def run_learn(
 
     logger.info("post_chat_learn: 产生更新 target=%s content=%s", target, content.strip().replace("\n", " ")[:120])
 
-    _write_markdown(f"{target}.md", content.strip())
+    _write_markdown(f"{target}.md", content.strip(), session_id=session_id)

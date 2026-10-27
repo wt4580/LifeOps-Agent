@@ -24,9 +24,14 @@ class CalendarService:
         calendar_id: Optional[str] = None,
         max_results: int = 50,
         interactive: bool = True,
+        session_id: str = "default",
     ) -> list[dict[str, Any]]:
-        start_dt = datetime.fromisoformat(start_iso.replace("Z", "+00:00")).replace(tzinfo=None)
-        end_dt = datetime.fromisoformat(end_iso.replace("Z", "+00:00")).replace(tzinfo=None)
+        start_dt = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(end_iso.replace("Z", "+00:00"))
+        if start_dt.tzinfo is not None:
+            start_dt = start_dt.astimezone().replace(tzinfo=None)
+        if end_dt.tzinfo is not None:
+            end_dt = end_dt.astimezone().replace(tzinfo=None)
 
         # 1. 查询用户自己添加的日历事件
         user_events: list[dict[str, Any]] = []
@@ -34,7 +39,8 @@ class CalendarService:
             rows = (
                 db.execute(
                     select(CalendarEvent)
-                    .where(CalendarEvent.start_at >= start_dt)
+                    .where(CalendarEvent.session_id == session_id)
+                    .where(CalendarEvent.end_at > start_dt)
                     .where(CalendarEvent.start_at < end_dt)
                     .order_by(CalendarEvent.start_at.asc())
                     .limit(max_results)

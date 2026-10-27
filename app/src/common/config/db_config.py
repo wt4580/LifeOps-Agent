@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from sqlalchemy import create_engine, event, text
-from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy.orm import sessionmaker, DeclarativeBase, Session
 
 from .base_config import settings
 
@@ -49,6 +49,12 @@ if settings.database_url.startswith("sqlite:///"):
 # - autoflush=False：避免查询前自动刷盘带来的“隐式写入”困惑。
 # - autocommit=False：显式 commit 更可控。
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+
+
+@event.listens_for(Session, "before_commit")
+def _prevent_cancelled_turn_commit(session):
+    from ..harness.context import ensure_turn_active
+    ensure_turn_active()
 
 
 def _ensure_sqlite_dir() -> None:
@@ -192,3 +198,12 @@ def init_db() -> None:
     _ensure_user_profile_columns()
     _ensure_life_events_columns()
     _ensure_chat_message_columns()
+    if settings.database_url.startswith("sqlite:///"):
+        with engine.begin() as conn:
+            for table, column, definition in (
+                ("memory_candidates", "session_id", "VARCHAR(64)"),
+                ("conversation_summaries", "summarized_through_id", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                columns = {r[1] for r in conn.execute(text(f"PRAGMA table_info({table})"))}
+                if column not in columns:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))

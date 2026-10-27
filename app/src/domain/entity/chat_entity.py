@@ -72,6 +72,7 @@ class TodoItem(Base):
 
 class MemoryCandidate(Base):
     __tablename__ = "memory_candidates"
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     kind: Mapped[str] = mapped_column(String(64))
@@ -127,6 +128,7 @@ class UserProfile(Base):
 
 class ConversationSummary(Base):
     __tablename__ = "conversation_summaries"
+    summarized_through_id: Mapped[int] = mapped_column(Integer, default=0)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     session_id: Mapped[str] = mapped_column(String(64), index=True)
@@ -188,3 +190,24 @@ class Transaction(Base):
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     transaction_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class NotificationReceipt(Base):
+    __tablename__ = "notification_receipts"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AuthUser(Base):
+    __tablename__ = "auth_users"
+    username: Mapped[str] = mapped_column(String(64), primary_key=True)
+    salt: Mapped[str] = mapped_column(String(32))
+    password_hash: Mapped[str] = mapped_column(String(64))
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    username: Mapped[str] = mapped_column(String(64), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)

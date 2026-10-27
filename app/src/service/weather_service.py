@@ -123,6 +123,12 @@ class WeatherService:
         return result
 
     def query(self, city_name: str, profile_context: Optional[str] = None) -> dict[str, Any]:
+        if settings.demo_mode:
+            from datetime import datetime, timedelta
+            return {"city": city_name or "杭州", "live":{"weather":"晴（虚构演示）","temperature":"20"},
+                    "forecast":[{"date":(datetime.now()+timedelta(days=i)).date().isoformat(),
+                                  "dayweather":"晴（虚构演示）","daytemp":"20","nighttemp":"15"} for i in range(4)],
+                    "cached":False,"simulated":True}
         city = (city_name or "").strip()
         if not city:
             city = self._resolve_default_city(profile_context)

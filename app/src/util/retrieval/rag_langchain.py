@@ -17,7 +17,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import pickle
-import shutil
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -296,9 +295,6 @@ def build_vector_index(*, root_dir: str | None = None, rebuild: bool = False) ->
         root_dir: 不再使用，保留兼容签名。实际从 document_chunks 表加载。
         rebuild: 是否删除旧索引从头重建。
     """
-    _require_langchain()
-    from langchain_community.vectorstores import FAISS
-
     docs = _load_documents_from_db()
     vec_dir = Path(settings.rag_vector_dir)
 
@@ -306,13 +302,17 @@ def build_vector_index(*, root_dir: str | None = None, rebuild: bool = False) ->
     new_sigs = _collect_new_doc_signatures(docs)
     diff = _calc_vector_diff(old_sigs, new_sigs)
 
-    if rebuild and vec_dir.exists():
-        shutil.rmtree(vec_dir)
     vec_dir.mkdir(parents=True, exist_ok=True)
 
     if docs:
+        _require_langchain()
+        from langchain_community.vectorstores import FAISS
+
         vs = FAISS.from_documents(docs, _embeddings())
         vs.save_local(str(vec_dir))
+    else:
+        for filename in ("index.faiss", "index.pkl"):
+            (vec_dir / filename).unlink(missing_ok=True)
 
     # 清理缓存，防止同进程中旧索引驻留
     _load_vector_store.cache_clear()
@@ -330,6 +330,11 @@ def _load_vector_store():
 
     vec_dir = Path(settings.rag_vector_dir)
     if not vec_dir.exists() or not any(vec_dir.iterdir()):
+        return None
+    previous = _collect_old_doc_signatures(vec_dir)
+    current = _collect_new_doc_signatures(_load_documents_from_db())
+    if _calc_vector_diff(previous, current)["vector_changed"]:
+        logger.warning("Vector index differs from current documents; use SQLite retrieval until rebuilt")
         return None
     return FAISS.load_local(
         str(vec_dir),

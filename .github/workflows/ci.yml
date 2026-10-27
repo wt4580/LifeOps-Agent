@@ -1,0 +1,37 @@
+name: Container and agent contracts
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build test image
+        run: docker build --target test -t lifeops-agent:test .
+      - name: Unit and contract evaluation
+        run: |
+          docker create --name lifeops-test lifeops-agent:test sh -ec '
+            python -m ruff check --select E9,F63,F7,F82 app tests scripts
+            python -m pytest tests -q --junitxml=/reports/unit.xml
+            python -m app.eval.run_e2e --output /reports/e2e.json
+          '
+          docker start -a lifeops-test
+          test "$(docker inspect -f '{{.State.ExitCode}}' lifeops-test)" = 0
+      - name: Build runtime and smoke
+        run: |
+          docker build --target production -t lifeops-agent:demo .
+          docker run -d --name lifeops-smoke --read-only --tmpfs /tmp:rw,size=64m -e DEMO_MODE=true -e DEMO_SEED=true lifeops-agent:demo
+          docker exec lifeops-smoke python scripts/smoke.py --url http://127.0.0.1:5000
+      - name: Collect reports
+        if: always()
+        run: |
+          mkdir -p artifacts
+          docker cp lifeops-test:/reports/. artifacts/ || true
+          docker logs lifeops-smoke > artifacts/smoke.log 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification-reports
+          path: artifacts/

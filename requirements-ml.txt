@@ -1,0 +1,8 @@
+# Optional local-model integrations. Prefer CPU torch on machines without a GPU.
+langchain==1.2.18
+langchain-community==0.4.2
+langchain-huggingface>=1,<2
+sentence-transformers>=5,<6
+faiss-cpu==1.14.3
+faster-whisper>=1.1,<2
+docx2txt==0.8

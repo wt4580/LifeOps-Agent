@@ -2,7 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
-import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Callable
 from uuid import uuid4
@@ -15,6 +15,7 @@ from ..domain.entity.chat_entity import (
     ConversationSummary, LifeEvent, UserProfile
 )
 from ..common.config.llm_config import chat_completion
+from ..common.harness.context import background_context, TurnLimitExceeded
 from ..agent.memory.memory_extractor import extract_memory_from_dialogue
 from ..agent.post_chat_learn import run_learn
 from ..agent.memory.personal_memory import (
@@ -28,6 +29,9 @@ from ..agent.graph_chat import aload_chat_checkpoint_context, arun_chat_graph, l
 from ..util.retrieval.retrieval import index_documents
 from ..common.config.log_config import logger
 from .session_queue import JOB_END, JOB_STOPPED, cancel_and_wait, submit_chat_job
+
+_POST_GRAPH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="postgraph")
+
 
 class ChatService:
     """聊天核心服务"""
@@ -43,7 +47,7 @@ class ChatService:
     # 主聊天流程
     # ----------------------------------------------------------------------
 
-    async def chat(self, message: str, session_id: str | None = None, progress_queue: asyncio.Queue | None = None) -> dict:
+    async def chat(self, message: str, session_id: str | None = None, progress_queue: asyncio.Queue | None = None, proposal_id: str | None = None) -> dict:
         """执行一次完整聊天请求。
 
         先保存用户消息，加载已有上下文，交给 LangGraph 统一处理路由/工具调用/HITL，
@@ -54,6 +58,11 @@ class ChatService:
                 progress_queue.put_nowait(msg)
 
         session_id = session_id or str(uuid4())
+        if proposal_id is not None:
+            graph = get_chat_graph()
+            pending = await graph.aget_state({"configurable": {"thread_id": session_id}})
+            if not pending.tasks or pending.values.get("proposal_id") != proposal_id:
+                raise ValueError("草案已失效，请使用最新的草案卡片")
 
         # A) 用户消息先落库，保证审计链完整。
         _push("正在保存消息...")
@@ -122,14 +131,11 @@ class ChatService:
 
         # 图后旁路：学习/标注/摘要/记忆/反思等放独立后台线程执行，主响应立即返回，
         # 不再等这些 LLM 密集任务跑完（缓解"回答慢约一分钟"）。
-        self._spawn_post_graph(
-            session_id=session_id,
-            memory_owner_id=memory_owner_id,
-            message=message,
-            state=state,
-            answer=answer,
-            progress=_push,
-        )
+        if settings.background_learning_enabled and not settings.demo_mode:
+            self._spawn_post_graph(
+                session_id=session_id, memory_owner_id=memory_owner_id, message=message,
+                state=state, answer=answer, progress=lambda _message: None,
+            )
 
         return {
             "answer": answer,
@@ -209,6 +215,7 @@ class ChatService:
                             db.add(
                                 MemoryCandidate(
                                     kind=item.kind,
+                                    session_id=session_id,
                                     title=item.title,
                                     occurred_at=item.occurred_at,
                                     notes=item.notes,
@@ -234,13 +241,19 @@ class ChatService:
 
         def _worker() -> None:
             try:
-                asyncio.run(_run_all())
+                parent = next((step.get("output", {}).get("turn_id")
+                               for step in reversed((state.get("trace") or {}).get("steps", []))
+                               if step.get("name") == "harness_summary"), None)
+                with background_context(session_id, parent_turn_id=parent):
+                    asyncio.run(_run_all())
+            except TurnLimitExceeded:
+                logger.info("post_graph budget reached session=%s", session_id)
             except Exception as exc:
                 logger.warning("post_graph worker failed session=%s err=%s", session_id, exc)
 
-        threading.Thread(target=_worker, name=f"postgraph-{session_id[:8]}", daemon=True).start()
+        _POST_GRAPH_EXECUTOR.submit(_worker)
 
-    async def chat_stream(self, message: str, session_id: str | None = None):
+    async def chat_stream(self, message: str, session_id: str | None = None, *, proposal_id: str | None = None, request_id: str | None = None):
         """流式聊天：同一 session 的并发请求会排队串行执行。
 
         排队规则：先到先服务。若前面还有任务在处理/等待，本请求先向下游
@@ -250,10 +263,18 @@ class ChatService:
         normalized = (session_id or "").strip() or str(uuid4())
         events: asyncio.Queue = asyncio.Queue()
 
+        async def run_job():
+            try:
+                return await self.chat(message=message, session_id=normalized, progress_queue=events, proposal_id=proposal_id)
+            except asyncio.CancelledError:
+                await self._clear_stale_interrupt(normalized)
+                raise
+
         queued = submit_chat_job(
             normalized,
             events,
-            lambda: self.chat(message=message, session_id=normalized, progress_queue=events),
+            run_job,
+            request_id=request_id,
         )
 
         if queued:
@@ -273,16 +294,14 @@ class ChatService:
             else:
                 yield f"data: {json.dumps({'type': 'status', 'message': item}, ensure_ascii=False)}\n\n"
 
-    async def stop_current_chat(self, session_id: str | None = None) -> dict:
+    async def stop_current_chat(self, session_id: str | None = None, *, request_id: str | None = None) -> dict:
         """打断当前正在处理的消息。
 
         只取消正在执行的那一条；排队中的消息不受影响，会按顺序继续。
         取消后清理可能残留的中断状态，避免下一条消息撞上悬空的 HITL。
         """
         sid = (session_id or "").strip() or str(uuid4())
-        stopped = await cancel_and_wait(sid)
-        if stopped:
-            await self._clear_stale_interrupt(sid)
+        stopped = await cancel_and_wait(sid, request_id=request_id)
         return {"stopped": stopped}
 
     async def _clear_stale_interrupt(self, session_id: str) -> None:
@@ -301,7 +320,9 @@ class ChatService:
                         "proposal_id": None,
                         "proposal": None,
                         "proposal_confirmed": False,
+                        "pending_balance_update": None,
                     },
+                    as_node="proactive_decision",
                 )
         except Exception as exc:
             logger.warning("clear stale interrupt failed session=%s err=%s", session_id, exc)
@@ -600,14 +621,14 @@ class ChatService:
 
         with SessionLocal() as db:
             memories = db.execute(
-                select(MemoryCandidate).order_by(MemoryCandidate.created_at.desc()).limit(30)
+                select(MemoryCandidate).where(MemoryCandidate.session_id == owner_id).order_by(MemoryCandidate.created_at.desc()).limit(30)
             ).scalars().all()
             events = db.execute(
                 select(LifeEvent).where(LifeEvent.session_id == owner_id)
                 .order_by(LifeEvent.event_time.desc().nulls_last()).limit(20)
             ).scalars().all()
             todos = db.execute(
-                select(TodoItem).where(TodoItem.is_completed == False)
+                select(TodoItem).where(TodoItem.session_id == owner_id, TodoItem.is_completed == False)
                 .order_by(TodoItem.due_at.asc()).limit(10)
             ).scalars().all()
             profile_row = db.execute(
@@ -774,15 +795,22 @@ class ChatService:
                 deleted_candidates = db.execute(
                     delete(MemoryCandidate).where(MemoryCandidate.created_at < cutoff)
                 ).rowcount
-                deleted_events = db.execute(
-                    delete(LifeEvent).where(LifeEvent.created_at < cutoff)
-                ).rowcount
+                deleted_events = 0
+                db.commit()
             if deleted_candidates or deleted_events:
                 logger.info("Cleaned up stale data: memory_candidates=%s life_events=%s", deleted_candidates, deleted_events)
         except Exception as exc:
             logger.warning("Stale data cleanup failed: %s", exc)
 
-    def _save_summary(self, session_id: str, summary_text: str) -> None:
+    def _summary_cursor(self, session_id: str) -> int:
+        with SessionLocal() as db:
+            return db.execute(select(ConversationSummary.summarized_through_id).where(
+                ConversationSummary.session_id == session_id
+            )).scalar() or 0
+
+    def _save_summary(self, session_id: str, summary_text: str, summarized_through_id: int | None = None) -> None:
+        if not summary_text.strip():
+            return
         with SessionLocal() as db:
             row = db.execute(
                 select(ConversationSummary).where(ConversationSummary.session_id == session_id).limit(1)
@@ -790,17 +818,17 @@ class ChatService:
             if row:
                 row.summary_text = summary_text
                 row.updated_at = datetime.utcnow()
+                if summarized_through_id is not None:
+                    row.summarized_through_id = summarized_through_id
             else:
-                db.add(ConversationSummary(session_id=session_id, summary_text=summary_text))
+                db.add(ConversationSummary(session_id=session_id, summary_text=summary_text, summarized_through_id=summarized_through_id or 0))
             db.commit()
     
     async def _maybe_update_summary(self, session_id: str) -> None:
         """滑动摘要窗口。
 
-        每 summary_refresh_turns 条消息触发一次：
-        - 如果原始消息超过 RECENT_MAX（50），把最旧的 SLIDE_STEP（10）条
-          合并到摘要中并删除，使摘要始终覆盖 recent_dialogue 之前的所有内容。
-        - 否则直接从 recent_dialogue 刷新摘要。
+        每 summary_refresh_turns 条消息触发一次，将尚未摘要的旧消息
+        合并到摘要并推进游标。原始消息始终保留。
         """
         RECENT_MAX = 50
         SLIDE_STEP = 10
@@ -818,7 +846,8 @@ class ChatService:
                 db.execute(
                     select(ChatMessage)
                     .where(ChatMessage.session_id == session_id)
-                    .order_by(ChatMessage.created_at.asc())
+                    .where(ChatMessage.id > self._summary_cursor(session_id))
+                    .order_by(ChatMessage.id.asc())
                 )
                 .scalars()
                 .all()
@@ -856,17 +885,16 @@ class ChatService:
                         {"role": "user", "content": json.dumps(old_dialogue, ensure_ascii=False)},
                     ],
                     temperature=0.2,
+                    runtime_context={"scenario": "history_summary", "session_id": session_id},
                 )
             except Exception as exc:
                 logger.warning("Slide summary failed session=%s total=%s err=%s", session_id, total, exc)
 
             if summary_text.strip():
-                self._save_summary(session_id, summary_text.strip())
+                self._save_summary(session_id, summary_text.strip(), summarized_through_id=old_rows[-1].id)
 
-            ids = [r.id for r in old_rows]
-            with SessionLocal() as db:
-                db.execute(delete(ChatMessage).where(ChatMessage.id.in_(ids)))
-                db.commit()
+            # Original messages are retained for audit and recovery.
+            return
         else:
             g = get_chat_graph()
             checkpoint_context = await aload_chat_checkpoint_context(g, session_id) if g else {}
@@ -891,87 +919,16 @@ class ChatService:
             summary_text = chat_completion(
                 [
                     {"role": "system", "content": prompt},
-                    {"role": "user", "content": json.dumps(recent, ensure_ascii=False)},
+                    {"role": "user", "content": json.dumps({"existing_summary": self._get_summary(session_id), "recent": recent}, ensure_ascii=False)},
                 ],
                 temperature=0.2,
+                runtime_context={"scenario": "recent_summary", "session_id": session_id},
             )
             self._save_summary(session_id, summary_text)
     
     def _maybe_prune_chat_history(self, session_id: str) -> None:
-        """全量压缩聊天记录。
-
-        当消息超过上限时，把全部旧消息 + 已有摘要喂给 LLM 生成一份更新的摘要，
-        然后删除被压缩的旧消息，只保留最近 target 条。
-        确保 LLM 看到的对话盲区为 0：摘要覆盖所有被删除的对话，recent_dialogue 覆盖所有保留的对话。
-        """
-        with SessionLocal() as db:
-            rows = (
-                db.execute(
-                    select(ChatMessage)
-                    .where(ChatMessage.session_id == session_id)
-                    .order_by(ChatMessage.created_at.asc())
-                )
-                .scalars()
-                .all()
-            )
-
-        total = len(rows)
-        if total <= settings.chat_retention_limit:
-            return
-
-        target = settings.chat_prune_target
-        prune_count = total - target
-        if prune_count <= 0:
-            return
-
-        old_rows = rows[:prune_count]
-        old_dialogue = [{"role": r.role, "content": r.content} for r in old_rows]
-        existing_summary = self._get_summary(session_id) or "无"
-
-        summary_text = ""
-        try:
-            summary_text = chat_completion(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "你是生活助理的记忆系统。更新对话摘要，保留重要信息。\n\n"
-                            "## 已有摘要\n"
-                            f"{existing_summary}\n\n"
-                            "## 新增对话（即将被压缩删除）\n"
-                            "把以下新增对话合并到已有摘要中，精简并更新。\n\n"
-                            "## 输出格式\n"
-                            "按以下 Markdown 结构输出，三个分类必须至少输出一行（可写\u201c暂无\u201d）：\n"
-                            "## 讨论脉络\n"
-                            "- 按时间顺序概述讨论了什么\n\n"
-                            "## 关键决定与计划\n"
-                            "- 用户做出的决定、确认的计划\n\n"
-                            "## 遗留事项（仅在用户主动询问时参考）\n"
-                            "- 未完成或需后续关注的事项"
-                        ),
-                    },
-                    {"role": "user", "content": json.dumps(old_dialogue, ensure_ascii=False)},
-                ],
-                temperature=0.2,
-            )
-        except Exception as exc:
-            logger.warning("Chat prune summary failed session=%s total=%s err=%s", session_id, total, exc)
-
-        if summary_text.strip():
-            self._save_summary(session_id, summary_text.strip())
-
-        ids = [r.id for r in old_rows]
-        with SessionLocal() as db:
-            db.execute(delete(ChatMessage).where(ChatMessage.id.in_(ids)))
-            db.commit()
-
-        logger.info(
-            "Pruned chat history session_id=%s total=%s pruned=%s kept=%s",
-            session_id,
-            total,
-            prune_count,
-            total - prune_count,
-        )
+        """保留全部原文；上下文长度由摘要和查询窗口控制。"""
+        return
 
 
 # 导出单例

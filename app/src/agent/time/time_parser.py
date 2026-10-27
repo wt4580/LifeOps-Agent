@@ -33,7 +33,7 @@ def build_date_context(*, remaining_only: bool = False) -> dict:
     }
 
 
-def normalize_date_hint(user_text: str) -> str | None:
+def normalize_date_hint(user_text: str, *, session_id: str | None = None) -> str | None:
     ctx = build_date_context()
 
     system = (
@@ -56,6 +56,7 @@ def normalize_date_hint(user_text: str) -> str | None:
             {"role": "user", "content": json.dumps({"text": user_text}, ensure_ascii=False)},
         ],
         temperature=0.0,
+        runtime_context={"scenario": "normalize_date_hint", "session_id": session_id},
     )
 
     try:

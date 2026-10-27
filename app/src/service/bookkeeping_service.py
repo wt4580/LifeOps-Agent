@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
+import math
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, update
 from sqlalchemy.orm import joinedload
 
 from ..common.config.db_config import SessionLocal
@@ -20,8 +21,20 @@ class BookkeepingError(Exception):
     pass
 
 
+def _utc_transaction_time(value: str | None = None) -> datetime:
+    """Naive user input is local; persisted transaction timestamps remain UTC."""
+    parsed = datetime.fromisoformat(value) if value else datetime.now().astimezone()
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _local_transaction_time(value: datetime) -> str:
+    return value.replace(tzinfo=timezone.utc).astimezone().isoformat()
+
+
 class BookkeepingService:
     def add_account(self, name: str, balance: float = 0.0, session_id: str = "") -> dict:
+        if not math.isfinite(balance):
+            raise BookkeepingError("余额必须为有限数值")
         with SessionLocal() as db:
             existing = db.execute(
                 select(Account).where(Account.session_id == session_id, Account.name == name)
@@ -67,11 +80,26 @@ class BookkeepingService:
         description: str | None = None,
         transaction_at: str | None = None,
     ) -> dict:
-        tx_time = datetime.fromisoformat(transaction_at) if transaction_at else datetime.utcnow()
+        if not math.isfinite(amount) or amount == 0:
+            raise BookkeepingError("金额必须为有限的非零数值")
+        try:
+            tx_time = _utc_transaction_time(transaction_at)
+        except ValueError as exc:
+            raise BookkeepingError("交易日期格式不正确") from exc
 
         with SessionLocal() as db:
             resolved_account_id = account_id
             resolved_account_name = account_name
+
+            if account_id:
+                acc = db.execute(select(Account).where(
+                    Account.id == account_id, Account.session_id == session_id
+                )).scalars().first()
+                if acc is None:
+                    raise BookkeepingError("账户不存在或不属于当前会话")
+                if account_name and account_name != acc.name:
+                    raise BookkeepingError("账户 ID 与名称不一致")
+                resolved_account_name = acc.name
 
             if account_name and not account_id:
                 acc = db.execute(
@@ -80,6 +108,8 @@ class BookkeepingService:
                 if acc:
                     resolved_account_id = acc.id
                     resolved_account_name = acc.name
+                else:
+                    raise BookkeepingError("账户不存在，请先创建账户")
 
             tx = Transaction(
                 session_id=session_id,
@@ -93,11 +123,9 @@ class BookkeepingService:
             db.add(tx)
 
             if resolved_account_id:
-                acc = db.execute(
-                    select(Account).where(Account.id == resolved_account_id, Account.session_id == session_id)
-                ).scalars().first()
-                if acc:
-                    acc.balance = (acc.balance or 0) + amount
+                db.execute(update(Account).where(
+                    Account.id == resolved_account_id, Account.session_id == session_id
+                ).values(balance=func.round(func.coalesce(Account.balance, 0) + amount, 2)))
 
             db.commit()
             db.refresh(tx)
@@ -107,7 +135,7 @@ class BookkeepingService:
                 "category": tx.category,
                 "description": tx.description,
                 "account_name": tx.account_name,
-                "transaction_at": tx.transaction_at.isoformat() if tx.transaction_at else None,
+                "transaction_at": _local_transaction_time(tx.transaction_at) if tx.transaction_at else None,
             }
 
     def list_transactions(
@@ -124,10 +152,10 @@ class BookkeepingService:
             conditions = [Transaction.session_id == session_id]
 
             if start_date:
-                conditions.append(Transaction.transaction_at >= datetime.fromisoformat(start_date))
+                conditions.append(Transaction.transaction_at >= _utc_transaction_time(start_date))
             if end_date:
                 conditions.append(
-                    Transaction.transaction_at < datetime.fromisoformat(end_date) + timedelta(days=1)
+                    Transaction.transaction_at < _utc_transaction_time((datetime.fromisoformat(end_date) + timedelta(days=1)).isoformat())
                 )
             if category:
                 conditions.append(Transaction.category == category)
@@ -148,7 +176,7 @@ class BookkeepingService:
                     "category": r.category,
                     "description": r.description,
                     "account_name": r.account_name,
-                    "transaction_at": r.transaction_at.isoformat() if r.transaction_at else None,
+                    "transaction_at": _local_transaction_time(r.transaction_at) if r.transaction_at else None,
                 }
                 for r in rows
             ]
@@ -164,10 +192,10 @@ class BookkeepingService:
         with SessionLocal() as db:
             conditions = [Transaction.session_id == session_id]
             if start_date:
-                conditions.append(Transaction.transaction_at >= datetime.fromisoformat(start_date))
+                conditions.append(Transaction.transaction_at >= _utc_transaction_time(start_date))
             if end_date:
                 conditions.append(
-                    Transaction.transaction_at < datetime.fromisoformat(end_date) + timedelta(days=1)
+                    Transaction.transaction_at < _utc_transaction_time((datetime.fromisoformat(end_date) + timedelta(days=1)).isoformat())
                 )
 
             rows = db.execute(
@@ -230,6 +258,8 @@ class BookkeepingService:
             return {"id": acc.id, "name": acc.name, "balance": acc.balance}
 
     def set_account_balance(self, account_id: int, balance: float, session_id: str = "") -> dict:
+        if not math.isfinite(balance):
+            raise BookkeepingError("余额必须为有限数值")
         with SessionLocal() as db:
             acc = db.execute(
                 select(Account).where(Account.id == account_id, Account.session_id == session_id)

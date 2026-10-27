@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 class AccountCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=64, description="账户名称")
-    balance: float = Field(default=0.0, description="初始余额")
+    balance: float = Field(default=0.0, allow_inf_nan=False, description="初始余额")
     session_id: str | None = None
 
 
@@ -19,7 +19,7 @@ class AccountResponse(BaseModel):
 class TransactionCreateRequest(BaseModel):
     account_id: int | None = Field(default=None, description="账户ID（与account_name二选一）")
     account_name: str | None = Field(default=None, description="账户名称（与account_id二选一）")
-    amount: float = Field(..., description="金额，支出为负数，收入为正数")
+    amount: float = Field(..., allow_inf_nan=False, description="金额，支出为负数，收入为正数")
     category: str | None = Field(default=None, max_length=32, description="分类")
     description: str | None = Field(default=None, max_length=255, description="描述")
     transaction_at: str | None = Field(default=None, description="交易时间 ISO 格式，默认当前时间")

@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
-from pydantic import Field
+from pydantic import Field, model_validator
 
 ROOT_DIR=Path(__file__).parent.parent
 ENV_DIR=ROOT_DIR / "env"
@@ -20,7 +20,21 @@ class Settings(BaseSettings):
     # -------------------------
     # LLM 基础配置（Qwen / DashScope）
     # -------------------------
-    qwen_api_key: str
+    qwen_api_key: str = ""
+    demo_mode: bool = False
+    demo_seed: bool = False
+    demo_username: str = "demo"
+    demo_password: str = "lifeops-demo-2026"
+    background_learning_enabled: bool = True
+    scheduler_enabled: bool = True
+
+    @model_validator(mode="after")
+    def require_live_credentials(self):
+        if not self.demo_mode and not self.qwen_api_key.strip():
+            raise ValueError("Live mode requires QWEN_API_KEY; use DEMO_MODE=true for the offline demo")
+        if self.demo_seed and not self.demo_mode:
+            raise ValueError("DEMO_SEED may only be enabled in demo mode")
+        return self
     qwen_model: str = "qwen-turbo"
     base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
@@ -110,6 +124,7 @@ class Settings(BaseSettings):
     personal_memory_scope: str = Field(default="global", alias="PERSONAL_MEMORY_SCOPE")
     # 当 scope=global 时，所有个人事件/画像写入这个 owner id
     personal_memory_global_id: str = Field(default="default_user", alias="PERSONAL_MEMORY_GLOBAL_ID")
+    personal_memory_dir: str = str(Path(__file__).resolve().parent.parent.parent / "data")
 
     # -------------------------
     # 聊天留存策略
@@ -155,6 +170,25 @@ class Settings(BaseSettings):
     schedule_morning_briefing: str = Field(default="08:00", alias="SCHEDULE_MORNING_BRIEFING")
     # 晚间复盘推送时间（HH:MM），空字符串表示不启用
     schedule_daily_review: str = Field(default="21:00", alias="SCHEDULE_DAILY_REVIEW")
+
+    # -------------------------
+    # Harness 单轮预算（每次 HTTP 请求一份，HITL 恢复后重新计时）
+    # -------------------------
+    # 墙钟上限：超过后不再发起新的 LLM/工具调用，直接收口成兜底回答。
+    chat_turn_deadline_seconds: float = Field(default=120.0, gt=0, alias="CHAT_TURN_DEADLINE_SECONDS")
+    # 单轮最多 LLM 调用次数（含 decompose / 工具内 LLM / verify / quality_gate）。
+    chat_turn_max_llm_calls: int = Field(default=20, ge=0, alias="CHAT_TURN_MAX_LLM_CALLS")
+    # 单轮最多工具执行次数。
+    chat_turn_max_tool_calls: int = Field(default=25, ge=0, alias="CHAT_TURN_MAX_TOOL_CALLS")
+    # LangGraph 超级步上限，作为预算之外的 runtime 级兜底。
+    chat_turn_recursion_limit: int = Field(default=40, ge=1, alias="CHAT_TURN_RECURSION_LIMIT")
+    chat_turn_max_tokens: int = Field(default=120000, ge=1)
+    llm_max_output_tokens: int = Field(default=4096, ge=1)
+    llm_stream_include_usage: bool = False
+    background_max_llm_calls: int = Field(default=8, ge=0)
+    background_deadline_seconds: float = Field(default=90.0, gt=0)
+    background_max_tokens: int = Field(default=40000, ge=1)
+    harness_trace_dir: str = str(Path(__file__).resolve().parent.parent.parent.parent / "data" / "harness")
 
     model_config = SettingsConfigDict(
         env_file=str(env_path),

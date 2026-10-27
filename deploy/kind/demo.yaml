@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lifeops-demo
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lifeops-data
+  namespace: lifeops-demo
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lifeops-demo
+  namespace: lifeops-demo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: lifeops-demo
+  template:
+    metadata:
+      labels:
+        app: lifeops-demo
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: lifeops
+          image: lifeops-agent:demo
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 5000
+          env:
+            - {name: DEMO_MODE, value: "true"}
+            - {name: DEMO_SEED, value: "true"}
+            - {name: DEMO_USERNAME, value: "demo"}
+            # Public fixture credentials; this namespace is for local demonstrations.
+            - {name: DEMO_PASSWORD, value: "lifeops-demo-2026"}
+            - {name: BACKGROUND_LEARNING_ENABLED, value: "false"}
+            - {name: SCHEDULER_ENABLED, value: "false"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 768Mi}
+          startupProbe:
+            httpGet: {path: /health/ready, port: 5000}
+            periodSeconds: 3
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: {path: /health/ready, port: 5000}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 5000}
+            periodSeconds: 15
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: lifeops-data}
+        - name: tmp
+          emptyDir: {sizeLimit: 64Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lifeops-demo
+  namespace: lifeops-demo
+spec:
+  selector:
+    app: lifeops-demo
+  ports:
+    - {name: http, port: 5000, targetPort: 5000}

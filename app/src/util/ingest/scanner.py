@@ -269,7 +269,10 @@ def _build_png_chunks(path: str) -> list[TextChunk]:
 def scan_documents(root_dir: str) -> list[Document]:
     documents: list[Document] = []
 
-    for dirpath, _, filenames in os.walk(root_dir):
+    def fail_on_unreadable_directory(error):
+        raise error
+
+    for dirpath, _, filenames in os.walk(root_dir, onerror=fail_on_unreadable_directory):
         for filename in filenames:
             path = os.path.join(dirpath, filename)
             ext = os.path.splitext(filename)[1].lower()

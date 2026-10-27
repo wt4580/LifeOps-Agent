@@ -4,10 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from app.src.agent.post_chat_learn import _write_markdown, run_learn
-
-DATA_DIR = Path(__file__).resolve().parent.parent / "app" / "src" / "data"
-
+from app.src.agent.post_chat_learn import _write_markdown, run_learn, DATA_DIR
+from app.src.common.md_loader import memory_directory
 
 class TestWriteMarkdown:
     def test_write_updates_frontmatter(self):
@@ -45,8 +43,8 @@ class TestRunLearn:
 
     @patch("app.src.agent.post_chat_learn.chat_completion")
     def test_llm_returns_update(self, mock_llm):
-        path = DATA_DIR / "AGENT_MEMO.md"
-        original = path.read_text(encoding="utf-8")
+        path = memory_directory("s1") / "AGENT_MEMO.md"
+        original = path.read_text(encoding="utf-8") if path.exists() else ""
 
         mock_llm.return_value = json.dumps({
             "has_update": True,

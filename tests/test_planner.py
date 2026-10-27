@@ -36,9 +36,9 @@ class TestDetectAffirmation:
         for word in ["要", "需要", "好的", "可以", "好", "行", "没问题", "确认"]:
             assert detect_affirmation(word)
 
-    def test_prefix_affirmations(self):
-        assert detect_affirmation("需要处理")
-        assert detect_affirmation("可以开始")
+    def test_ambiguous_prefix_is_not_confirmation(self):
+        assert not detect_affirmation("需要处理")
+        assert not detect_affirmation("可以开始")
 
     def test_rejections_not_affirmation(self):
         for word in ["不用", "不要", "不需要", "算了", "取消"]:

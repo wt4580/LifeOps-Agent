@@ -5,17 +5,28 @@ Chat -> (LLM decide) -> Tool -> Update state -> (maybe HITL) -> Final answer -> 
 from __future__ import annotations
 
 import json
+import asyncio
 import re
 from datetime import datetime, timedelta
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langchain_core.runnables import RunnableLambda
+from langgraph.errors import GraphRecursionError
 from langgraph.types import Command, interrupt
 from sqlalchemy import select
 
 from ..common.config.db_config import SessionLocal
 from ..common.config.base_config import settings
 from ..common.config.log_config import logger
+from ..common.harness.context import (
+    TurnContext,
+    TurnLimitExceeded,
+    get_turn_context,
+    turn_context,
+    ensure_turn_active,
+)
+from ..common.harness.interceptors import CallContext, PolicyViolation, tool_chain
 
 # LLM 每次可见的最近对话条数，必须与 chat_prune_target 一致以避免盲区
 RECENT_DIALOGUE_LIMIT = 50
@@ -31,19 +42,20 @@ from ..service.topic_service import build_focus_context, load_task_index, revive
 
 # 流式推送：session_id → asyncio.Queue，图节点执行时实时推送，不入 checkpoint
 _progress_queues: dict[str, Any] = {}
+_progress_loops: dict[int, Any] = {}
 from ..service.calendar_service import CalendarService, CalendarServiceError
 from ..service.weather_service import weather_service, WeatherServiceError
 from ..util.retrieval.retrieval import get_available_knowledge_topics
 from ..domain.entity.chatstate_entity import ChatState
 
 # 范围查询待办：当用户问“未来几天安排”时使用。
-def _query_todos(*, start: datetime, end: datetime) -> list[dict[str, Any]]:
+def _query_todos(*, start: datetime, end: datetime, session_id: str) -> list[dict[str, Any]]:
     from ..service.todo_service import TodoService
 
     with SessionLocal() as db:
         rows = (
             db.execute(
-                select(TodoItem).order_by(TodoItem.due_at.asc())
+                select(TodoItem).where(TodoItem.session_id == session_id).order_by(TodoItem.due_at.asc())
             )
             .scalars()
             .all()
@@ -85,6 +97,8 @@ def _get_summary(session_id: str) -> str | None:
 
 def _should_check_proactive(state: ChatState) -> bool:
     """判断是否需要执行主动决策。HITL 流程和 quick 模式跳过。"""
+    if state.get("turn_aborted"):
+        return False
     if state.get("mode") == "quick":
         return False
     used_tool = state.get("used_tool")
@@ -107,6 +121,35 @@ def _trace_step(*, step_type: str, name: str, **kwargs: Any) -> dict[str, Any]:
     }
 
 
+_TURN_LIMIT_FALLBACK = (
+    "抱歉，这次处理步骤太多，我先到这里。可以换个更具体的说法，或稍后再试。"
+)
+
+
+def _build_turn_abort_state(*, session_id: str, user_message: str, reason: str) -> ChatState:
+    """预算 / 递归超限时的兜底状态，保证前端一定能拿到 answer。"""
+    return {
+        "session_id": session_id,
+        "user_message": user_message,
+        "answer": _TURN_LIMIT_FALLBACK,
+        "mode": "quick",
+        "used_tool": None,
+        "citations": [],
+        "proposal_id": None,
+        "proposal": None,
+        "trace": {
+            "meta": {"graph": "chat_v2", "aborted": True, "reason": reason},
+            "steps": [
+                _trace_step(
+                    step_type="postprocess",
+                    name="turn_abort",
+                    output={"reason": reason},
+                )
+            ],
+        },
+    }
+
+
 
 
 
@@ -126,11 +169,19 @@ def _build_effective_message(user_message: str, profile_context: str | None) -> 
     return "\n".join(parts)
 
 
+def _emit_progress(q, event):
+    loop = _progress_loops.get(id(q))
+    if loop is not None:
+        loop.call_soon_threadsafe(q.put_nowait, event)
+    else:
+        q.put_nowait(event)
+
+
 def _push_progress(state: ChatState, msg: str, detail: dict | None = None):
     q = _progress_queues.get(state.get("session_id", ""))
     if q is not None:
         try:
-            q.put_nowait({"type": "step", "message": msg, "detail": detail or {}})
+            _emit_progress(q, {"type": "step", "message": msg, "detail": detail or {}})
         except Exception:
             pass
 
@@ -140,7 +191,7 @@ def _push_anim(state: ChatState, stage: str):
     q = _progress_queues.get(state.get("session_id", ""))
     if q is not None:
         try:
-            q.put_nowait({"type": "anim", "stage": stage})
+            _emit_progress(q, {"type": "anim", "stage": stage})
         except Exception:
             pass
 
@@ -148,17 +199,22 @@ def _push_anim(state: ChatState, stage: str):
 def _set_progress_queue(session_id: str, q: Any):
     if q is not None:
         _progress_queues[session_id] = q
+        try:
+            _progress_loops[id(q)] = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
 
 
 def _clear_progress_queue(session_id: str):
-    _progress_queues.pop(session_id, None)
+    q = _progress_queues.pop(session_id, None)
+    _progress_loops.pop(id(q), None)
 
 
 def _push_delta(state: ChatState, text: str):
     q = _progress_queues.get(state.get("session_id", ""))
     if q is not None:
         try:
-            q.put_nowait({"type": "delta", "delta": text})
+            _emit_progress(q, {"type": "delta", "delta": text})
         except Exception:
             pass
 
@@ -169,7 +225,7 @@ def _make_on_token(state: ChatState):
         return None
     def on_token(token: str):
         try:
-            q.put_nowait({"type": "delta", "delta": token})
+            _emit_progress(q, {"type": "delta", "delta": token})
         except Exception:
             pass
     return on_token
@@ -200,6 +256,7 @@ def _node_load_context(state: ChatState) -> ChatState:
     state["used_tool"] = None
     state["citations"] = []
     state["decision"] = {}
+    state["turn_aborted"] = False
     state["proposal_id"] = None
     state["proposal"] = None
     state["plan"] = []
@@ -246,6 +303,8 @@ def _business_db_inventory_text() -> str:
 
 
 def _node_decompose(state: ChatState) -> ChatState:
+    if state.get("turn_aborted"):
+        return state
     msg = (state.get("user_message") or "").strip()
 
     # ---- 内部路由逻辑（非 LLM，快速分支） ----
@@ -286,21 +345,7 @@ def _node_decompose(state: ChatState) -> ChatState:
         }
         return state
 
-    # 3) 全局循环上限检查
-    cycle_count = state.setdefault("cycle_count", 0) + 1
-    state["cycle_count"] = cycle_count
-    if cycle_count > _MAX_CYCLES:
-        logger.warning("cycle_count %d exceeded _MAX_CYCLES, forcing normal_chat", cycle_count)
-        state["plan"] = []
-        state["plan_index"] = 0
-        state["mode"] = "normal"
-        state["decision"] = {
-            "action": "normal_chat",
-            "args": {},
-            "assistant_message": "我已经查了几次，暂时无法获取到所需信息。请你再具体说说？",
-            "trace": {"intent": "cycle_guard", "why": "超过最大循环次数，降级为普通对话"},
-        }
-        return state
+    # Runtime limits belong to harness; a valid plan may contain more than four steps.
 
     # 4) 多步计划：还有未执行的步骤
     plan = state.get("plan") or []
@@ -386,7 +431,7 @@ def _node_decompose(state: ChatState) -> ChatState:
         "- decompose_goal: 拆解长期目标\n"
         "- clarify: 反问用户补充信息（身份/角色/缺少关键参数时使用）\n"
         "- revise_proposal: 修改待办草案\n"
-        "- record_expense: 记录收支\n"
+        "- record_expense: 记录收支，args 包括 amount、transaction_type、account_name、category、description、transaction_at（按用户指定日期解析为本地 ISO 时间；未指定则 null）\n"
         "- query_expenses: 查询账目\n"
         "- query_accounts: 查询账户余额\n"
         "- create_account: 创建账户\n"
@@ -545,6 +590,7 @@ def _build_normal_chat_answer(
     allow_assistant_message: bool = True,
     plan_context: str = "",
 ) -> tuple[str, bool]:
+    session_id = state.get("session_id") or "default"
     assistant_message = (decision.get("assistant_message") or "").strip() if allow_assistant_message else ""
     if assistant_message:
         return assistant_message, True
@@ -566,7 +612,7 @@ def _build_normal_chat_answer(
             "- 涉及实时数据（天气/待办/日历/账目）时，优先基于实时查询结果回答，不要凭历史记忆编造。"
         ),
     }]
-    md_context = load_markdown_context()
+    md_context = load_markdown_context(session_id=session_id)
     if md_context:
         messages.append({"role": "system", "content": f"助手备忘录与技能：\n{md_context}"})
     if plan_context:
@@ -670,6 +716,15 @@ def _build_normal_chat_answer(
     return result, False
 
 
+def _infer_transaction_date(message: str) -> str | None:
+    now = datetime.now()
+    for word, days in (("大前天", 3), ("前天", 2), ("昨天", 1), ("今天", 0)):
+        if word in message:
+            return (now - timedelta(days=days)).isoformat(timespec="seconds")
+    match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", message)
+    return match.group(0) if match else None
+
+
 def _parse_due_value(raw: Any) -> datetime | None:
     """把 propose_todo 字段里的日期/时间串解析成 datetime；无法解析返回 None。"""
     if not raw:
@@ -690,7 +745,8 @@ def _parse_due_value(raw: Any) -> datetime | None:
         except ValueError:
             continue
     try:
-        return datetime.fromisoformat(raw)
+        result = datetime.fromisoformat(raw)
+        return result.astimezone().replace(tzinfo=None) if result.tzinfo is not None else result
     except (ValueError, TypeError):
         return None
 
@@ -840,7 +896,7 @@ def _handle_interrupt_resume(state: ChatState, user_answer: str) -> ChatState:
         pending = state.get("pending_balance_update")
         if detect_affirmation(user_answer) and pending:
             try:
-                from ..service.booakkeeping_service import bookkeeping_service
+                from ..service.bookkeeping_service import bookkeeping_service
                 result = bookkeeping_service.set_account_balance(
                     account_id=pending["id"], balance=pending["new_balance"], session_id=state["session_id"]
                 )
@@ -867,7 +923,7 @@ def _handle_interrupt_resume(state: ChatState, user_answer: str) -> ChatState:
     return state
 
 
-def _node_run_tool(state: ChatState) -> ChatState:
+def _run_tool_impl(state: ChatState) -> ChatState:
     # ---- 打断恢复：处理用户回答 ----
     interrupt_answer = state.get("interrupt_answer")
     if interrupt_answer is not None:
@@ -927,17 +983,19 @@ def _node_run_tool(state: ChatState) -> ChatState:
         _push_progress(state, "正在查询待办事项...")
         # 先尝试解析精确日期（如"后天/周三"）。
         # 能解析到单日就查单日；否则按 range_days 查区间。
-        date_hint = normalize_date_hint(state["user_message"])
+        date_hint = normalize_date_hint(
+            state["user_message"], session_id=state.get("session_id")
+        )
 
         if date_hint:
             target = datetime.fromisoformat(date_hint).date()
             day_start = datetime.combine(target, datetime.min.time())
-            items = _query_todos(start=day_start, end=day_start + timedelta(days=1))
+            items = _query_todos(start=day_start, end=day_start + timedelta(days=1), session_id=state["session_id"])
             query_input = {"target_date": date_hint}
         else:
             range_days = int(args.get("range_days", 7) or 7)
             now = datetime.now()
-            items = _query_todos(start=now, end=now + timedelta(days=range_days))
+            items = _query_todos(start=now, end=now + timedelta(days=range_days), session_id=state["session_id"])
             query_input = {"range_days": range_days}
 
         state["used_tool"] = "query_todos"
@@ -959,6 +1017,10 @@ def _node_run_tool(state: ChatState) -> ChatState:
                     {"role": "user", "content": json.dumps(items, ensure_ascii=False)},
                 ],
                 temperature=0.2,
+                runtime_context={
+                    "scenario": "query_todos_summarize",
+                    "session_id": state.get("session_id"),
+                },
             )
             _append_trace(
                 state,
@@ -1038,6 +1100,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
             profile_context=state.get("profile_context"),
             pre_advice=state.get("pre_advice"),
             on_token=_make_on_token(state),
+            session_id=state.get("session_id"),
         )
 
         _append_trace(
@@ -1082,6 +1145,10 @@ def _node_run_tool(state: ChatState) -> ChatState:
                 ],
                 temperature=0.2,
                 on_token=_make_on_token(state),
+                runtime_context={
+                    "scenario": "query_weather_summarize",
+                    "session_id": state.get("session_id"),
+                },
             )
             _append_trace(
                 state,
@@ -1125,15 +1192,15 @@ def _node_run_tool(state: ChatState) -> ChatState:
             _append_trace(state, _trace_step(step_type="tool", name="query_calendar", input={"args": args}, error=str(exc)))
             return state
 
-        start_iso = start_dt.isoformat() + ("Z" if not start_dt.tzinfo else "")
-        end_iso = end_dt.isoformat() + ("Z" if not end_dt.tzinfo else "")
+        start_iso = start_dt.isoformat()
+        end_iso = end_dt.isoformat()
         query_input = {
             "start": start_dt.isoformat(),
             "end": end_dt.isoformat(),
         }
 
         try:
-            events = CalendarService().list_events(start_iso, end_iso)
+            events = CalendarService().list_events(start_iso, end_iso, session_id=state["session_id"])
             state["used_tool"] = "query_calendar"
 
             if not events:
@@ -1184,7 +1251,9 @@ def _node_run_tool(state: ChatState) -> ChatState:
             proposal_id = str(uuid4())
             proposal_payload = {"items": [_build_proposal_item(args, pending_text)]}
         else:
-            proposal_id, proposal = propose_plan(pending_text)
+            proposal_id, proposal = propose_plan(
+                pending_text, session_id=state.get("session_id")
+            )
             proposal_payload = proposal.model_dump()
 
         state["proposal_id"] = proposal_id
@@ -1277,7 +1346,9 @@ def _node_run_tool(state: ChatState) -> ChatState:
         correction = args.get("correction") or state["user_message"]
         _push_progress(state, "正在根据修正重新生成...")
         try:
-            proposal_id, proposal = propose_plan(correction)
+            proposal_id, proposal = propose_plan(
+                correction, session_id=state.get("session_id")
+            )
             proposal_payload = proposal.model_dump()
             items = proposal_payload.get("items") or []
             if items:
@@ -1327,6 +1398,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
                 account_name=acct_name,
                 category=category,
                 description=desc,
+                transaction_at=args.get("transaction_at") or _infer_transaction_date(state["user_message"]),
             )
             state["used_tool"] = "record_expense"
             type_label = "支出" if amount < 0 else "收入"
@@ -1450,8 +1522,10 @@ def _node_run_tool(state: ChatState) -> ChatState:
                 "id": existing["id"], "name": name,
                 "current_balance": current_balance, "new_balance": balance
             }
-            state["used_tool"] = "create_account"
-            state["answer"] = f"账户「{name}」当前余额是 {current_balance:.2f}元，用户想要 {balance:.2f}元。请使用 ask_user_confirm_balance 工具让用户确认是否更新。"
+            state["used_tool"] = "ask_user_confirm_balance"
+            state["decision"] = {"action": "ask_user_confirm_balance", "args": {}}
+            state["answer"] = f"账户「{name}」当前余额是 {current_balance:.2f}元，确认更新为 {balance:.2f}元吗？（回复“确认”或“取消”）"
+            state["interrupt_message"] = state["answer"]
             _push_delta(state, state["answer"])
         except Exception as exc:
             logger.warning("create_account failed: %s", exc)
@@ -1493,7 +1567,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
                 state["answer"] = "请提供要执行的 SQL 语句。"
                 _push_delta(state, state["answer"])
                 return state
-            result = execute_read_query(sql, max_rows=max_rows)
+            result = execute_read_query(sql, max_rows=max_rows, session_id=state["session_id"])
             if result.get("error"):
                 state["used_tool"] = "query_database"
                 state["answer"] = f"查询出错：{result['error']}"
@@ -1544,6 +1618,66 @@ def _node_run_tool(state: ChatState) -> ChatState:
     _append_trace(state, _trace_step(step_type="llm", name="normal_chat", output=state.get("answer") or ""))
     return state
 
+
+def _node_run_tool(state: ChatState) -> ChatState:
+    """工具执行入口：先过 harness 拦截链，再执行真实工具。
+
+    预算超限时直接收口成本轮兜底回答，并置 ``turn_aborted`` 让下游节点跳过。
+    """
+    if state.get("turn_aborted"):
+        return state
+
+    session_id = state.get("session_id", "")
+    decision = state.get("decision") or {}
+    action = decision.get("action", "normal_chat")
+    call_ctx = CallContext(
+        kind="tool",
+        name=f"tool:{action}",
+        session_id=session_id,
+        turn=get_turn_context(session_id),
+        payload={"action": action, "args": decision.get("args") or {}},
+    )
+    try:
+        return tool_chain().invoke(call_ctx, lambda: _run_tool_impl(state))
+    except PolicyViolation as exc:
+        logger.warning(
+            "tool policy blocked action=%s session=%s reason=%s",
+            action,
+            session_id,
+            exc.reason,
+        )
+        state["used_tool"] = action
+        # 详细原因进 trace / 日志；主回答保持简洁，避免把内部表名、session 细节暴露给用户。
+        state["answer"] = "出于安全考虑，这次操作没有执行。请换个更具体的说法再试一次。"
+        _append_trace(
+            state,
+            _trace_step(
+                step_type="postprocess",
+                name="tool_policy_block",
+                output={
+                    "action": action,
+                    "interceptor": exc.interceptor,
+                    "reason": exc.reason,
+                },
+            ),
+        )
+        return state
+    except TurnLimitExceeded as exc:
+        logger.warning(
+            "turn budget aborted tool=%s session=%s reason=%s", action, session_id, exc
+        )
+        state["answer"] = _TURN_LIMIT_FALLBACK
+        state["turn_aborted"] = True
+        state["used_tool"] = action
+        _append_trace(
+            state,
+            _trace_step(
+                step_type="postprocess",
+                name="turn_budget_abort",
+                output={"kind": "tool", "action": action, "reason": str(exc)},
+            ),
+        )
+        return state
 
 def _push_upcoming_todos(state: ChatState):
     """待办即将到期（1小时内）时推送通知。"""
@@ -1633,11 +1767,12 @@ def _node_proactive_decision(state: ChatState) -> ChatState:
 _VERIFYABLE_ACTIONS = {"query_todos", "query_knowledge", "query_weather", "query_calendar", "normal_chat"}
 
 _MAX_RETRIES = 2
-_MAX_CYCLES = 4  # 全局最大 decompose→run_tool→verify 循环次数，防止死循环
 
 
 def _node_verify(state: ChatState) -> ChatState:
     """审查单步工具执行结果，不通过时标记 retry。"""
+    if state.get("turn_aborted"):
+        return state
     if state.get("mode") == "quick":
         return state
     action = (state.get("decision") or {}).get("action", "")
@@ -1718,6 +1853,8 @@ def _node_verify(state: ChatState) -> ChatState:
 
 def _node_quality_gate(state: ChatState) -> ChatState:
     """最终回答质量审查：quick 模式跳过；HITL/计划确认等固定措辞轮次不再重写。"""
+    if state.get("turn_aborted"):
+        return state
     if state.get("mode") == "quick":
         return state
     used_tool = state.get("used_tool")
@@ -1773,7 +1910,7 @@ def _node_finalize(state: ChatState) -> ChatState:
     # 多步计划：把各 step 结果汇总成一个连贯回答。
     plan = state.get("plan") or []
     completed_steps = [s for s in plan if s.get("result")]
-    if len(completed_steps) >= 2:
+    if not state.get("turn_aborted") and len(completed_steps) >= 2:
         parts = []
         for i, step in enumerate(completed_steps):
             result = (step.get("result") or "").strip()
@@ -1789,6 +1926,10 @@ def _node_finalize(state: ChatState) -> ChatState:
                     ],
                     temperature=0.2,
                     on_token=_make_on_token(state),
+                    runtime_context={
+                        "scenario": "finalize_merge",
+                        "session_id": state.get("session_id"),
+                    },
                 )
                 state["answer"] = summary.strip()
             except Exception:
@@ -1824,6 +1965,8 @@ def _node_finalize(state: ChatState) -> ChatState:
 # -----------------------------
 
 def _node_advance_plan(state: ChatState) -> ChatState:
+    if state.get("turn_aborted"):
+        return state
     plan = state.get("plan") or []
     plan_index = state.get("plan_index", 0)
     if plan and plan_index < len(plan):
@@ -1834,6 +1977,8 @@ def _node_advance_plan(state: ChatState) -> ChatState:
 
 
 def _route_after_advance(state: ChatState) -> str:
+    if state.get("turn_aborted"):
+        return "finalize"
     if state.get("retry_info") and state.get("retry_count", 0) <= _MAX_RETRIES:
         return "decompose"
     plan = state.get("plan") or []
@@ -1893,21 +2038,51 @@ def _route_after_interrupt(state: ChatState) -> str:
 
 # 图连线：
 # START -> load_context -> decompose -> run_tool -> [interrupt_message?] -> interrupter -> [clarify?] -> decompose | run_tool -> verify -> advance_plan -> [loop?] -> decompose | finalize -> quality_gate -> [proactive?] -> proactive_decision -> END
+def _guarded_node(node):
+    def run(state):
+        ensure_turn_active()
+        result = state
+        try:
+            result = node(state)
+            ensure_turn_active()
+            return result
+        finally:
+            turn = get_turn_context(state.get("session_id"))
+            if turn is not None:
+                turn.last_state = dict(result if isinstance(result, dict) else state)
+    return run
+
+
+def _cancellable_node(node):
+    async def run(state):
+        ensure_turn_active()
+        worker = asyncio.create_task(asyncio.to_thread(_guarded_node(node), state))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            turn = get_turn_context(state.get("session_id"))
+            if turn:
+                turn.cancelled.set()
+            # Wait until this sync node exits before the next queued turn starts.
+            await asyncio.gather(worker, return_exceptions=True)
+            raise
+    return run
+
+
 def build_chat_graph(
     *,
     checkpointer: Any | None = None,
 ):
     graph = StateGraph(ChatState)
 
-    graph.add_node("load_context", _node_load_context)
-    graph.add_node("decompose", _node_decompose)
-    graph.add_node("run_tool", _node_run_tool)
-    graph.add_node("verify", _node_verify)
-    graph.add_node("advance_plan", _node_advance_plan)
-    graph.add_node("finalize", _node_finalize)
-    graph.add_node("quality_gate", _node_quality_gate)
-    graph.add_node("proactive_decision", _node_proactive_decision)
-    graph.add_node("interrupter", _node_interrupter)
+    for name, node in (
+        ("load_context", _node_load_context), ("decompose", _node_decompose),
+        ("run_tool", _node_run_tool), ("verify", _node_verify),
+        ("advance_plan", _node_advance_plan), ("finalize", _node_finalize),
+        ("quality_gate", _node_quality_gate), ("proactive_decision", _node_proactive_decision),
+        ("interrupter", _node_interrupter),
+    ):
+        graph.add_node(name, RunnableLambda(_guarded_node(node), afunc=_cancellable_node(node)))
 
     graph.add_edge(START, "load_context")
     graph.add_edge("load_context", "decompose")
@@ -1924,7 +2099,7 @@ def build_chat_graph(
     )
     graph.add_conditional_edges(
         "verify",
-        lambda s: "advance_plan" if not s.get("retry_info") else "decompose",
+        lambda s: "advance_plan" if s.get("turn_aborted") or not s.get("retry_info") else "decompose",
         {"advance_plan": "advance_plan", "decompose": "decompose"},
     )
     graph.add_conditional_edges(
@@ -1958,6 +2133,8 @@ def _build_checkpoint_context(values: dict) -> dict:
         "proposal_id": values.get("proposal_id"),
         "proposal": values.get("proposal"),
         "proposal_confirmed": values.get("proposal_confirmed"),
+        "pending_balance_update": values.get("pending_balance_update"),
+        "pending_balance_update": values.get("pending_balance_update"),
         "interrupt_message": None,
         "interrupt_answer": None,
     }
@@ -1995,6 +2172,7 @@ def _build_initial_state(
         "proposal_id": checkpoint_context.get("proposal_id"),
         "proposal": checkpoint_context.get("proposal"),
         "proposal_confirmed": False,
+        "pending_balance_update": checkpoint_context.get("pending_balance_update"),
         "interrupt_message": None,
         "interrupt_answer": None,
         "profile_context": profile_context,
@@ -2011,8 +2189,11 @@ def _build_initial_state(
         "plan_index": 0,
         "retry_info": None,
         "retry_count": 0,
+        "cycle_count": 0,
+        "turn_aborted": False,
         "mode": "normal",
         "recent_events": recent_events or [],
+        "important_events": important_events or [],
         "important_events": important_events or [],
         "upcoming_todos": upcoming_todos or [],
         "event_window_start": event_window_start,
@@ -2031,6 +2212,60 @@ async def aload_chat_checkpoint_context(compiled_graph: Any, session_id: str) ->
     return _build_checkpoint_context(values) if isinstance(values, dict) else {}
 
 
+def _graph_config(session_id: str) -> dict:
+    return {
+        "configurable": {"thread_id": session_id},
+        "recursion_limit": settings.chat_turn_recursion_limit,
+    }
+
+
+def _abort_from_exception(
+    *,
+    exc: BaseException,
+    state: ChatState | None,
+    session_id: str,
+    user_message: str,
+    turn: TurnContext | None = None,
+) -> ChatState:
+    """把预算/递归超限统一收口成兜底回答，保证前端一定能拿到 answer。"""
+    reason = f"{type(exc).__name__}: {exc}"
+    logger.warning("chat turn aborted session=%s reason=%s", session_id, reason)
+    fallback = _build_turn_abort_state(
+        session_id=session_id,
+        user_message=user_message,
+        reason=reason,
+    )
+    fallback["turn_aborted"] = True
+    if turn is not None:
+        fallback["trace"]["steps"][0]["output"].update(
+            {
+                "budget": turn.budget.snapshot(),
+                "invocations": turn.records[-10:],
+            }
+        )
+    state = (turn.last_state if turn is not None else None) or state
+    if state:
+        fallback["history"] = list(state.get("history") or [])
+        fallback["recent_dialogue"] = list(state.get("recent_dialogue") or [])
+        fallback["profile_context"] = state.get("profile_context")
+        prior_steps = list((state.get("trace") or {}).get("steps") or [])
+        fallback["trace"]["steps"] = prior_steps + fallback["trace"]["steps"]
+    return fallback
+
+
+def _finish_turn_result(state: ChatState, turn: TurnContext) -> ChatState:
+    status = "success"
+    if state.get("turn_aborted"):
+        status = "budget_exceeded"
+    elif state.get("__interrupt__") or state.get("interrupt_message"):
+        status = "waiting_for_input"
+    turn.finish(status)
+    trace = state.setdefault("trace", {"steps": []})
+    trace["steps"] = [step for step in trace.get("steps", []) if step.get("name") != "harness_summary"]
+    _append_trace(state, _trace_step(step_type="postprocess", name="harness_summary", output=turn.summary()))
+    return state
+
+
 def run_chat_graph(
     *,
     compiled_graph: Any,
@@ -2040,10 +2275,22 @@ def run_chat_graph(
     **kwargs,
 ) -> ChatState:
     _set_progress_queue(session_id, progress_queue)
+    state: ChatState | None = None
     try:
-        ctx = load_chat_checkpoint_context(compiled_graph, session_id)
-        state = _build_initial_state(session_id=session_id, user_message=user_message, checkpoint_context=ctx, **kwargs)
-        return compiled_graph.invoke(state, config={"configurable": {"thread_id": session_id}, "recursion_limit": 100})
+        with turn_context(session_id) as turn:
+            try:
+                ctx = load_chat_checkpoint_context(compiled_graph, session_id)
+                state = _build_initial_state(session_id=session_id, user_message=user_message, checkpoint_context=ctx, **kwargs)
+                result = compiled_graph.invoke(state, config=_graph_config(session_id))
+            except (TurnLimitExceeded, GraphRecursionError) as exc:
+                result = _abort_from_exception(
+                    exc=exc,
+                    state=state,
+                    session_id=session_id,
+                    user_message=user_message,
+                    turn=turn,
+                )
+            return _finish_turn_result(result, turn)
     finally:
         _clear_progress_queue(session_id)
 
@@ -2057,29 +2304,47 @@ async def arun_chat_graph(
     **kwargs,
 ) -> ChatState:
     _set_progress_queue(session_id, progress_queue)
+    state: ChatState | None = None
     try:
-        config = {"configurable": {"thread_id": session_id}, "recursion_limit": 100}
-        current_state = await compiled_graph.aget_state(config)
-        tasks = getattr(current_state, "tasks", []) or []
-        if tasks and (detect_affirmation(user_message) or detect_rejection(user_message)):
-            return await compiled_graph.ainvoke(Command(resume=user_message), config=config)
-        if tasks:
-            # 用户发了非确认/取消消息而中断仍挂着（上一条的待办草案）：
-            # 清除旧草案，避免换话题后误把上一件事的东西入库。
-            await compiled_graph.aupdate_state(
-                config,
-                {
-                    "interrupt_message": None,
-                    "interrupt_answer": None,
-                    "proposal_id": None,
-                    "proposal": None,
-                    "proposal_confirmed": False,
-                },
-            )
-
-        ctx = await aload_chat_checkpoint_context(compiled_graph, session_id)
-        state = _build_initial_state(session_id=session_id, user_message=user_message, checkpoint_context=ctx, **kwargs)
-        return await compiled_graph.ainvoke(state, config=config)
+        with turn_context(session_id) as turn:
+            try:
+                timeout_scope = asyncio.timeout(turn.budget.remaining_seconds())
+                async with timeout_scope:
+                    config = _graph_config(session_id)
+                    current_state = await compiled_graph.aget_state(config)
+                    tasks = [task for task in (getattr(current_state, "tasks", []) or [])
+                             if getattr(task, "interrupts", ())]
+                    if tasks and (detect_affirmation(user_message) or detect_rejection(user_message)):
+                        result = await compiled_graph.ainvoke(Command(resume=user_message), config=config)
+                    else:
+                        if tasks:
+                            previous_proposal = (getattr(current_state, "values", None) or {}).get("proposal")
+                            if previous_proposal and re.search(r"改|调整|换成|推迟|提前", user_message):
+                                kwargs["forced_action"] = "revise_proposal"
+                                kwargs["forced_args"] = {"correction": (
+                                    "请按用户修改要求更新原有草案，保留未修改的事项：\n"
+                                    + json.dumps(previous_proposal, ensure_ascii=False)
+                                    + "\n用户修改：" + user_message
+                                )}
+                            await compiled_graph.aupdate_state(config, {
+                                "interrupt_message": None, "interrupt_answer": None,
+                                "proposal_id": None, "proposal": None,
+                                "proposal_confirmed": False, "pending_balance_update": None,
+                            }, as_node="proactive_decision")
+                        ctx = await aload_chat_checkpoint_context(compiled_graph, session_id)
+                        state = _build_initial_state(session_id=session_id, user_message=user_message, checkpoint_context=ctx, **kwargs)
+                        result = await compiled_graph.ainvoke(state, config=config)
+            except (TurnLimitExceeded, GraphRecursionError, TimeoutError) as exc:
+                if isinstance(exc, TimeoutError) and not timeout_scope.expired():
+                    raise
+                result = _abort_from_exception(
+                    exc=exc,
+                    state=state,
+                    session_id=session_id,
+                    user_message=user_message,
+                    turn=turn,
+                )
+            return _finish_turn_result(result, turn)
     finally:
         _clear_progress_queue(session_id)
 

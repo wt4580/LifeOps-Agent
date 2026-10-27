@@ -41,6 +41,8 @@ class TodoService:
         if rule not in ("daily", "weekly"):
             return False
         day = d.replace(hour=0, minute=0, second=0, microsecond=0)
+        if todo.due_at is not None and todo.due_at.date() > d.date():
+            return False
         if todo.repeat_until is not None and todo.repeat_until < day:
             return False
         if rule == "weekly":
@@ -151,6 +153,8 @@ class TodoService:
         return {"pending": result, "completed": []}
 
     def update_todo_status(self, todo_id: int, completed: bool, session_id: str | None = None) -> dict | None:
+        if not session_id:
+            return None
         with SessionLocal() as db:
             stmt = select(TodoItem).where(TodoItem.id == todo_id)
             if session_id:

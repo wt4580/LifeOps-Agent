@@ -21,10 +21,11 @@ class _Gate:
         self._worker: asyncio.Task | None = None
         self.current: asyncio.Task | None = None
         self._pending = 0
+        self.current_request_id: str | None = None
 
-    def submit(self, events: asyncio.Queue, factory: Callable[[], Awaitable[Any]]) -> None:
+    def submit(self, events: asyncio.Queue, factory: Callable[[], Awaitable[Any]], request_id: str | None = None) -> None:
         self._pending += 1
-        self._queue.put_nowait((events, factory))
+        self._queue.put_nowait((events, factory, request_id))
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(self._run())
 
@@ -37,7 +38,7 @@ class _Gate:
     async def _run(self) -> None:
         while True:
             try:
-                events, factory = await self._queue.get()
+                events, factory, self.current_request_id = await self._queue.get()
             except asyncio.CancelledError:
                 return
             self.current = asyncio.create_task(_execute(events, factory))
@@ -49,12 +50,14 @@ class _Gate:
                 return
             finally:
                 self.current = None
+                self.current_request_id = None
 
     def cancel_current(self) -> asyncio.Task | None:
         t = self.current
         if t is None or t.done():
             return None
-        t.cancel()
+        if not t.cancelling():
+            t.cancel()
         return t
 
     async def close(self) -> None:
@@ -89,21 +92,23 @@ def is_session_busy(session_id: str) -> bool:
     return bool(gate) and gate.is_busy
 
 
-def submit_chat_job(session_id: str, events: asyncio.Queue, factory: Callable[[], Awaitable[Any]]) -> bool:
+def submit_chat_job(session_id: str, events: asyncio.Queue, factory: Callable[[], Awaitable[Any]], *, request_id: str | None = None) -> bool:
     """提交一条执行任务。
 
     返回该任务是否属于"排队中"（前面还有任务在处理/等待），用于前端展示排队提示。
     """
     gate = _gate_for(session_id)
     queued = gate.is_busy
-    gate.submit(events, factory)
+    gate.submit(events, factory, request_id)
     return queued
 
 
-async def cancel_and_wait(session_id: str) -> bool:
+async def cancel_and_wait(session_id: str, request_id: str | None = None) -> bool:
     """取消当前正在执行的任务并等待其完全退出。返回是否确有任务被取消。"""
     gate = _gate_for(session_id, create=False)
     if gate is None:
+        return False
+    if request_id is not None and request_id != gate.current_request_id:
         return False
     task = gate.cancel_current()
     if task is None:

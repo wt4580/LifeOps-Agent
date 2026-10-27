@@ -218,7 +218,7 @@ function appendChat(role, text) {
   return div;
 }
 
-function appendAssistantTurn() {
+function appendAssistantTurn(requestId, turnSessionId) {
   const wrapper = document.createElement("div");
   wrapper.className = "chat-line assistant assistant-turn";
 
@@ -243,7 +243,6 @@ function appendAssistantTurn() {
   stopBtn.hidden = true;
   let stopPending = false;
   stopBtn.addEventListener("click", () => {
-    abortActiveStream();
     if (stopPending) return;
     stopPending = true;
     stopBtn.disabled = true;
@@ -251,8 +250,15 @@ function appendAssistantTurn() {
     fetch("/api/chat/stop", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId }),
-    }).catch(() => {});
+      body: JSON.stringify({ session_id: turnSessionId, request_id: requestId }),
+    }).then(async (response) => {
+      if (!response.ok) throw new Error("停止失败，请重试");
+    }).catch((error) => {
+      stopPending = false;
+      stopBtn.disabled = false;
+      stopBtn.textContent = "停止";
+      console.error(error);
+    });
   });
 
   const thoughtDiv = document.createElement("div");
@@ -405,7 +411,7 @@ if (confirmProposal) {
       const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: "确认", session_id: sessionId }),
+        body: JSON.stringify({ message: "确认", session_id: sessionId, proposal_id: proposalId }),
       });
       if (!res.ok || !res.body) {
         alert("确认失败，请重试");
@@ -451,6 +457,7 @@ if (confirmProposal) {
       }
 
       const confirmed = finalResult && (finalResult.proposal_confirmed === true || finalResult.used_tool === "plan_gate_confirm");
+      if (!finalResult) throw new Error("草案未能确认，可能已失效，请使用最新卡片");
       hideProposal();
       loadTodos("/api/todos/upcoming?days=7");
 
@@ -471,9 +478,28 @@ if (confirmProposal) {
 
 // 拒绝待办草案
 if (rejectProposal) {
-  rejectProposal.addEventListener("click", () => {
-    appendChat("assistant", "已取消待办草案");
-    hideProposal();
+  rejectProposal.addEventListener("click", async () => {
+    if (confirmBusy || !window.currentProposalId) return;
+    confirmBusy = true;
+    rejectProposal.disabled = true;
+    try {
+      const response = await fetch("/api/chat/stream", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "取消", session_id: sessionId, proposal_id: window.currentProposalId }),
+      });
+      if (!response.ok) throw new Error("取消失败，请重试");
+      const events = (await response.text()).split("\n\n").filter((part) => part.startsWith("data: "))
+        .map((part) => JSON.parse(part.slice(6)));
+      const final = events.find((event) => event.type === "final");
+      if (!final || final.result.used_tool !== "plan_gate_cancel") throw new Error("草案已失效，请使用最新卡片");
+      appendChat("assistant", final.result.answer);
+      hideProposal();
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      confirmBusy = false;
+      rejectProposal.disabled = false;
+    }
   });
 }
 
@@ -591,17 +617,23 @@ async function handleLogin() {
     const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username }),
+      body: JSON.stringify({ username, password: document.getElementById("login-password").value }),
     });
-    if (!res.ok) throw new Error("登录失败");
+    if (!res.ok) {
+      const error = await res.json();
+      throw new Error(typeof error.detail === "string" ? error.detail : "登录失败，请检查密码（至少8位）");
+    }
     const data = await res.json();
     sessionId = data.session_id;
+    document.getElementById("login-password").value = "";
+    document.getElementById("login-error").textContent = "";
     localStorage.setItem("lifeops_session_id", sessionId);
     loginSection.style.display = "none";
     appSection.style.display = "";
     requestAnim("idle");
     loadTodos("/api/todos/upcoming?days=7");
   } catch (err) {
+    document.getElementById("login-error").textContent = err.message;
     console.error("Login error:", err);
   }
 }
@@ -611,6 +643,15 @@ if (sessionId) {
   appSection.style.display = "";
   requestAnim("idle");
   loadTodos("/api/todos/upcoming?days=7");
+  fetch("/api/auth/me").then(async (response) => {
+    const user = response.ok ? await response.json() : null;
+    if (!user || user.session_id !== sessionId) {
+      localStorage.removeItem("lifeops_session_id");
+      sessionId = "";
+      appSection.style.display = "none";
+      loginSection.style.display = "";
+    }
+  });
 } else {
   loginSection.style.display = "";
   appSection.style.display = "none";
@@ -628,7 +669,8 @@ if (loginInput) {
   });
 }
 if (logoutBtn) {
-  logoutBtn.addEventListener("click", () => {
+  logoutBtn.addEventListener("click", async () => {
+    try { await fetch("/api/auth/logout", { method: "POST" }); } catch (_) { /* local logout */ }
     localStorage.removeItem("lifeops_session_id");
     sessionId = "";
     appSection.style.display = "none";
@@ -637,6 +679,10 @@ if (logoutBtn) {
     loginInput.focus();
   });
 }
+
+document.getElementById("login-password").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") handleLogin();
+});
 
 // ========================================
 // 聊天功能
@@ -656,7 +702,9 @@ async function sendChatMessage() {
 
   appendChat("user", message);
   chatInput.value = "";
-  const assistantTurn = appendAssistantTurn();
+  const requestId = crypto.randomUUID();
+  const turnSessionId = sessionId;
+  const assistantTurn = appendAssistantTurn(requestId, turnSessionId);
 
   const controller = new AbortController();
   activeStream = { controller, aborted: false };
@@ -681,7 +729,7 @@ async function sendChatMessage() {
     const res = await fetch("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, session_id: sessionId }),
+      body: JSON.stringify({ message, session_id: turnSessionId, request_id: requestId }),
       signal: controller.signal,
     });
     if (!res.ok || !res.body) {
@@ -811,7 +859,7 @@ async function sendChatMessage() {
       if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：${finalAnswer}`;
       if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, buildThoughtLines(finalResult.trace, finalResult));
 
-      if (finalResult.proposal_id && finalResult.proposal && finalResult.used_tool === "plan_proposal") {
+      if (finalResult.proposal_id && finalResult.proposal && ["plan_proposal", "revise_proposal"].includes(finalResult.used_tool)) {
         showProposal(finalResult.proposal_id, finalResult.proposal);
       }
 
@@ -1139,7 +1187,7 @@ async function loadTodos(url) {
   try {
     // 添加session_id参数
     const separator = url.includes('?') ? '&' : '?';
-    const urlWithSession = `${url}${separator}session_id=${sessionId}`;
+    const urlWithSession = `${url}${separator}session_id=${encodeURIComponent(sessionId)}`;
     
     const res = await fetch(urlWithSession);
     const data = await res.json();

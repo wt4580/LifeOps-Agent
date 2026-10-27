@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 
+from app.src.agent import graph_chat as gc
 from app.src.agent.graph_chat import (
     _business_db_inventory_text,
     _build_proposal_item,
@@ -183,3 +186,182 @@ class TestBusinessDbInventoryText:
 
     def test_not_empty(self):
         assert len(_business_db_inventory_text()) > 100
+
+
+class TestRetryBudget:
+    """回归：retry_count 不能被 decompose 重置，否则 verify 的重试上限永远触发不了。"""
+
+    def test_decompose_retry_keeps_retry_count(self):
+        state = {
+            "session_id": "s",
+            "retry_info": {"fix_suggestion": "换个关键词"},
+            "retry_count": 1,
+            "plan": [],
+            "plan_index": 0,
+            "decision": {"action": "query_knowledge", "args": {"query": "wsl"}},
+        }
+        out = gc._node_decompose(state)
+        assert out["retry_count"] == 1
+        assert out["retry_info"] is None
+        assert out["decision"]["action"] == "query_knowledge"
+
+    def test_verify_retries_below_max(self):
+        state = {
+            "session_id": "s",
+            "mode": "normal",
+            "decision": {"action": "query_knowledge"},
+            "answer": "我不知道",
+            "user_message": "wsl是什么",
+            "plan": [],
+            "plan_index": 0,
+            "retry_count": 0,
+        }
+        failed = '{"passed": false, "issues": ["x"], "fix_suggestion": "y"}'
+        with patch.object(gc, "chat_completion", return_value=failed):
+            out = gc._node_verify(state)
+        assert out["retry_info"] is not None
+        assert out["retry_count"] == 1
+
+    def test_verify_stops_after_max_retries(self):
+        state = {
+            "session_id": "s",
+            "mode": "normal",
+            "decision": {"action": "query_knowledge"},
+            "answer": "我不知道",
+            "user_message": "wsl是什么",
+            "plan": [],
+            "plan_index": 0,
+            "retry_count": gc._MAX_RETRIES,
+        }
+        failed = '{"passed": false, "issues": ["x"], "fix_suggestion": "y"}'
+        with patch.object(gc, "chat_completion", return_value=failed):
+            out = gc._node_verify(state)
+        assert out["retry_info"] is None
+        assert out["retry_count"] == gc._MAX_RETRIES + 1
+
+
+class TestToolBudgetAbort:
+    def test_run_tool_aborts_when_budget_exhausted(self):
+        from app.src.common.harness.context import clear_turn_context, create_turn_context
+
+        turn = create_turn_context("budget-test")
+        turn.budget.max_tool_calls = 0
+        try:
+            state = {
+                "session_id": "budget-test",
+                "decision": {"action": "query_todos"},
+                "trace": {"steps": []},
+            }
+            out = gc._node_run_tool(state)
+        finally:
+            clear_turn_context("budget-test")
+
+        assert out["turn_aborted"] is True
+        assert out["answer"] == gc._TURN_LIMIT_FALLBACK
+        assert out["used_tool"] == "query_todos"
+
+
+class _FakeStateSnapshot:
+    values: dict = {}
+    tasks: list = []
+
+
+class _TurnLimitGraph:
+    async def aget_state(self, config):
+        return _FakeStateSnapshot()
+
+    async def ainvoke(self, state, config):
+        raise gc.TurnLimitExceeded("forced limit")
+
+
+class _RecursionGraph(_TurnLimitGraph):
+    async def ainvoke(self, state, config):
+        from langgraph.errors import GraphRecursionError
+
+        raise GraphRecursionError("recursion limit reached")
+
+
+class TestTurnAbortBoundary:
+    """图入口必须把预算/递归异常收口成兜底回答，而不是抛给前端。"""
+
+    def test_turn_limit_returns_fallback(self):
+        out = asyncio.run(
+            gc.arun_chat_graph(
+                compiled_graph=_TurnLimitGraph(),
+                session_id="abort-test",
+                user_message="wsl是什么",
+            )
+        )
+        assert out["answer"] == gc._TURN_LIMIT_FALLBACK
+        assert out["turn_aborted"] is True
+        assert out["mode"] == "quick"
+
+    def test_recursion_limit_returns_fallback(self):
+        out = asyncio.run(
+            gc.arun_chat_graph(
+                compiled_graph=_RecursionGraph(),
+                session_id="recursion-test",
+                user_message="wsl是什么",
+            )
+        )
+        assert out["answer"] == gc._TURN_LIMIT_FALLBACK
+        assert out["turn_aborted"] is True
+
+
+class TestToolPolicyBlock:
+    def test_unknown_action_is_blocked_without_aborting_turn(self):
+        state = {
+            "session_id": "policy-test",
+            "decision": {"action": "rm_rf", "args": {}},
+            "trace": {"steps": []},
+        }
+        out = gc._node_run_tool(state)
+        assert out.get("turn_aborted") is not True
+        assert "安全" in out["answer"]
+        names = [s["name"] for s in out["trace"]["steps"]]
+        assert "tool_policy_block" in names
+
+    def test_query_database_without_session_filter_is_blocked(self):
+        state = {
+            "session_id": "policy-test",
+            "decision": {
+                "action": "query_database",
+                "args": {"sql": "SELECT * FROM todo_items"},
+            },
+            "trace": {"steps": []},
+        }
+        out = gc._node_run_tool(state)
+        assert "安全" in out["answer"]
+        assert out.get("turn_aborted") is not True
+        block = next(
+            s for s in out["trace"]["steps"] if s["name"] == "tool_policy_block"
+        )
+        assert "session_id" in block["output"]["reason"]
+
+
+class TestHarnessSummaryTrace:
+    def test_summary_is_attached_only_at_turn_exit(self):
+        from app.src.common.harness.context import (
+            clear_turn_context,
+            create_turn_context,
+        )
+
+        turn = create_turn_context("finalize-test")
+        turn.add_record({"kind": "llm", "name": "decompose", "elapsed_ms": 12.3})
+        try:
+            state = {
+                "session_id": "finalize-test",
+                "answer": "hi",
+                "history": [{"role": "user", "content": "hi"}],
+                "trace": {"steps": []},
+            }
+            out = gc._node_finalize(state)
+            assert all(step.get("name") != "harness_summary" for step in out["trace"]["steps"])
+            out = gc._finish_turn_result(out, turn)
+        finally:
+            clear_turn_context("finalize-test")
+
+        summary = next(
+            s for s in out["trace"]["steps"] if s["name"] == "harness_summary"
+        )
+        assert summary["output"]["invocations"][0]["name"] == "decompose"

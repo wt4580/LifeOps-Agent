@@ -1,0 +1,29 @@
+services:
+  lifeops-demo:
+    build:
+      context: .
+      target: runtime
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    image: lifeops-agent:demo
+    init: true
+    ports:
+      - "127.0.0.1:${LIFEOPS_PORT:-5001}:5000"
+    environment:
+      DEMO_MODE: "true"
+      DEMO_USERNAME: demo
+      DEMO_PASSWORD: "${DEMO_PASSWORD:-lifeops-demo-2026}"
+      DEMO_SEED: "true"
+      BACKGROUND_LEARNING_ENABLED: "false"
+      SCHEDULER_ENABLED: "false"
+    volumes:
+      - demo-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+volumes:
+  demo-data:

@@ -102,7 +102,7 @@ class MemoryService:
             "notes": row.notes,
         }
     
-    def get_memory_candidates(self, limit: int = 50) -> list[dict]:
+    def get_memory_candidates(self, session_id: str, limit: int = 50) -> list[dict]:
         """获取记忆候选列表
         
         Args:
@@ -115,6 +115,7 @@ class MemoryService:
             rows = (
                 db.execute(
                     select(MemoryCandidate)
+                    .where(MemoryCandidate.session_id == session_id)
                     .order_by(MemoryCandidate.created_at.desc())
                     .limit(limit)
                 )
@@ -127,7 +128,7 @@ class MemoryService:
                 "id": r.id,
                 "kind": r.kind,
                 "title": r.title,
-                "occurred_at": r.occurred_at.isoformat() if r.occurred_at else None,
+                "occurred_at": r.occurred_at,
                 "notes": r.notes,
             }
             for r in rows

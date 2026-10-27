@@ -1,421 +1,221 @@
 # LifeOps-Agent
 
-基于 **FastAPI + LangGraph + SQLite + Qwen** 的个人生活管理智能体。通过自然语言对话管理待办、日程、记账、知识库，具备多步任务分解、人在回路确认、时间感知对话、本地语音输入和长期记忆能力。支持手机通过 Tailscale HTTPS 远程访问。
+**把自然语言请求变成可确认、可追溯的个人事务操作。**
 
-## 界面预览
+基于 FastAPI、LangGraph、SQLite 和 Qwen 兼容接口的个人生活管理 Agent，支持待办、记账、日历和知识库问答。主交互采用 SSE，展示处理进度、增量文本、资料引用和执行轨迹；待办草案与现有账户余额变更经过用户确认后写入数据库。
 
-![聊天界面](docs/screenshots/chat.png)
+项目覆盖从 Agent 编排到运行约束、回归评估、容器化交付的完整开发过程。提供无需 API Key 的演示模式，也支持接入真实模型和本地检索、语音模型。
 
-·  
-## 核心特性
+[快速体验](#快速体验) · [架构与设计](#架构与设计) · [测试与评估](#测试与评估) · [部署文档](docs/deployment.md) · [Harness 设计](docs/harness-design.md)
 
-- **多轮对话** — LangGraph 状态机编排，支持工具路由、多步计划分解、HITL 人机确认
-- **工具调用（JSON 路由）** — 不依赖原生 Function Calling，LLM 输出 `{action, args}` JSON，代码按 action 分派执行，可无缝切换任意兼容 OpenAI 的模型
-- **多步任务分解** — 复杂请求自动拆分为子步骤（如"查天气 + 查日程 + 综合回答"），按序执行后汇总；简单请求走快速通道跳过 LLM
-- **人在回路（HITL）** — 待办草案先弹确认卡片，用户确认后经 `interrupt()` 恢复并直接写入数据库
-- **待办管理** — 创建、查询、完成状态切换、截止日期跟踪；说"要"/"好的"/"确认"即可确认草案入库
-- **时间感知对话** — 每条历史消息自动标注时间戳，模型能区分"刚刚聊的"和"很久以前聊的"，不会把旧日程当作当前状态
-- **长期记忆** — 自动抽取生活事件、用户画像与隐性偏好，对话中主动引用背景，持续"逐渐懂你"且不删除任何历史
-- **主动建议** — 基于日历、待办、记忆，在对话中主动提示时间冲突、健康风险等
-- **日历与节日** — 查看日程事件，识别中国传统节日（端午、中秋、春节等）
-- **天气查询** — 高德天气 API，实况 + 未来预报
-- **记账** — 账户管理、收支记录、消费分析
-- **知识库 RAG** — PDF/TXT/PNG 文档索引，BM25 / 向量 / 混合检索，可选重排序；语义切块 + 章节标题提取 + 块摘要
-- **本地语音输入** — 手机录音上传，服务器本地 faster-whisper 识别中文，不依赖任何云端语音服务
-- **手机远程访问** — 通过 Tailscale HTTPS 随时从手机访问（详见下文）
+![LifeOps-Agent 聊天界面](docs/screenshots/chat.png)
 
-## 工作原理
+## 快速体验
 
-### 架构
+安装并启动 Docker，在仓库根目录执行：
 
-```text
-用户输入 → ChatService → LangGraph 状态机 → 工具调用 → 应答返回
-                              │
-                 ┌────────────┼─────────────┐
-                 │            │             │
-            路由决策      多步分解      HITL/确认
-                 │            │             │
-           query_todos  query_calendar  query_weather
-           query_knowledge  query_expenses  propose_todo
-           record_expense  create_account  normal_chat
-                              │
-                         主动建议决策
+```bash
+docker compose up -d --build
 ```
 
-### 工具调用机制
+打开 **http://127.0.0.1:5001**，使用以下演示账号登录：
 
-本项目**不使用原生 OpenAI Function Calling**（`chat_completion` 不传 `tools` 参数），而是采用**提示词驱动的 JSON 路由**：
+| 用户名 | 密码 |
+| --- | --- |
+| `demo` | `lifeops-demo-2026` |
 
-1. `_node_decompose` 让 LLM 输出严格 JSON 决策：
-   ```json
-   {"action":"query_weather","args":{"city":"北京"},"mode":"normal","needs_plan":false}
-   ```
-   复杂请求可带 `steps` 多步计划；另有非 LLM 快路径（如"上一条""确认/取消"等固定短语短路）。
-2. `_node_run_tool` 按 `action` 用 `if/else` 分派到具体工具（todo / weather / calendar / bookkeeping / RAG / DB 查询等）。
-3. `needs_plan=true` 时进入 `run_tool → verify → advance_plan → decompose` 计划循环，逐步骤执行。
-4. LLM 输出经 `normalize_llm_output` 清洗 + `verify` 重试兜底。
+演示使用规则模拟模型和仓库内的虚构资料，实际运行 HTTP/SSE、LangGraph、HITL、身份校验和 SQLite。运行期间无需模型 API Key，不下载模型权重。模拟模型用于体验工程流程，其回答和测试通过率不代表真实模型质量。
 
-### 数据流
+可以按以下顺序体验：
 
-1. `ChatService.chat()` 接收消息 → 保存到 `chat_messages`
-2. 抽取画像事实与个人事件 → 更新 `user_profiles` / `life_events`
-3. 进入 LangGraph 状态机：`load_context → decompose → run_tool → (interrupter | verify) → advance_plan → (loop | finalize) → quality_gate → proactive_decision`
-4. 保存助手消息 → 更新摘要 → 记忆抽取 → 可选深度反思
+1. 输入「明天下午3点开会」，查看待办草案，此时尚未写入待办。
+2. 输入「可以改成后天吗」，查看修改后的日期，再输入「确认」。
+3. 输入「查询待办」，核对已创建的记录；也可以另建草案后输入「取消」。
+4. 输入「报销需要哪些材料」，查看回答与虚构制度的来源引用。
+5. 展开执行轨迹，查看工具调用和 `harness_summary`。
 
-### 待办确认流程（HITL）
+```bash
+# 检查服务状态与真实 HTTP/SSE 流程
+docker compose ps
+docker compose exec -T lifeops-demo python scripts/smoke.py --url http://127.0.0.1:5000
 
-```text
-用户: "明天下午3点去开会"
-  → decompose: decision.action = propose_todo
-  → run_tool: 构造待办草案 proposal.items（title / due_at）→ 设置 interrupt_message
-  → interrupter: interrupt() 挂起状态机 → 前端弹出确认卡片
-用户: 点击卡片"确认加入待办"（或直接回复"要"/"确认"）
-  → 前端将"确认"作为新消息发送 → arun_chat_graph 检测到肯定语 → Command(resume="确认")
-  → _handle_interrupt_resume: 读取 state.proposal.items → 直接写入 todo_items 表
-  → 回复: "✅ 待办已确认！"
+# 停止服务并保留演示数据
+docker compose down
 ```
 
-## 手机远程访问（Tailscale）
+演示数据存放在专用 volume，与本地个人数据库隔离。若 PyPI 连接失败，可设置构建变量 `PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` 后重试。Windows Docker Desktop 的当前 context 不可用时，可使用 `docker --context desktop-linux compose ...`。更多配置见[部署说明](docs/deployment.md)。
 
-电脑放在实验室、手机随身携带时，通过 Tailscale 建立私有网络并以 HTTPS 访问（HTTP 下浏览器麦克风不可用）。
+## 能力与运行模式
 
-**电脑端**
+| 能力 | 实现 | 默认离线演示 |
+| --- | --- | --- |
+| 多轮对话与任务编排 | JSON 路由、工具执行、多步计划、验证与汇总 | 使用规则模拟模型 |
+| 待办与 HITL | 草案生成、修改、取消、确认及日期处理 | 可体验完整流程 |
+| 账户与记账 | 收支记录、账户查询、已有账户余额变更确认 | 使用虚构账户与数据 |
+| 知识库 RAG | BM25、向量、混合检索与可选重排，保留来源信息 | BM25 + 仓库内虚构文本 |
+| 运行约束 | 调用次数、时间、token 预算，工具策略、会话作用域与审计 | 经过真实执行链路 |
+| 长期记忆 | 对话原文留存、增量摘要、用户画像、事件与会话学习文件 | 后台学习关闭 |
+| 日历与天气 | 日历查询、传统节日、高德天气服务 | 天气使用明确标注的虚构数据 |
+| 本地语音 | faster-whisper 识别浏览器录音 | 默认关闭，需额外依赖与模型 |
+
+## 架构与设计
+
+```mermaid
+flowchart TD
+    UI[Web 聊天界面] --> API[FastAPI / SSE]
+    API --> Auth[Cookie 身份校验与会话作用域]
+    Auth --> Queue[同一会话串行执行]
+    Queue --> Turn[本轮 Harness 上下文]
+    Turn --> Graph[LangGraph 路由与计划执行]
+    Graph --> Calls[受拦截器约束的 LLM / 工具调用]
+    Calls --> Tools[待办 / 记账 / 日历 / RAG / 只读查询]
+    Tools --> Graph
+    Graph --> HITL[写操作草案与 interrupt]
+    HITL --> Checkpoint[(SQLite checkpoint)]
+    Checkpoint --> Resume[用户确认 / 修改 / 取消]
+    Resume --> Graph
+    Graph --> Result[回答 / 引用 / trace / 预算摘要]
+    Result --> API
+    Result --> Background[独立预算的后台学习与摘要]
+    Tools --> Data[(业务库 / 知识库)]
+```
+
+### 任务编排与人在回路
+
+模型输出 `{action, args}` JSON，程序负责解析、分派和执行；复杂任务可以返回多步计划。当前实现采用提示词驱动的 JSON 路由，不依赖供应商原生 Function Calling，仍需针对目标模型验证格式稳定性和动作选择。
+
+待办先生成草案，由 LangGraph `interrupt()` 挂起并持久化 checkpoint。用户确认后恢复执行并写库，修改则更新草案，取消则结束该流程。已有账户余额变更也需要确认；收支记录等其他操作采用各自业务规则，并非所有写操作都经过同一确认流程。
+
+同一会话使用进程内 FIFO 队列，避免并行消息覆盖 checkpoint。前端使用 `/api/chat/stream`，通过 `status`、增量文本和 `final` 等事件呈现执行过程，并支持取消当前请求。
+
+### Harness：约束执行，而非只依赖提示词
+
+预算与拦截器独立于模型可修改的图状态，覆盖前台聊天、独立问答/计划入口和后台任务：
+
+- 限制 LLM 调用数、工具调用数、墙钟时间、token 预算及图超级步数。
+- 在工具入口校验动作白名单、只读 SQL 和当前会话作用域；数据库查询还使用作用域视图与 SQLite authorizer 限制访问。
+- 汇总调用耗时、用量、异常与预算状态，返回 `harness_summary` 并记录本地元数据审计。
+- 后台学习、记忆与文档摘要使用独立预算，不占用主回复的执行额度。
+
+供应商返回 usage 时记录实际用量；未返回时使用保守预留值控制预算，并标记用量缺失。预留量不等于真实 token 账单。HITL 等待用户的时间不占本轮执行预算，恢复请求建立新的执行上下文。详见 [Harness 设计](docs/harness-design.md)。
+
+### RAG 与记忆
+
+文档加载后存入独立知识库，保留路径、页码和章节信息。默认 BM25 可在无向量模型的环境运行；可选混合检索将 BM25 与向量召回通过 RRF 融合，再使用交叉编码器重排。回答携带来源引用，证据不足时返回相应提示。
+
+聊天原文保留，摘要通过游标增量更新；用户画像、个人事件和学习文件按身份隔离。记忆用于提供背景，时间标注用于帮助模型区分历史记录与当前安排，但不能保证模型永远正确理解时间。
+
+## 测试与评估
+
+**2026-10-27 已执行的验证：**
+
+| 验证项 | 结果 | 测量范围 |
+| --- | --- | --- |
+| Linux 容器单元与回归测试 | **285 项通过** | 编排、业务、认证、隔离、预算、日期与数据处理 |
+| 合成端到端流程契约 | **100 / 100 通过** | 模拟模型 + 真实 HTTP/SSE、图、checkpoint 与隔离数据库 |
+| Docker Compose 冒烟 | **通过** | 就绪、登录、SSE、取消/确认、RAG 引用与 Harness 摘要 |
+| kind 部署冒烟 | **通过** | 独立命名空间、单副本、PVC 与实际 HTTP 流程 |
+
+[流程报告](app/eval/reports/e2e-contract.md) · [逐例 JSON 与源码指纹](app/eval/reports/e2e-contract.json)
+
+100 条契约由 10 类场景各 10 个变体组成，覆盖待办确认、取消、修改、多日期、历史消费记账、账户变更确认、资料引用、权限拦截、预算耗尽和模拟供应商失败。它检验程序行为，**不是 100 个独立真实用户任务，也不是模型准确率或网络负载测试**。
+
+### 复跑容器测试
+
+```bash
+docker build --target test -t lifeops-agent:test .
+docker run --rm lifeops-agent:test
+docker run --rm lifeops-agent:test python -m app.eval.run_e2e
+```
+
+需要保存 JUnit、JSON 和 Markdown 报告时，使用[部署文档中的报告归档命令](docs/deployment.md#测试与报告)。默认测试不调用付费模型 API，使用临时数据库。
+
+本地 Python 环境也可运行单元测试：
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest tests -q
+```
+
+### 真实模型与历史评估
+
+配置真实 Key 后，可显式运行独立数据库中的真实模型流程回归；这会产生 API 费用：
+
+```bash
+python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e-real.json
+```
+
+真实模式保留 80 条流程用例，排除模拟故障与模拟跨用户 SQL 的 20 条专用用例。本轮未执行真实模型评估。
+
+仓库另保留 [2026-09-05 检索报告](app/eval/reports/retrieval.md)及[历史路由报告](app/eval/reports/task.json)。这些结果依赖原有外部知识库，未随本次容器化重新测量，不能用演示语料复现，也不能用作当前版本的端到端准确率或组件增益结论。
+
+## 接入真实模型
+
+建议使用 Python **3.11** 与独立虚拟环境。以下为 Windows PowerShell 示例：
 
 ```powershell
-# 1. 安装并登录 Tailscale
-tailscale up
-
-# 2. 管理台开启 HTTPS 证书（https://login.tailscale.com/admin/dns → Enable HTTPS）
-
-# 3. 把本地 5000 端口以 HTTPS 暴露（后台运行，配置持久，重启自动恢复）
-"C:\Program Files\Tailscale\tailscale.exe" serve --bg 5000
-# 输出形如 https://<机器名>.tail<编号>.ts.net
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-core.txt
+Copy-Item app/src/common/env/.env.example app/src/common/env/.env
 ```
 
-**手机端**
+编辑 `app/src/common/env/.env`：
 
-1. 安装 Tailscale App 并登录同一账号，确保 VPN 处于"已连接"状态
-2. 浏览器打开 `https://<机器名>.tail<编号>.ts.net`
-3. 点麦克风按钮即可中文语音输入
-
-> 注意：服务本身需保持运行（`python -m app.src`）；Tailscale 与 serve 配置为系统服务/持久配置，电脑重启后自动恢复。
-
-## 语音输入
-
-- **前端**：`MediaRecorder` 录音（webm/opus），点击开始、再点停止，最长 20 秒自动结束
-- **后端**：`POST /api/speech` 接收录音字节 → **faster-whisper 本地识别**（`WHISPER_MODEL`，默认 `small`）→ 返回文本自动回填输入框并发送
-- **离线可用**：识别完全在实验室电脑本地完成，不依赖 Google/云端语音服务
-- **模型本地化**：可将模型复制到项目目录并在 `.env` 设置 `WHISPER_MODEL_LOCAL` 指向本地路径，跳过 HuggingFace 下载
-- **前提**：页面需通过 HTTPS 或 localhost 访问（`getUserMedia` 安全上下文限制）
-
-## 时间感知对话
-
-为了让助手区分"刚刚聊的"和"很久以前聊的"（同时保留全部历史用于持续学习）：
-
-- 系统提示注入**当前时间**，并明确规则：近 30 分钟内的消息属于"刚刚发生的对话"（当前上下文），更早的属于"以前的对话"（背景记忆）
-- 每条历史消息自动标注 `[MM-DD HH:MM]` 时间戳（从数据库 `created_at` 读取，对历史数据同样有效）
-- 当前这条用户消息标注 `[刚刚]`
-- 用户画像 / 生活事件 / 摘要 / 目标等背景统一标注为"**用户长期记忆（背景，不代表当前状态）**"
-- 不删除任何对话或记忆，记忆抽取与积累照常运行
-
-## 项目结构
-
-```text
-app/src/
-├── agent/                    # 智能体层（核心大脑）
-│   ├── agent_router.py       # LLM 路由决策（含知识主题感知 + 文档大纲注入）
-│   ├── graph_chat.py         # LangGraph 状态机构建与执行、工具分派、时间感知对话
-│   ├── post_chat_learn.py    # 对话后学习（记忆抽取、深度反思）
-│   ├── memory/
-│   │   ├── memory_extractor.py   # 对话记忆提取（confidence/insight_type）
-│   │   └── personal_memory.py    # 生活事件/画像抽取、主动建议
-│   ├── planner/planner.py    # 待办草案规划 + 确认/拒绝检测
-│   └── time/time_parser.py   # 自然语言时间解析
-├── common/
-│   ├── config/               # 配置、数据库、LLM、日志、图持有器
-│   │   ├── base_config.py    # pydantic-settings 配置模型
-│   │   ├── llm_config.py     # LLM 调用封装（DashScope 兼容，JSON 路由）
-│   │   ├── db_config.py      # 业务数据库（lifeops.db）含列迁移
-│   │   ├── knowledge_db_config.py  # 知识库数据库含列迁移
-│   │   ├── chat_graph_holder.py    # 全局图实例持有器
-│   │   └── checkpointer_config.py  # LangGraph SQLite 检查点
-│   ├── env/.env.example      # 环境变量模板
-│   ├── static/               # 前端资源（app.js / style.css / 图片）
-│   └── templates/            # HTML 模板
-├── controller/               # API 路由层
-│   ├── chat_controller.py    # 聊天（标准 + SSE 流式）
-│   ├── speech_controller.py  # 语音识别接口
-│   ├── todo_controller.py    # 待办
-│   ├── plan_controller.py    # 待办草案
-│   ├── bookkeeping_controller.py  # 记账
-│   ├── auth_controller.py    # 登录（生成 session_id）
-│   ├── rag_controller.py     # 知识库索引 / 问答
-│   ├── health_controller.py  # 健康检查
-│   └── web_controller.py     # 页面路由
-├── domain/
-│   ├── dto/                  # 数据传输对象
-│   └── entity/               # SQLAlchemy ORM 模型 / ChatState TypedDict
-├── service/                  # 业务服务层
-│   ├── chat_service.py       # 聊天主服务
-│   ├── asr_service.py        # 本地语音识别（faster-whisper 单例）
-│   ├── plan_service.py       # 待办规划服务
-│   ├── calendar_service.py   # 日历服务
-│   ├── weather_service.py    # 天气服务
-│   ├── bookkeeping_service.py # 记账服务
-│   ├── memory_service.py     # 记忆读取
-│   ├── goal_service.py       # 目标管理
-│   ├── scheduler.py          # 定时任务（APScheduler）
-│   ├── push_service.py       # 推送通知（Server酱 / Pushover）
-│   └── chinese_holidays.py   # 中国传统节日动态计算
-└── util/
-    ├── ingest/               # 文档加载与 OCR
-    └── retrieval/            # RAG 检索（BM25 + 向量 + 混合）
-```
-
-## 快速开始
-
-### 环境要求
-
-- Python 3.11+
-- 可选：Tesseract OCR（PNG 文字识别，见下文）
-- 可选：HuggingFace 网络（首次使用 RAG 时下载 embedding 模型，或配置本地模型路径）
-
-### 安装
+| 配置 | 用途 |
+| --- | --- |
+| `DEMO_MODE=false`、`DEMO_SEED=false` | 运行真实模式，不注入演示数据 |
+| `QWEN_API_KEY` | 模型 API Key，真实模式必填 |
+| `QWEN_MODEL`、`BASE_URL` | 模型名与兼容服务地址 |
+| `DOCS_DIR` | 实际知识库目录 |
+| `RAG_BACKEND=bm25` | 无向量模型的初始配置 |
+| `AMAP_WEATHER_KEY` | 可选，高德天气服务 |
+| `PERSONAL_MEMORY_DIR`、数据库路径 | 可选，自定义个人数据存储位置 |
 
 ```powershell
-# 1. 克隆仓库
-git clone https://github.com/your-username/LifeOps-Agent.git
-cd LifeOps-Agent
-
-# 2. 创建虚拟环境（推荐 agent_env，已在 .gitignore 中）
-python -m venv agent_env
-
-# 3. 激活虚拟环境
-.\agent_env\Scripts\Activate.ps1
-
-# 4. 安装依赖
-pip install -r requirements.txt
-```
-
-### 配置
-
-```powershell
-# 复制环境变量模板
-copy app\src\common\env\.env.example app\src\common\env\.env
-```
-
-编辑 `app\src\common\env\.env`，至少填写以下项：
-
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `QWEN_API_KEY` | **是** | 阿里云 DashScope API Key，从 [dashscope.console.aliyun.com](https://dashscope.console.aliyun.com/) 获取 |
-| `QWEN_MODEL` | 否 | 模型名（默认 `qwen-turbo`） |
-| `AMAP_WEATHER_KEY` | 否 | 高德天气 Web 服务 Key，从 [console.amap.com](https://console.amap.com/dev/key/app) 申请 |
-| `DOCS_DIR` | 否 | 知识库文档目录路径 |
-| `WHISPER_MODEL` | 否 | 语音识别模型（默认 `small`） |
-| `WHISPER_MODEL_LOCAL` | 否 | 本地语音模型目录（配置后跳过下载） |
-
-详细配置说明见 `.env.example` 内的注释。
-
-### 启动
-
-```powershell
-# 确保虚拟环境已激活
 python -m app.src
 ```
 
-访问 **http://localhost:5000**（首次使用会同时初始化业务库、知识库和 LangGraph 检查点）。
+打开 http://localhost:5000。首次注册须从服务本机回环地址访问，设置至少 8 位密码；之后使用同一账号登录。服务使用 HttpOnly Cookie 校验身份，并检查请求的会话作用域。
 
-### 首次使用
+向量检索和语音需要另装 `requirements-ml.txt` 及相应模型；完整依赖入口为 `requirements.txt`。PNG OCR 还需 Tesseract 系统程序。浏览器录音需要 localhost 或 HTTPS。完整配置见[环境变量模板](app/src/common/env/.env.example)，容器运行真实模式时须使用新的专用 volume，避免复用公开演示账号和数据。
 
-1. 打开首页，输入用户名登录（登录名即会话 ID）
-2. 在聊天框输入你的计划或问题
-3. 如需知识库问答：在 `.env` 设置 `DOCS_DIR` → 页面"知识库"面板点索引 → 开始提问
-4. 待办草案生成后点"确认加入待办"（或回复"要"/"确认"）即入库
-5. 语音：点击输入框旁麦克风 → 说话 → 再点一下停止 → 自动识别并发送
+## 工程交付
 
-## API 速览
+- **Docker**：多阶段构建，区分运行、测试与可选 ML 目标；非 root 用户运行，配置就绪探测，个人数据与镜像分离。
+- **Compose**：本地回环端口、专用数据卷、只读根文件系统与临时目录。
+- **kind**：复用已有集群，在 `lifeops-demo` 命名空间运行单副本 Deployment、Service 和 PVC。
+- **Jenkins**：[Jenkinsfile](Jenkinsfile) 包含构建、静态检查、测试、报告归档、冒烟与可选 kind 部署，需要带 Docker CLI 的 Linux 执行节点。
+- **GitHub Actions**：[CI 配置](.github/workflows/ci.yml) 提供容器测试和报告归档。
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/` | Web 聊天页面 |
-| POST | `/api/auth/login` | 登录（返回 session_id） |
-| GET | `/health` | 健康检查 |
-| POST | `/api/chat` | 标准聊天 |
-| POST | `/api/chat/stream` | SSE 流式聊天（实时进度显示） |
-| POST | `/api/speech` | 语音识别（上传录音字节，返回文本） |
-| POST | `/api/plan/propose` | 生成待办草案 |
-| GET | `/api/todos/today` | 今日待办 |
-| GET | `/api/todos/upcoming?days=7` | 未来待办 |
-| GET | `/api/todos/all` | 全部待办 |
-| POST | `/api/todos/{id}/status` | 更新完成状态 |
-| POST | `/api/index` | 知识库索引（含块摘要生成） |
-| POST | `/api/ask` | 知识库问答 |
-| POST | `/api/accounts` | 创建账户 |
-| GET | `/api/accounts` | 账户列表 |
-| GET | `/api/accounts/balances` | 账户余额 |
-| DELETE | `/api/accounts/{id}` | 删除账户 |
-| POST | `/api/transactions` | 记录收支 |
-| GET | `/api/transactions` | 交易记录 |
-| GET | `/api/transactions/analysis` | 消费分析 |
+Docker / kind 已在本地验证。Jenkins 与 GitHub Actions 配置已提供，尚无本轮远端流水线成功记录；本地 Jenkins 执行节点仍待配置。ML 镜像目标未在本轮构建验证。操作步骤和环境前提见[部署说明](docs/deployment.md)。
 
-## 测试
+## 代码导航
 
-```powershell
-# 运行全部测试（无需 API Key 或网络，LLM 调用已自动 mock）
-python -m pytest tests/ -v
+```text
+app/
+├── src/
+│   ├── agent/                 # LangGraph 编排、规划、时间解析与记忆提取
+│   ├── common/harness/        # 预算上下文、拦截器、SQL 作用域与审计
+│   ├── common/config/         # 配置、模型客户端、数据库与 checkpoint
+│   ├── common/static/         # Web 前端资源
+│   ├── common/templates/      # Web 页面模板
+│   ├── controller/            # SSE、认证、业务与健康检查接口
+│   ├── service/               # 聊天、待办、记账、学习及后台任务
+│   ├── domain/                # 请求/响应模型、ORM 实体与图状态
+│   ├── demo/                  # 明确标注的规则模拟模型与虚构数据初始化
+│   └── util/                  # 文档加载、OCR 与检索
+└── eval/                      # 流程契约、历史检索/路由评估与公开报告
+examples/knowledge/            # 可公开、可复现的虚构语料
+scripts/smoke.py               # 已部署服务的 HTTP/SSE 冒烟
+tests/                         # 单元与回归测试
+deploy/kind/                   # 本地 Kubernetes 部署
 ```
 
-测试覆盖 planner、agent_router、graph_chat、memory、time_parser 的核心逻辑及所有 DTO 校验。LLM 调用在 `conftest.py` 中自动 mock。
+## 当前边界与后续工作
 
-## 性能评估
+当前采用单进程、单副本 SQLite 和进程内会话队列；`Recreate` 部署更新期间会短暂停机。不能仅通过增加副本实现安全扩容，跨进程幂等、分布式协调、外部 checkpoint 与数据库迁移仍需进一步建设。
 
-针对「对外可展示的硬性性能指标」提供一整套可复现的评估脚本：检索质量（B 类）与任务/路由（C 类）。评估集按自建知识库（`E:\work\knowledge_for_test` 下的 txt）设计，ground truth 由知识库作者标注，自洽可复现。评估会调用**真实 LLM**（与生产完全一致，有 API 成本），因此请使用完整环境运行：
+模型输出仍可能路由错误或生成不完整参数。下一步优先补充真实模型保留集、歧义/否定与工具失败用例，测量真实 token 和响应延迟；RAG 的组件增益需要固定语料与参数的消融实验。工具注册和参数 schema 也需继续从图分派逻辑中解耦。
 
-```powershell
-# 运行环境：lifeops conda 环境（已安装 sentence_transformers / faiss-cpu / langchain-community 等）
-E:\Anaconda\envs\lifeops\python.exe -m app.eval.run_retrieval   # 检索质量评估
-E:\Anaconda\envs\lifeops\python.exe -m app.eval.run_task        # 任务/路由评估（真实 LLM 路由）
-E:\Anaconda\envs\lifeops\python.exe -m app.eval.report          # 把 JSON 报告渲染成 markdown
-```
-
-评估代码位于 `app/eval/`：`cases.py`（评估集）、`metrics.py`（指标计算）、`run_retrieval.py` / `run_task.py`（运行器，支持增量落盘）、`report.py`（markdown 渲染）。报告输出到 `app/eval/reports/*.json/.md`。
-
-### 指标口径（为什么看 "Recall@1/3/5"）
-
-每次查询，系统返回按相关度排序的 N 条候选文档，我们检查「正确答案有没有出现在前 k 条里」：
-
-| 指标 | 含义 |
-| --- | --- |
-| **Recall@1** | 返回的**第 1 条**（最自信）就是正确答案的比例 —— 最严、最能反映"第一刀准不准" |
-| **Recall@3** | 前 **3 条**里有正确答案的比例 |
-| **Recall@5** | 前 **5 条**里有正确答案的比例 |
-| **MRR** | 首个正确答案的排名倒数均值（全未命中记 0）—— 衡量"正确答案排得有多靠前" |
-| **NDCG@k** | 排序质量指标，奖励相关文档排在前面 |
-
-一句话：**@ 后的数字越大要求越宽松**（@1 只看第一条，@5 前五条沾边就算），因此数值通常 @1 ≤ @3 ≤ @5 逐级升高，说明"正确答案基本都在返回列表里，只是偶尔不在第一刀"。
-
-### 检索架构（主流三段式）
-
-生产路径 `search_chunks`（hybrid backend）遵循行业标准的 RAG 检索三段式：
-
-```
-用户查询
-  → Stage 1 双路召回（Dual Retrieval）
-       · BM25(query)              词面精确匹配
-       · 向量(query) + 向量(rewritten)  LLM 查询改写做向量侧 query expansion（rewrite 不再喂 BM25）
-  → Stage 2 融合（Fusion）
-       · Reciprocal Rank Fusion（RRF），k=60
-       · score(d) = Σ 1/(k + rank(d))，只看排名不看原始得分，规避 BM25 与向量尺度不可比
-  → Stage 3 交叉编码器重排（Cross-Encoder Rerank）
-       · bge-reranker-base 对融合后的 top-N 候选逐条打相关性分，取最终 top_k
-```
-
-各环节对应代码：`_vector_recall` / `_bm25_recall`（Stage 1）、`_rrf_fuse`（Stage 2，`retrieval.py`）、`rerank_hits`（Stage 3，`rag_langchain.py`）。
-
-### 当前结果（生产路径 hybrid + 重排）
-
-**检索质量（46 条 case）**
-
-| 指标 | 分值 |
-| --- | --- |
-| Recall@1 | 0.913 |
-| Recall@3 | 1.000 |
-| Recall@5 | 1.000 |
-| MRR | 0.949 |
-| NDCG@5 | 0.944 |
-
-**任务/路由（10 条 case，真实 LLM 路由 `_node_decompose`）**
-
-- 动作精确匹配准确率：**0.700**
-- 精确命中或落入多步计划：**0.900**
-
-> 说明：路由的 3 条非精确命中，均为路由器「先查库自己解决」的设计原则——对模糊指令优先走 `query_database` 兜底（其中 2 条期望动作仍在多步计划内），并非检索失败。
-
-### 已知修复：混合检索融合 bug & 回归主流 RRF
-
-**背景**：初期实现用「排名倒数求和（RRF）」融合 4 个检索通道，但词法通道（`bm25` / `rewrite-bm25` / 路径）本质是同一强相关信号的多份拷贝，高度重叠时会**重复计票**：例如查询「GTD 方法的核心流程」时，错答案 `career_plan.txt` 在词法通道排 1/2/3（多份叠加），反而压过「向量通道排第 1」（得分 84.66）的真正答案 `productivity_todo.txt`，导致把 GTD 错误路由到 career_plan。
-
-**根因**：RRF 把"同一信号的多份拷贝"当成了"多份独立证据"。主流的做法里，RRF 的输入应当只有**互补的两路**（BM25 + 向量），同源改写不应作为独立通道。
-
-**处理方式（回归主流三段式）**：
-1. 通道重排：删掉独立的 `rewrite-bm25` 通道——LLM 查询改写（`_rewrite_query`）改为**向量侧 query expansion**（`向量(query)` + `向量(rewritten)`）。
-2. 去掉文件名/路径通道。
-3. `_rrf_fuse` 恢复标准 RRF（`score(d) = Σ 1/(k+rank)`，k=60），输入为干净的 `BM25` 与 `向量` 两路。
-4. 融合后接 cross-encoder 重排（`rerank_hits`），与主流架构一致。
-
-**结果**：GTD、LeetCode 等此前错配的查询全部正确命中；检索评估 Recall@1 由 0.891 提升到 0.913；`pytest`（175 项）零回归。
-
-> 另修复了评估指标 `dcg_at_k` 的重复计分：按文件 ground truth 评估时，同一文件的多个 chunk 只计 1 次命中（NDCG 回到 [0,1] 语义）。
-
-## 可选依赖说明
-
-### Tesseract OCR
-
-如需知识库支持 PNG 图片文字识别：
-
-```powershell
-# Windows: 下载安装 https://github.com/UB-Mannheim/tesseract/wiki
-# 在 .env 中设置 TESSERACT_CMD 指向 tesseract.exe
-TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
-
-# Linux: sudo apt install tesseract-ocr tesseract-ocr-chi-sim
-```
-
-### Embedding 模型（RAG 向量检索）
-
-首次使用 `RAG_BACKEND=hybrid` 或 `langchain` 时，自动从 HuggingFace Hub 下载 `BAAI/bge-small-zh-v1.5`。如需加速（中国大陆），在 `.env` 中设置：
-
-```ini
-HF_ENDPOINT=https://hf-mirror.com
-```
-
-也可像 `RAG_EMBED_MODEL_LOCAL` / `RAG_RERANK_MODEL_LOCAL` 一样配置本地模型路径。
-
-### 语音识别模型（faster-whisper）
-
-首次识别时自动从 HuggingFace 下载 `Systran/faster-whisper-small`（约 460MB）。建议复制到项目目录后配置：
-
-```ini
-WHISPER_MODEL_LOCAL=E:\work\LifeOps-Agent\faster-whisper-small
-```
-
-### 推送通知
-
-支持 Server酱（微信推送）和 Pushover，参考 `.env` 中的注释配置。
-
-## 常见问题
-
-**Q: 启动报错 `pydantic-settings` 相关？**
-确保已复制 `.env.example` 为 `.env` 并填写 `QWEN_API_KEY`。
-
-**Q: 数据库文件在哪？**
-SQLite 文件自动创建在 `app/data/` 目录下（`lifeops.db`、`knowledge_base.db`、`checkpointer.db`），该目录已加入 `.gitignore`。
-
-**Q: 模型下载太慢或失败？**
-在 `.env` 中设置 `HF_ENDPOINT=https://hf-mirror.com` 使用国内镜像；语音模型可用 `WHISPER_MODEL_LOCAL` 走本地路径。
-
-**Q: 如何更换 LLM 模型？**
-在 `.env` 中修改 `QWEN_MODEL`。通过 DashScope 兼容接口也可使用第三方模型。
-
-**Q: 手机语音按钮没反应？**
-必须是 HTTPS 或 localhost 访问（`getUserMedia` 安全上下文限制）。经 Tailscale `serve` 暴露的 `https://...ts.net` 地址可用；直接用 `http://<tailscale-ip>:5000` 则语音不可用。
-
-**Q: 助手把很久以前的对话当成刚聊的？**
-时间感知功能会自动给历史消息标注时间戳并注入当前时间；这是最近一次对话起生效，重启服务后加载新逻辑即可。
-
-## 开发说明
-
-- **新增配置**：在 `common/config/base_config.py` 加字段，`llm_config.py` 统一调用
-- **新增工具**：在 `graph_chat.py` 的 `_node_run_tool` 加 `if action == "xxx"` 分支，并在 decompose 系统提示的工具说明中补充描述
-- **新增状态字段**：`domain/entity/chatstate_entity.py` 加 TypedDict 字段，`graph_chat.py` 的 `_build_initial_state` / `_build_checkpoint_context` 同步更新
-- **数据库迁移**：新列通过 `ALTER TABLE ADD COLUMN` 在 `init_db()` 中自动补齐（无需 Alembic）
-- **调试日志**：设置 `LOG_LEVEL=DEBUG` 查看 LLM 调用、路由细节和 RAG 检索过程
-
-## .gitignore 覆盖内容
-
-- `.env` 及所有敏感配置
-- `app/data/`（SQLite 数据库、向量索引）
-- 模型权重（`bge-*/`、`*.safetensors`、`faster-whisper-*/`）
-- `__pycache__`、`.idea`、`.vscode`
-- 虚拟环境 `agent_env/`、`.venv/`
+本地 `.env`、数据库、个人记忆、模型权重和运行报告由 `.gitignore` 排除；公开样例、部署配置及经过核对的评估报告保留在仓库中。项目演示与技术讲解可参考[展示指南](docs/showcase.md)。

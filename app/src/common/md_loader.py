@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 from pathlib import Path
 from typing import Optional
+from .config.base_config import settings
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DATA_DIR = Path(settings.personal_memory_dir)
 
 MARKDOWN_FILES = [
     "AGENT_MEMO.md",
@@ -37,8 +39,14 @@ def ensure_data_files() -> None:
 ensure_data_files()
 
 
-def _read_file(filename: str) -> Optional[str]:
-    path = DATA_DIR / filename
+def memory_directory(session_id: str | None = None) -> Path:
+    if session_id is None:
+        return DATA_DIR
+    return DATA_DIR / "sessions" / hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+
+
+def _read_file(filename: str, session_id: str | None = None) -> Optional[str]:
+    path = memory_directory(session_id) / filename
     if not path.exists():
         return None
     try:
@@ -49,10 +57,10 @@ def _read_file(filename: str) -> Optional[str]:
         return None
 
 
-def load_markdown_context() -> str:
+def load_markdown_context(session_id: str | None = None) -> str:
     parts: list[str] = []
     for fname in MARKDOWN_FILES:
-        content = _read_file(fname)
+        content = _read_file(fname, session_id=session_id)
         if content:
             parts.append(f"【{fname.replace('.md', '')}】\n{content}")
     if not parts:

@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from ..common.domain.response import success_response,BaseResponse
-from ..service.chat_service import ChatService
+from ..service.chat_service import ChatService, chat_service
 
 router = APIRouter()
 
@@ -34,7 +34,8 @@ async def chat(req: ChatVo):
 @router.post("/api/chat/stream")
 async def chat_stream(req: ChatVo):
     async def event_stream():
-        async for event in ChatService().chat_stream(message=req.message, session_id=req.session_id):
+        async for event in chat_service.chat_stream(message=req.message, session_id=req.session_id,
+                                                   proposal_id=req.proposal_id, request_id=req.request_id):
             yield event
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -43,5 +44,5 @@ async def chat_stream(req: ChatVo):
 @router.post("/api/chat/stop")
 async def chat_stop(req: ChatStopVo):
     """打断当前正在处理的消息（排队中的消息不受影响，按顺序继续）。"""
-    result = await ChatService().stop_current_chat(req.session_id)
+    result = await chat_service.stop_current_chat(req.session_id, request_id=req.request_id)
     return success_response(data=result)

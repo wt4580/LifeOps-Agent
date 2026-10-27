@@ -96,7 +96,7 @@ def detect_affirmation(user_input: str) -> bool:
         return False
     if text in _AFFIRM_EXACT:
         return True
-    return text.startswith(("需要", "可以", "好的", "行", "确认"))
+    return text.rstrip("。.!！,， ") in _AFFIRM_EXACT
 
 
 def detect_rejection(user_input: str) -> bool:
@@ -143,7 +143,9 @@ def _dedupe_plan_items(items: list[PlanItem]) -> list[PlanItem]:
     return deduped
 
 
-def propose_plan(user_input: str) -> tuple[str, PlanProposal]:
+def propose_plan(
+    user_input: str, *, session_id: str | None = None
+) -> tuple[str, PlanProposal]:
     """根据用户输入生成结构化待办草案。
 
     返回：
@@ -154,7 +156,7 @@ def propose_plan(user_input: str) -> tuple[str, PlanProposal]:
     - 如果 LLM 返回非法 JSON，抛出异常，由上层重试。
     """
     today = datetime.now().date().isoformat()
-    fixed_date = normalize_date_hint(user_input)
+    fixed_date = normalize_date_hint(user_input, session_id=session_id)
 
     system_prompt = (
         "你是待办规划器。把用户输入改写成可执行待办清单。"
@@ -172,7 +174,11 @@ def propose_plan(user_input: str) -> tuple[str, PlanProposal]:
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_input},
     ]
-    content = chat_completion(messages, temperature=0.2)
+    content = chat_completion(
+        messages,
+        temperature=0.2,
+        runtime_context={"scenario": "propose_plan", "session_id": session_id},
+    )
     try:
         data = json.loads(content)
         proposal = PlanProposal.model_validate(data)
@@ -180,7 +186,7 @@ def propose_plan(user_input: str) -> tuple[str, PlanProposal]:
         logger.error("Plan proposal LLM returned invalid JSON: %s; raw=%r", exc, content[:200])
         raise
 
-    if fixed_date:
+    if fixed_date and len(proposal.items) == 1:
         proposal = PlanProposal(
             items=[
                 PlanItem(

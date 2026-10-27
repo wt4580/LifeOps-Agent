@@ -21,6 +21,7 @@ class PlanService:
     
     def __init__(self):
         self.proposal_cache: dict[str, list[dict]] = {}
+        self.proposal_owners: dict[str, str] = {}
         self.pending_intents: dict[str, str] = {}
     
     def detect_user_intent(self, message: str) -> dict:
@@ -55,11 +56,12 @@ class PlanService:
         from uuid import uuid4
         
         proposal_id = str(uuid4())
-        _, proposal = propose_plan(text)
+        _, proposal = propose_plan(text, session_id=session_id)
         items = [item.model_dump() for item in proposal.items]
         
         # 存入缓存
         self.proposal_cache[proposal_id] = items
+        self.proposal_owners[proposal_id] = session_id
         
         return {
             "proposal_id": proposal_id,
@@ -83,6 +85,8 @@ class PlanService:
         
         if proposal_id not in self.proposal_cache:
             logger.warning("Proposal %s not found in cache", proposal_id)
+            return False
+        if not session_id or self.proposal_owners.get(proposal_id) != session_id:
             return False
         
         items = self.proposal_cache[proposal_id]
@@ -121,6 +125,7 @@ class PlanService:
         
         # 从缓存中移除
         del self.proposal_cache[proposal_id]
+        self.proposal_owners.pop(proposal_id, None)
         
         return True
     

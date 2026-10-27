@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from pathlib import Path
 from fastapi.templating import Jinja2Templates
+from ..common.config.base_config import settings
 
 router = APIRouter()
 
@@ -17,4 +18,4 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request):
     """渲染单页 UI"""
-    return templates.TemplateResponse(request, "index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html", {"request": request, "demo_mode": settings.demo_mode})

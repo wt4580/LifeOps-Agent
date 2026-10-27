@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from datetime import date, datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -35,11 +36,14 @@ async def _morning_briefing_job():
 
     # 天气
     try:
-        from .weather_service import WeatherService
-        ws = WeatherService()
-        weather = await ws.get_weather(city=settings.default_weather_city)
+        from .weather_service import weather_service
+        weather = await asyncio.to_thread(weather_service.query, settings.default_weather_city)
         if weather:
-            lines.append(f"🌤 天气：{weather.get('weather', '未知')}，{weather.get('temperature', '--')}℃")
+            live = weather.get("live") or {}
+            forecast = (weather.get("forecast") or [{}])[0]
+            description = live.get("weather") or forecast.get("dayweather", "未知")
+            temperature = live.get("temperature") or forecast.get("daytemp", "--")
+            lines.append(f"🌤 天气：{description}，{temperature}℃")
     except Exception as exc:
         logger.debug("morning briefing weather fetch failed: %s", exc)
 
@@ -56,7 +60,7 @@ async def _morning_briefing_job():
         todos = [
             t
             for t in rows
-            if not t.is_completed
+            if not TodoService._done_today(t, day_start)
             and (
                 (t.due_at is not None and day_start <= t.due_at < day_start + timedelta(days=1))
                 or TodoService._is_recurring_active(t, today_dt)
@@ -75,7 +79,7 @@ async def _morning_briefing_job():
     body = "\n".join(lines)
 
     from .push_service import push_notification
-    push_notification("LifeOps 晨间简报", body)
+    await asyncio.to_thread(push_notification, "LifeOps 晨间简报", body)
 
 
 async def _daily_review_job():
@@ -112,8 +116,8 @@ async def _daily_review_job():
         from ..domain.entity.chat_entity import LifeEvent
         from ..common.config.db_config import SessionLocal
 
-        now_utc = datetime.utcnow()
-        utc_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        from datetime import timezone
+        utc_start = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).replace(tzinfo=None)
         with SessionLocal() as db:
             events = db.execute(
                 select(LifeEvent)
@@ -128,7 +132,7 @@ async def _daily_review_job():
     body = "\n".join(lines)
 
     from .push_service import push_notification
-    push_notification("LifeOps 晚间复盘", body)
+    await asyncio.to_thread(push_notification, "LifeOps 晚间复盘", body)
 
 
 # ---------------------------------------------------------------------------
@@ -147,36 +151,47 @@ async def _push_due_todos_job():
     now = datetime.now()
     _dedupe_pushed_keys()
     try:
-        from ..domain.entity.chat_entity import TodoItem
+        from ..domain.entity.chat_entity import TodoItem, NotificationReceipt
         from ..common.config.db_config import SessionLocal
         from .todo_service import TodoService
         from .push_service import push_notification
 
-        future = now + timedelta(minutes=5)
+        window_start = now - timedelta(minutes=5)
         with SessionLocal() as db:
             rows = db.execute(select(TodoItem)).scalars().all()
+            sent_keys = set(db.execute(select(NotificationReceipt.key)).scalars().all())
 
         candidates: list[tuple[TodoItem, datetime]] = []  # (待办, 本次触发时间)
         for t in rows:
-            if t.is_completed or t.due_at is None:
+            if t.due_at is None:
                 continue
             if not (t.due_at.hour or t.due_at.minute):
                 continue  # 纯日期待办不推送
-            if TodoService._is_recurring_active(t, now):
-                occurrence = now.replace(hour=t.due_at.hour, minute=t.due_at.minute, second=0, microsecond=0)
-                if now <= occurrence <= future:
-                    candidates.append((t, occurrence))
+            if t.repeat_rule in {"daily", "weekly"}:
+                for day in {window_start.date(), now.date()}:
+                    occurrence = datetime.combine(day, t.due_at.time())
+                    day_start = occurrence.replace(hour=0, minute=0, second=0, microsecond=0)
+                    if (TodoService._is_recurring_active(t, occurrence)
+                            and not TodoService._done_today(t, day_start)
+                            and window_start <= occurrence <= now):
+                        candidates.append((t, occurrence))
             else:
-                if now <= t.due_at <= future:
+                if not t.is_completed and window_start <= t.due_at <= now:
                     candidates.append((t, t.due_at))
 
         pushed = 0
-        for t, occurrence in candidates[:3]:
-            key = f"{t.id}:{occurrence.date().isoformat()}"
-            if key in _pushed_todo_keys:
+        for t, occurrence in sorted(candidates, key=lambda item: item[1]):
+            key = f"{t.id}:{occurrence.isoformat()}"
+            if key in sent_keys:
                 continue
+            if pushed >= 3:
+                break
             time_str = occurrence.strftime("%H:%M")
-            push_notification(f"⏰ {t.title}", f"现在是 {time_str}，该做这件事了")
+            if not await asyncio.to_thread(push_notification, f"⏰ {t.title}", f"到期时间 {time_str}，该做这件事了"):
+                continue
+            with SessionLocal() as db:
+                db.add(NotificationReceipt(key=key))
+                db.commit()
             _pushed_todo_keys.add(key)
             pushed += 1
         if pushed:

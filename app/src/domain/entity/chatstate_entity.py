@@ -24,6 +24,8 @@ class ChatState(TypedDict, total=False):
     proposal_id: str | None
     proposal: dict[str, Any] | None
     proposal_confirmed: bool
+    pending_balance_update: dict[str, Any] | None
+    important_events: list[dict[str, Any]]
 
     interrupt_message: str | None
     interrupt_answer: str | None
@@ -37,6 +39,10 @@ class ChatState(TypedDict, total=False):
 
     retry_info: dict[str, Any] | None
     retry_count: int
+    cycle_count: int
+
+    # harness 预算/递归超限后置为 True，下游节点跳过重试与审查。
+    turn_aborted: bool
 
     plan: list[dict[str, Any]]
     plan_index: int

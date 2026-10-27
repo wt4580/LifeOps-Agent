@@ -130,6 +130,7 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
                     "description": "string. 具体用途描述，如'午饭''买书''打车'",
                     "account_name": "string|null. 账户名。从对话中识别用户提到的账户，如'微信''支付宝''现金'",
                     "transaction_type": "string. 'expense' 或 'income'",
+                    "transaction_at": "string|null. 用户指定的交易日期或时间，解析为本地 ISO 时间；未指定为 null。",
                 },
             },
             {

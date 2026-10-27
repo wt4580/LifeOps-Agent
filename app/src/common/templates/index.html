@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="/static/style.css?v=5" />
 </head>
 <body>
+  {% if demo_mode %}<div role="status" style="padding:10px;text-align:center;background:#fff0bd;color:#513d00">演示模式：使用规则模拟模型和虚构资料，无 API 费用；演示结果不代表真实模型质量。</div>{% endif %}
   <div id="login-section" class="login-section">
     <div class="login-card">
       <div class="login-icon">
@@ -22,7 +23,9 @@
       <p class="login-subtitle">生活管理助手</p>
       <div class="login-form">
         <input id="login-input" type="text" class="login-input" placeholder="输入你的名字" maxlength="50" autofocus />
+        <input id="login-password" type="password" class="login-input" placeholder="密码（首次使用时设置，至少8位）" minlength="8" maxlength="128" autocomplete="current-password" />
         <button id="login-btn" class="btn-primary login-btn">进入</button>
+        <p id="login-error" role="alert"></p>
       </div>
     </div>
   </div>
