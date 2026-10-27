@@ -67,8 +67,5 @@ model*.bin
 /.codex/
 LifeOps-Android/
 
-# Private working notes; publish only reviewed project documentation.
+# Local documentation and working notes.
 docs/*.md
-!docs/deployment.md
-!docs/showcase.md
-!docs/harness-design.md

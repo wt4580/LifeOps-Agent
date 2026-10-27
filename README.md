@@ -8,7 +8,7 @@
 
 **FastAPI · LangGraph · SQLite · Qwen · Docker**
 
-[快速开始](#快速开始) · [系统架构](#系统架构) · [测试与评估](#测试与评估) · [部署指南](docs/deployment.md) · [设计文档](docs/harness-design.md)
+[快速开始](#快速开始) · [系统架构](#系统架构) · [测试与评估](#测试与评估) · [部署与持续集成](#部署与持续集成) · [Harness 源码](app/src/common/harness/)
 
 </div>
 
@@ -75,7 +75,7 @@ Harness 独立于模型可修改的图状态，对模型与工具调用施加统
 - **可观测性**：记录耗时、用量来源、异常和预算状态，输出 `harness_summary` 与元数据审计。
 - **前后台隔离**：学习、记忆和文档摘要使用独立预算；等待用户确认不占用执行时间。
 
-供应商返回 usage 时记录实际用量，缺失时标记并采用保守预留量控制预算。详细机制见 [Harness 设计](docs/harness-design.md)。
+供应商返回 usage 时记录实际用量，缺失时标记并采用保守预留量控制预算。详细实现见 [Harness 模块](app/src/common/harness/)。
 
 ### 检索与记忆
 
@@ -113,7 +113,7 @@ docker compose exec -T lifeops-demo python scripts/smoke.py --url http://127.0.0
 docker compose down
 ```
 
-演示数据使用专用 volume。镜像构建源、Docker Desktop context 和端口配置见[部署指南](docs/deployment.md)。
+演示数据使用专用 volume。如需切换构建源，可设置 `PIP_INDEX_URL`；演示端口通过 `LIFEOPS_PORT` 配置。Windows Docker Desktop 可按本机环境显式指定 `docker --context desktop-linux compose ...`。
 
 ### 真实模型模式
 
@@ -176,7 +176,7 @@ python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e
 | Jenkins | [Jenkinsfile](Jenkinsfile) | 构建、检查、测试、报告归档、冒烟与可选 kind 部署 |
 | GitHub Actions | [ci.yml](.github/workflows/ci.yml) | 容器验证与报告归档 |
 
-Docker / kind 已完成本地验证。流水线配置已提供，Jenkins 执行节点仍需接入；可选 ML 镜像目标需单独验证。部署前提、持久化和操作命令见[部署指南](docs/deployment.md)。
+Docker / kind 已完成本地验证。流水线配置已提供，Jenkins 执行节点仍需接入；可选 ML 镜像目标需单独验证。kind 使用已有 `dev` 集群和独立的 `lifeops-demo` 命名空间；Jenkins 需要具备 Docker CLI 与 daemon 访问权限的 Linux 执行节点。
 
 ## 项目结构
 
@@ -210,4 +210,4 @@ deploy/kind/                # Kubernetes 配置
 - 固定语料与参数，对 BM25、向量、混合检索和重排进行消融比较。
 - 拆分工具注册与参数 schema，完善数据库级幂等、迁移和备份能力。
 
-本地密钥、数据库、个人记忆、模型权重和运行产物不纳入版本控制。项目演示路径与技术讲解见[展示指南](docs/showcase.md)。
+本地密钥、数据库、个人记忆、模型权重和运行产物不纳入版本控制。
