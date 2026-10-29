@@ -25,6 +25,7 @@ class ChatState(TypedDict, total=False):
     clarification_item: str | None
 
     proposal_id: str | None
+    superseded_proposal_id: str | None
     proposal: dict[str, Any] | None
     proposal_confirmed: bool
     pending_balance_update: dict[str, Any] | None

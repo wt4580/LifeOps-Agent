@@ -81,7 +81,7 @@ def test_internal_confirmation_cannot_be_selected_by_model():
 
 def test_graph_normalizes_validated_arguments_and_stops_after_rejection(monkeypatch):
     from app.src.agent import graph_chat as graph
-    operation = Mock(side_effect=lambda state: state)
+    operation = Mock(side_effect=lambda state: {**state, "answer": "done"})
     monkeypatch.setattr(graph, "_run_tool_impl", operation)
     state = {"session_id": "alice", "decision": {"action": "query_knowledge", "args": {"top_k": "3"}}}
     graph._node_run_tool(state)

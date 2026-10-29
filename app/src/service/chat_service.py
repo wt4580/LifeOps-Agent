@@ -29,6 +29,7 @@ from ..agent.graph_chat import aload_chat_checkpoint_context, arun_chat_graph, l
 from ..util.retrieval.retrieval import index_documents
 from ..common.config.log_config import logger
 from .session_queue import JOB_END, JOB_STOPPED, ChatCapacityExceeded, cancel_and_wait, submit_chat_job
+from ..common.domain.request_errors import ChatRequestRejected
 
 _POST_GRAPH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="postgraph")
 
@@ -71,7 +72,7 @@ class ChatService:
             graph = get_chat_graph()
             pending = await graph.aget_state({"configurable": {"thread_id": session_id}})
             if not pending.tasks or pending.values.get("proposal_id") != proposal_id:
-                raise ValueError("草案已失效，请使用最新的草案卡片")
+                raise ChatRequestRejected("proposal_expired", "草案已失效，请使用最新的草案卡片", invalidated_proposal_id=proposal_id)
 
         # A) 用户消息先落库，保证审计链完整。
         _push("正在保存消息...")
@@ -154,7 +155,8 @@ class ChatService:
 
         # 图后旁路：学习/标注/摘要/记忆/反思等放独立后台线程执行，主响应立即返回，
         # 不再等这些 LLM 密集任务跑完（缓解"回答慢约一分钟"）。
-        if settings.background_learning_enabled and not settings.demo_mode:
+        if (settings.background_learning_enabled and not settings.demo_mode
+                and not state.get("tool_error") and not state.get("turn_aborted")):
             self._spawn_post_graph(
                 session_id=session_id, memory_owner_id=memory_owner_id, message=message,
                 state=state, answer=answer, progress=lambda _message: None,

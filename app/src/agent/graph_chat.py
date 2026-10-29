@@ -28,6 +28,8 @@ from ..common.harness.context import (
     ensure_turn_active,
 )
 from ..common.harness.interceptors import CallContext, InvalidToolArguments, PolicyViolation, tool_chain
+from ..common.domain.tool_errors import ToolExecutionFailure, ToolResultRejected, failure_result
+from ..domain.tool_registry import TOOLS
 from ..domain.tool_registry import tool_catalog
 
 # LLM 每次可见的最近对话条数，必须与 chat_prune_target 一致以避免盲区
@@ -838,6 +840,8 @@ def _handle_interrupt_resume(state: ChatState, user_answer: str) -> ChatState:
         if detect_affirmation(user_answer):
             proposal = state.get("proposal") or {}
             items = proposal.get("items") or []
+            if not items:
+                raise ToolResultRejected("empty_proposal", "草案中没有可创建的待办，请重新生成草案。")
             if items:
                 from ..domain.entity.chat_entity import TodoItem
                 session_id = state.get("session_id", "")
@@ -901,10 +905,7 @@ def _handle_interrupt_resume(state: ChatState, user_answer: str) -> ChatState:
                 state["answer"] = f"已更新账户「{result['name']}」余额为 {result['balance']:.2f}元。"
                 _push_delta(state, state["answer"])
             except Exception as exc:
-                logger.warning("confirm_balance failed: %s", exc)
-                state["used_tool"] = "ask_user_confirm_balance"
-                state["answer"] = f"更新余额时出了点问题：{exc}"
-                _push_delta(state, state["answer"])
+                raise ToolExecutionFailure(action, exc) from exc
         else:
             state["used_tool"] = "ask_user_confirm_balance"
             name = pending.get("name", "") if pending else ""
@@ -1171,11 +1172,7 @@ def _run_tool_impl(state: ChatState) -> ChatState:
             )
             _append_trace(state, _trace_step(step_type="tool", name="query_weather", input=query_input, output={"city": result.get("city"), "adcode": result.get("adcode"), "cached": bool(result.get("cached"))}))
         except WeatherServiceError as exc:
-            logger.warning("query_weather failed: %s", exc)
-            state["used_tool"] = "query_weather"
-            state["answer"] = str(exc)
-            _push_delta(state, state["answer"])
-            _append_trace(state, _trace_step(step_type="tool", name="query_weather", input=query_input, error=str(exc)))
+            raise ToolExecutionFailure(action, exc) from exc
         return state
 
     if action == "query_calendar":
@@ -1196,11 +1193,7 @@ def _run_tool_impl(state: ChatState) -> ChatState:
                 start_dt = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 end_dt = start_dt + timedelta(days=range_days)
         except ValueError as exc:
-            state["used_tool"] = "query_calendar"
-            state["answer"] = f"日期格式解析失败: {exc}"
-            _push_delta(state, state["answer"])
-            _append_trace(state, _trace_step(step_type="tool", name="query_calendar", input={"args": args}, error=str(exc)))
-            return state
+            raise ToolExecutionFailure(action, exc) from exc
 
         start_iso = start_dt.isoformat()
         end_iso = end_dt.isoformat()
@@ -1246,11 +1239,7 @@ def _run_tool_impl(state: ChatState) -> ChatState:
                 )
             _append_trace(state, _trace_step(step_type="tool", name="query_calendar", input=query_input, output={"events_count": len(events)}))
         except CalendarServiceError as exc:
-            logger.warning("query_calendar failed: %s", exc)
-            state["used_tool"] = "query_calendar"
-            state["answer"] = str(exc)
-            _push_delta(state, state["answer"])
-            _append_trace(state, _trace_step(step_type="tool", name="query_calendar", input=query_input, error=str(exc)))
+            raise ToolExecutionFailure(action, exc) from exc
         return state
 
     if action in ("ask_user_confirm_proposal", "propose_todo"):
@@ -1264,6 +1253,9 @@ def _run_tool_impl(state: ChatState) -> ChatState:
                 pending_text, session_id=state.get("session_id")
             )
             proposal_payload = proposal.model_dump()
+
+        if not proposal_payload.get("items"):
+            raise ToolResultRejected("empty_proposal", "未生成可确认的待办，请补充具体事项。")
 
         state["proposal_id"] = proposal_id
         state["proposal"] = proposal_payload
@@ -1339,14 +1331,9 @@ def _run_tool_impl(state: ChatState) -> ChatState:
                 state["answer"] = summary
                 _push_delta(state, state["answer"])
             else:
-                state["used_tool"] = "decompose_goal"
-                state["answer"] = "我暂时没有从你的话中识别出明确的目标。你可以更具体地描述你希望达成什么。"
-                _push_delta(state, state["answer"])
+                raise ToolResultRejected("goal_not_identified", "未识别出可保存的目标，请补充具体目标。")
         except Exception as exc:
-            logger.warning("decompose_goal failed: %s", exc)
-            state["used_tool"] = "decompose_goal"
-            state["answer"] = "目标拆解时出了点问题，请稍后再试试。"
-            _push_delta(state, state["answer"])
+            raise ToolExecutionFailure(action, exc) from exc
         _append_trace(state, _trace_step(step_type="tool", name="decompose_goal", input={"text": text},
             output={"answer": state.get("answer", "")}))
         return state
@@ -1373,14 +1360,9 @@ def _run_tool_impl(state: ChatState) -> ChatState:
                 state["interrupt_message"] = confirm_text
                 return state
             else:
-                state["used_tool"] = "revise_proposal"
-                state["answer"] = "已按你的修正更新。"
-                _push_delta(state, state["answer"])
+                raise ToolResultRejected("empty_proposal", "修改后没有可确认的待办，请补充修改要求。")
         except Exception as exc:
-            logger.warning("revise_proposal failed: %s", exc)
-            state["used_tool"] = "revise_proposal"
-            state["answer"] = "修改时出了点问题，请再描述一次。"
-            _push_delta(state, state["answer"])
+            raise ToolExecutionFailure(action, exc) from exc
         _append_trace(state, _trace_step(step_type="tool", name="revise_proposal",
             input={"correction": correction},
             output={"answer": state.get("answer", "")}))
@@ -1424,10 +1406,7 @@ def _run_tool_impl(state: ChatState) -> ChatState:
                 input={"amount": amount, "category": category, "description": desc, "account_name": acct_name},
                 output=result))
         except Exception as exc:
-            logger.warning("record_expense failed: %s", exc)
-            state["used_tool"] = "record_expense"
-            state["answer"] = f"记录时出了点问题：{exc}"
-            _push_delta(state, state["answer"])
+            raise ToolExecutionFailure(action, exc) from exc
         return state
 
     if action == "query_expenses":
@@ -1464,10 +1443,7 @@ def _run_tool_impl(state: ChatState) -> ChatState:
                 input={"start_date": start, "end_date": end, "category": category, "group_by": group_by},
                 output=analysis))
         except Exception as exc:
-            logger.warning("query_expenses failed: %s", exc)
-            state["used_tool"] = "query_expenses"
-            state["answer"] = f"查询账目时出了点问题：{exc}"
-            _push_delta(state, state["answer"])
+            raise ToolExecutionFailure(action, exc) from exc
         return state
 
     if action == "query_accounts":
@@ -1491,10 +1467,7 @@ def _run_tool_impl(state: ChatState) -> ChatState:
             _append_trace(state, _trace_step(step_type="tool", name="query_accounts",
                 input={}, output={"count": len(accounts)}))
         except Exception as exc:
-            logger.warning("query_accounts failed: %s", exc)
-            state["used_tool"] = "query_accounts"
-            state["answer"] = f"查询账户时出了点问题：{exc}"
-            _push_delta(state, state["answer"])
+            raise ToolExecutionFailure(action, exc) from exc
         return state
 
     if action == "create_account":
@@ -1540,10 +1513,7 @@ def _run_tool_impl(state: ChatState) -> ChatState:
             state["interrupt_message"] = state["answer"]
             _push_delta(state, state["answer"])
         except Exception as exc:
-            logger.warning("create_account failed: %s", exc)
-            state["used_tool"] = "create_account"
-            state["answer"] = f"创建账户时出了点问题：{exc}"
-            _push_delta(state, state["answer"])
+            raise ToolExecutionFailure(action, exc) from exc
         return state
 
     if action == "ask_user_confirm_balance":
@@ -1562,10 +1532,7 @@ def _run_tool_impl(state: ChatState) -> ChatState:
             _push_delta(state, confirm_text)
             state["interrupt_message"] = confirm_text
         except Exception as exc:
-            logger.warning("ask_user_confirm_balance failed: %s", exc)
-            state["used_tool"] = "ask_user_confirm_balance"
-            state["answer"] = f"确认时出了点问题：{exc}"
-            _push_delta(state, state["answer"])
+            raise ToolExecutionFailure(action, exc) from exc
         return state
 
     if action == "query_database":
@@ -1581,10 +1548,7 @@ def _run_tool_impl(state: ChatState) -> ChatState:
                 return state
             result = execute_read_query(sql, max_rows=max_rows, session_id=state["session_id"])
             if result.get("error"):
-                state["used_tool"] = "query_database"
-                state["answer"] = f"查询出错：{result['error']}"
-                _push_delta(state, state["answer"])
-                return state
+                raise ToolExecutionFailure(action, RuntimeError("Read query failed"))
             lines = [f"数据库：{result['db']}，共 {result['row_count']} 条记录"]
             if result["columns"]:
                 lines.append(" | ".join(str(c) for c in result["columns"]))
@@ -1600,10 +1564,7 @@ def _run_tool_impl(state: ChatState) -> ChatState:
             _append_trace(state, _trace_step(step_type="tool", name="query_database",
                 input={"sql": sql, "max_rows": max_rows}, output={"db": result["db"], "row_count": result["row_count"]}))
         except Exception as exc:
-            logger.warning("query_database failed: %s", exc)
-            state["used_tool"] = "query_database"
-            state["answer"] = f"数据库查询出错：{exc}"
-            _push_delta(state, state["answer"])
+            raise ToolExecutionFailure(action, exc) from exc
         return state
 
     # normal_chat 分支：
@@ -1631,6 +1592,18 @@ def _run_tool_impl(state: ChatState) -> ChatState:
     return state
 
 
+def _invalidate_failed_proposal(state: ChatState, *, explicit=False) -> None:
+    proposal_id = (state.get("proposal_id") if explicit else None) or state.get("superseded_proposal_id")
+    if not explicit and not proposal_id:
+        return
+    state["tool_error"]["invalidated_proposal_id"] = proposal_id
+    state["proposal_id"] = None
+    state["proposal"] = None
+    state["proposal_confirmed"] = False
+    state["pending_balance_update"] = None
+    state["answer"] += "本次草案或确认流程已结束，请先核对记录，需要时重新发起。"
+
+
 def _node_run_tool(state: ChatState) -> ChatState:
     """工具执行入口：先过 harness 拦截链，再执行真实工具。
 
@@ -1642,6 +1615,10 @@ def _node_run_tool(state: ChatState) -> ChatState:
     session_id = state.get("session_id", "")
     decision = state.get("decision") or {}
     action = decision.get("action", "normal_chat")
+    turn = get_turn_context(session_id)
+    operation_receipts = {}
+    confirmation_write = bool(state.get("interrupt_answer") and detect_affirmation(state["interrupt_answer"])) and action in {
+        "propose_todo", "ask_user_confirm_proposal", "revise_proposal", "ask_user_confirm_balance"}
     call_ctx = CallContext(
         kind="tool",
         name=f"tool:{action}",
@@ -1657,8 +1634,13 @@ def _node_run_tool(state: ChatState) -> ChatState:
         def execute_validated():
             state["decision"] = {**decision, "args": call_ctx.payload["args"]}
             state["tool_error"] = None
-            return _run_tool_impl(state)
-        with write_scope(session_id, f"{operation}:{state.get('plan_index', 0)}:{action}"):
+            state["answer"] = ""
+            result = _run_tool_impl(state)
+            if not result.get("answer") and not result.get("interrupt_message"):
+                raise ToolExecutionFailure(action, RuntimeError("Tool produced no usable output"))
+            return result
+        with write_scope(session_id, f"{operation}:{state.get('plan_index', 0)}:{action}") as scope:
+            operation_receipts = scope.committed
             return tool_chain().invoke(call_ctx, execute_validated)
     except InvalidToolArguments as exc:
         state["used_tool"] = action
@@ -1670,6 +1652,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
         state["retry_info"] = None
         if state.get("plan_index", 0) > 0:
             state["answer"] += "。前序已提交的操作仍然有效。"
+        _invalidate_failed_proposal(state, explicit=confirmation_write)
         _push_delta(state, state["answer"])
         _append_trace(state, _trace_step(step_type="postprocess", name="tool_arguments_invalid", output=state["tool_error"]))
         return state
@@ -1685,6 +1668,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
         state["retry_info"] = None
         # 详细原因进 trace / 日志；主回答保持简洁，避免把内部表名、session 细节暴露给用户。
         state["answer"] = "出于安全考虑，这次操作没有执行。请换个更具体的说法再试一次。"
+        _invalidate_failed_proposal(state, explicit=confirmation_write)
         _append_trace(
             state,
             _trace_step(
@@ -1713,6 +1697,23 @@ def _node_run_tool(state: ChatState) -> ChatState:
                 output={"kind": "tool", "action": action, "reason": str(exc)},
             ),
         )
+        return state
+    except Exception as exc:
+        spec = TOOLS.get(action)
+        effect = "write" if confirmation_write else (spec.effect if spec else "conversation")
+        state["tool_error"], state["answer"] = failure_result(
+            exc, action=action, effect=effect, committed=operation_receipts,
+            completed_steps=state.get("plan_index", 0), trace_id=turn.trace_id if turn else None, call_id=call_ctx.call_id)
+        state["used_tool"] = action
+        state["retry_info"] = None
+        state["interrupt_message"] = None
+        state["interrupt_answer"] = None
+        state["citations"] = []
+        _invalidate_failed_proposal(state, explicit=confirmation_write or bool(spec and spec.effect == "proposal"))
+        logger.warning("tool_failed action=%s trace_id=%s code=%s error_type=%s", action,
+                       state["tool_error"]["trace_id"], state["tool_error"]["code"], state["tool_error"]["error_type"])
+        _push_delta(state, state["answer"])
+        _append_trace(state, _trace_step(step_type="postprocess", name="tool_execution_failed", output=state["tool_error"]))
         return state
 
 def _push_upcoming_todos(state: ChatState):
@@ -2198,6 +2199,7 @@ def _build_initial_state(
     event_window_end: str | None = None,
     operation_id: str | None = None,
     interrupted_context: dict | None = None,
+    superseded_proposal_id: str | None = None,
 ) -> ChatState:
     history = list(checkpoint_context.get("history") or [])
     history.append({"role": "user", "content": _resolve_relative_dates(user_message)})
@@ -2216,6 +2218,7 @@ def _build_initial_state(
         "summary": checkpoint_context.get("summary"),
 
         "proposal_id": checkpoint_context.get("proposal_id"),
+        "superseded_proposal_id": superseded_proposal_id,
         "proposal": checkpoint_context.get("proposal"),
         "proposal_confirmed": False,
         "pending_balance_update": checkpoint_context.get("pending_balance_update"),
@@ -2305,7 +2308,7 @@ def _finish_turn_result(state: ChatState, turn: TurnContext) -> ChatState:
     if state.get("turn_aborted"):
         status = "budget_exceeded"
     elif state.get("tool_error"):
-        status = "tool_rejected"
+        status = "tool_failed" if state["tool_error"].get("kind") == "execution" else "tool_rejected"
     elif state.get("__interrupt__") or state.get("interrupt_message"):
         status = "waiting_for_input"
     turn.finish(status)
@@ -2372,6 +2375,7 @@ async def arun_chat_graph(
                         result = await compiled_graph.ainvoke(Command(resume=user_message), config=config)
                     else:
                         if tasks:
+                            kwargs["superseded_proposal_id"] = (getattr(current_state, "values", None) or {}).get("proposal_id")
                             previous_proposal = (getattr(current_state, "values", None) or {}).get("proposal")
                             if previous_proposal and re.search(r"改|调整|换成|推迟|提前", user_message):
                                 kwargs["forced_action"] = "revise_proposal"

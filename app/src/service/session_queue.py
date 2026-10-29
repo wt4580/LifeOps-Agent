@@ -5,6 +5,12 @@ import time
 from contextvars import copy_context
 from typing import Any, Awaitable, Callable
 from ..common.telemetry import metrics
+from ..common.telemetry import current_trace_id
+from ..common.domain.request_errors import ChatRequestRejected
+from .idempotency import IdempotencyConflict
+import logging
+
+logger = logging.getLogger(__name__)
 
 JOB_END = object()
 JOB_STOPPED = object()
@@ -58,7 +64,7 @@ class _Gate:
             while not self._queue.empty():
                 events, factory, self.current_request_id, context, queued_at = self._queue.get_nowait()
                 metrics.observe("lifeops_chat_queue_wait_seconds", time.monotonic() - queued_at)
-                self.current = asyncio.create_task(_execute(events, factory), context=context)
+                self.current = asyncio.create_task(_execute(events, factory, self.current_request_id), context=context)
                 self._pending -= 1
                 try:
                     await asyncio.shield(self.current)
@@ -97,19 +103,34 @@ class _Gate:
             self._worker = None
 
 
-async def _execute(events: asyncio.Queue, factory: Callable[[], Awaitable[Any]]) -> None:
+async def _execute(events: asyncio.Queue, factory: Callable[[], Awaitable[Any]], request_id: str | None = None) -> None:
     try:
         result = await factory()
-        status = "cancelled" if isinstance(result, dict) and result.get("request_status") == "cancelled" else (
-            "tool_rejected" if isinstance(result, dict) and result.get("tool_error") else "completed")
+        status = "completed"
+        if isinstance(result, dict):
+            if result.get("request_status") == "cancelled":
+                status = "cancelled"
+            elif result.get("tool_error"):
+                status = "failed" if result["tool_error"].get("kind") == "execution" else "tool_rejected"
         metrics.increment("lifeops_chat_jobs_total", status=status)
         events.put_nowait({"type": "final", "result": result})
     except asyncio.CancelledError:
         metrics.increment("lifeops_chat_jobs_total", status="cancelled")
         events.put_nowait(JOB_STOPPED)
+    except (ChatRequestRejected, IdempotencyConflict) as exc:
+        metrics.increment("lifeops_chat_jobs_total", status="rejected")
+        code = exc.code if isinstance(exc, ChatRequestRejected) else "request_id_conflict"
+        message = exc.message if isinstance(exc, ChatRequestRejected) else "请求标识已用于其他内容，请重新发起请求。"
+        events.put_nowait({"type": "error", "code": code, "trace_id": current_trace_id(),
+                          "retryable": False, "outcome": "rejected", "message": message,
+                          "invalidated_proposal_id": exc.invalidated_proposal_id if isinstance(exc, ChatRequestRejected) else None})
     except Exception as exc:
         metrics.increment("lifeops_chat_jobs_total", status="failed")
-        events.put_nowait({"type": "error", "message": str(exc)})
+        logger.warning("chat_job_failed trace_id=%s error_type=%s", current_trace_id(), type(exc).__name__)
+        events.put_nowait({"type": "error", "code": "request_execution_failed", "trace_id": current_trace_id(),
+                          "retryable": request_id is not None, "outcome": "unconfirmed",
+                          "message": ("请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。" if request_id is not None
+                                      else "请求未能完成，请先核对实际记录，不要重复提交相同业务操作。")})
     finally:
         events.put_nowait(JOB_END)
 

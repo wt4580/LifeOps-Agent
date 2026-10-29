@@ -167,9 +167,14 @@ def evaluate(mode, limit=0):
                             )
                         if case.get("provider_error"):
                             assert any(
-                                event["type"] == "error" and "simulated provider failure" in event.get("message", "")
+                                event["type"] == "error" and event.get("code") == "request_execution_failed"
+                                and event.get("outcome") == "unconfirmed" and event.get("retryable") is True
+                                and isinstance(event.get("trace_id"), str) and len(event["trace_id"]) == 32
                                 for event in events
-                            ), "expected provider error was not surfaced"
+                            ), "expected safe, correlated provider error was not surfaced"
+                            assert all("simulated provider failure" not in json.dumps(event) for event in events), (
+                                "raw provider error leaked into response"
+                            )
                     except Exception as exc:
                         error = f"{type(exc).__name__}: {exc}"
                     finally:

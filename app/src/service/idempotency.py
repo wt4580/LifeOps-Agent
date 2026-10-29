@@ -5,7 +5,7 @@ import hashlib
 import json
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy import update, event
 from sqlalchemy.orm import Session
@@ -29,6 +29,7 @@ class WriteScope:
     session_id: str
     key: str
     ordinal: int = 0
+    committed: dict = field(default_factory=dict, repr=False)
 
 
 _scope = ContextVar("lifeops_write_scope", default=None)
@@ -36,18 +37,19 @@ _scope = ContextVar("lifeops_write_scope", default=None)
 
 @contextmanager
 def write_scope(session_id, key):
-    token = _scope.set(WriteScope(session_id, key))
+    scope = WriteScope(session_id, key)
+    token = _scope.set(scope)
     try:
-        yield
+        yield scope
     finally:
         _scope.reset(token)
 
 
 def begin_write(db, session_id, kind, payload, operation_key=None):
     scope = _scope.get()
+    if scope is not None and scope.session_id != session_id:
+        raise IdempotencyConflict("写入身份与执行上下文不一致")
     if operation_key is None and scope is not None:
-        if scope.session_id != session_id:
-            raise IdempotencyConflict("写入身份与执行上下文不一致")
         operation_key = f"{scope.key}:{scope.ordinal}"
         scope.ordinal += 1
     if operation_key is None:
@@ -78,8 +80,12 @@ def finish_write(db, key, result):
 def _remember_committed(key, entry):
     from ..common.harness.context import get_turn_context
     turn = get_turn_context(None)
+    snapshot = json.loads(json.dumps(entry, ensure_ascii=False, default=str))
+    scope = _scope.get()
+    if scope is not None:
+        scope.committed[key] = snapshot
     if turn is not None:
-        turn.committed_writes[key] = json.loads(json.dumps(entry, ensure_ascii=False, default=str))
+        turn.committed_writes[key] = snapshot
 
 
 @event.listens_for(Session, "after_commit")

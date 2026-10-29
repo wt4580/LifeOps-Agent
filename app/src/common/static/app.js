@@ -735,6 +735,7 @@ async function executeChatRequest(request) {
   let usedKbFlow = false;
   let streamLine = null;
   let serverError = null;
+  let terminalError = null;
 
   function showStopIfActive() {
     if (stopped || finalResult) return;
@@ -860,6 +861,7 @@ async function executeChatRequest(request) {
           }
         } else if (payload.type === "error") {
           serverError = payload.message || "请求未能完成";
+          if (payload.retryable === false) terminalError = payload;
           hideStop();
           requestAnim("think_end");
           if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：错误: ${payload.message || "未知错误"}`;
@@ -889,6 +891,10 @@ async function executeChatRequest(request) {
       if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：${finalAnswer}`;
       if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, buildThoughtLines(finalResult.trace, finalResult));
 
+      if (finalResult.tool_error?.invalidated_proposal_id === window.currentProposalId && window.currentProposalId) {
+        hideProposal();
+      }
+
       if (finalResult.proposal_id && finalResult.proposal && ["plan_proposal", "revise_proposal"].includes(finalResult.used_tool)) {
         showProposal(finalResult.proposal_id, finalResult.proposal);
       }
@@ -908,6 +914,11 @@ async function executeChatRequest(request) {
         }
         renderCitations(finalResult.citations);
       }
+    } else if (terminalError) {
+      request.completed = true;
+      assistantTurn.collapseThought();
+      if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：${serverError}`;
+      if (terminalError.invalidated_proposal_id === window.currentProposalId && window.currentProposalId) hideProposal();
     } else {
       throw new Error(serverError || "连接已结束，但未收到最终结果");
     }

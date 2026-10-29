@@ -19,7 +19,7 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 _HTTP_STATE = ContextVar("lifeops_http_trace_state", default=None)
 BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300)
-STATUSES = {"success", "error", "cancelled", "blocked", "budget_exceeded", "waiting_for_input", "tool_rejected", "running"}
+STATUSES = {"success", "error", "cancelled", "blocked", "budget_exceeded", "waiting_for_input", "tool_rejected", "tool_failed", "running"}
 
 
 def current_trace_id():

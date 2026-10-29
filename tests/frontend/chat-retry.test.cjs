@@ -179,6 +179,40 @@ test('a persisted cancellation returned on retry invites a new supplement withou
   assert.equal(b.calls.length, 1);
 });
 
+for (const currentId of ['failed-draft', 'newer-draft']) {
+  test(`failed confirmation invalidates its own card and preserves ${currentId}`, async () => {
+    const b = browser(() => response([{ type: 'final', result: {
+      answer: '确认未完成，请先核对记录。', used_tool: 'propose_todo',
+      tool_error: { kind: 'execution', outcome: 'unknown', invalidated_proposal_id: 'failed-draft' },
+    } }]));
+    b.context.window.currentProposalId = currentId;
+    const request = b.context.createChatRequest('确认', 'failed-draft');
+    await b.context.executeChatRequest(request);
+    assert.equal(b.context.window.currentProposalId, currentId === 'failed-draft' ? null : 'newer-draft');
+    assert.equal(request.completed, true);
+    assert.equal(b.retry().hidden, true);
+    await b.context.executeChatRequest(request);
+    assert.equal(b.calls.length, 1);
+    assert.equal(b.calls[0].proposal_id, 'failed-draft');
+  });
+}
+
+test('known terminal request rejection clears pending storage and exposes no retry', async () => {
+  const storage = new Map();
+  const b = browser(() => response([{ type: 'error', code: 'proposal_expired', retryable: false,
+    invalidated_proposal_id: 'old', message: '草案已失效，请使用最新草案' }]), storage);
+  b.context.window.currentProposalId = 'old';
+  const request = b.context.createChatRequest('确认', 'old');
+  await b.context.executeChatRequest(request);
+  assert.equal(request.completed, true);
+  assert.equal(b.retry().hidden, true);
+  assert.equal(storage.size, 0);
+  assert.equal(b.context.window.currentProposalId, null);
+  assert.match(request.turn.answerDiv.textContent, /草案已失效/);
+  await b.context.executeChatRequest(request);
+  assert.equal(b.calls.length, 1);
+});
+
 test('retry cannot be sent using another logged-in identity', async () => {
   const b = browser(() => { throw new TypeError('offline'); });
   const request = b.context.createChatRequest('我花了10块钱');
