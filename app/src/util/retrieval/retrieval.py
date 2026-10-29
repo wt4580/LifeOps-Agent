@@ -21,9 +21,6 @@ from pathlib import Path
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import lru_cache
-from threading import RLock
-from weakref import WeakKeyDictionary
 
 from sqlalchemy import func, select
 from rank_bm25 import BM25Okapi
@@ -35,25 +32,6 @@ from ...common.config.llm_config import chat_completion
 from ...common.config.base_config import settings
 from ...common.harness.context import background_context, TurnLimitExceeded
 from ..ingest.scanner import scan_documents
-
-
-_chunk_snapshots = WeakKeyDictionary()
-_snapshot_lock = RLock()
-
-
-@lru_cache(maxsize=8192)
-def _cached_tokens(text, tokenizer):
-    return tuple(tokenizer(text))
-
-
-@lru_cache(maxsize=8)
-def _cached_bm25(texts, factory, tokenizer):
-    return factory([_cached_tokens(text, tokenizer) for text in texts])
-
-
-def _bm25_for_texts(texts):
-    # Preserve IDF for the exact filtered corpus, not a different global corpus.
-    return _cached_bm25(tuple(text or "" for text in texts), BM25Okapi, _tokenize)
 
 
 @dataclass
@@ -206,6 +184,9 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
         db.query(Document).filter(~Document.file_path.in_(select(DocumentChunk.file_path))).delete(synchronize_session=False)
         db.commit()
 
+    from .sqlite_fts import sync_index
+    with KnowledgeSessionLocal() as db:
+        sync_index(db.get_bind(), _tokenize)
     return inserted, skipped
 
 
@@ -525,24 +506,10 @@ def _rewrite_query(query: str, session_id: str = "") -> str:
 
 
 def _collect_chunks() -> list[DocumentChunk]:
-    """Reuse detached chunks until a database-side corpus revision changes."""
-    from ...common.config.knowledge_db_config import ensure_retrieval_revision
-    from sqlalchemy import text
+    """Legacy comparison helper; production retrieval does not load the corpus."""
 
     with KnowledgeSessionLocal() as db:
-        engine = db.get_bind()
-        if engine.dialect.name != "sqlite":
-            return db.execute(select(DocumentChunk).order_by(DocumentChunk.id)).scalars().all()
-        ensure_retrieval_revision(engine)
-        revision = db.execute(text("SELECT revision FROM retrieval_revision WHERE id=1")).scalar_one()
-        with _snapshot_lock:
-            cached = _chunk_snapshots.get(engine)
-            if cached is None or cached[0] != revision:
-                rows = db.execute(select(DocumentChunk).order_by(DocumentChunk.id)).scalars().all()
-                db.expunge_all()
-                cached = (revision, tuple(rows))
-                _chunk_snapshots[engine] = cached
-            return list(cached[1])
+        return db.execute(select(DocumentChunk)).scalars().all()
 
 
 def _is_personal_state_query(query: str) -> bool:
@@ -625,13 +592,14 @@ def _path_recall(rows: list[DocumentChunk], query: str, top_k: int) -> list[Cita
 
 
 def _bm25_recall(rows: list[DocumentChunk], query: str, top_k: int, reason: str) -> list[Citation]:
-    """BM25 召回：基于词项统计的传统相关性检索。"""
+    """Legacy in-memory scorer for comparison; production uses _fts_recall."""
 
     tokens = _tokenize(query)
     if not tokens:
         return []
 
-    bm25 = _bm25_for_texts(r.chunk_text for r in rows)
+    corpus_tokens = [_tokenize(r.chunk_text or "") for r in rows]
+    bm25 = BM25Okapi(corpus_tokens)
     scores = bm25.get_scores(tokens)
 
     min_score = getattr(settings, "rag_evidence_min_score", 0.02)
@@ -641,7 +609,6 @@ def _bm25_recall(rows: list[DocumentChunk], query: str, top_k: int, reason: str)
         return float(min(s, 1.0)) * _BM25_SCORE_MAX
 
     citations: list[Citation] = []
-    # Sort before bounded presentation scores lose the differences above 1.
     for r, s in sorted(zip(rows, scores), key=lambda pair: float(pair[1]), reverse=True):
         if s < min_score:
             continue
@@ -821,7 +788,7 @@ def _rerank_fused(query: str, citations: list[Citation], *, top_k: int) -> list[
 
 
 def _apply_document_summary_filter(rows: list, query: str) -> list:
-    """用文档摘要做轻量预过滤：查询词匹配文档摘要则只保留该文档的 chunks。"""
+    """Legacy comparison helper; production summary filtering runs in FTS5 SQL."""
     if not rows:
         return rows
     with KnowledgeSessionLocal() as db:
@@ -832,13 +799,15 @@ def _apply_document_summary_filter(rows: list, query: str) -> list:
     if not docs:
         return rows
 
-    # 简化：用文档摘要 BM25 匹配查询
-    doc_map = {d.file_path: d.summary for d in docs if d.summary and _cached_tokens(d.summary, _tokenize)}
-    if not doc_map:
+    corpus = [_tokenize(d.summary) for d in docs if d.summary and _tokenize(d.summary)]
+    if not corpus:
         return rows
+    # 简化：用文档摘要 BM25 匹配查询
+    doc_map = {d.file_path: d.summary for d in docs if d.summary and _tokenize(d.summary)}
     doc_paths = list(doc_map.keys())
     doc_texts = [doc_map[p] for p in doc_paths]
-    bm25 = _bm25_for_texts(doc_texts)
+    doc_corpus_tokens = [_tokenize(t) for t in doc_texts]
+    bm25 = BM25Okapi(doc_corpus_tokens)
     query_tokens = _tokenize(query)
     if not query_tokens:
         return rows
@@ -857,23 +826,54 @@ def _apply_document_summary_filter(rows: list, query: str) -> list:
     return rows
 
 
+def _fts_recall(query: str, top_k: int) -> list[Citation]:
+    """Search persistent indexes, then fetch only the top-k matching bodies."""
+    from .sqlite_fts import sync_index, match_expression, search
+
+    expression = match_expression(query, _tokenize)
+    if not expression or top_k <= 0:
+        return []
+    with KnowledgeSessionLocal() as db:
+        engine = db.get_bind()
+    sync_index(engine, _tokenize)
+    with KnowledgeSessionLocal() as db:
+        matches = search(db, expression, top_k, _is_personal_state_query(query))
+        if not matches:
+            return []
+        rows = db.execute(select(DocumentChunk).where(
+            DocumentChunk.id.in_([hit.id for hit in matches])
+        )).scalars().all()
+        by_id = {row.id: row for row in rows}
+        citations = []
+        for hit in matches:
+            row = by_id.get(hit.id)
+            if row is None:
+                continue
+            # FTS5 negative scores are corpus-dependent (often ~1e-6).
+            # Do not reuse rank_bm25's numeric cutoff. This is a lexical
+            # match display score, not a calibrated confidence probability.
+            raw = max(-float(hit.lexical_score), 0.0)
+            score = 30.0 + 30.0 * raw / (1.0 + raw)
+            citations.append(Citation(
+                path=row.file_path, page=row.page, snippet=row.chunk_text,
+                score=score, relatedness=_classes_score(score), reason="bm25",
+                source_type=row.source_type, doc_topic=row.doc_topic,
+                section_title=row.section_title, section_path=row.section_path,
+                summary=row.summary, chunk_id=row.id,
+            ))
+        return citations
+
+
 def search_chunks(query: str, top_k: int = 5, session_id: str = "") -> list[Citation]:
     """统一检索入口：按 backend 分流到 bm25 / langchain / hybrid。"""
 
     backend = settings.rag_backend.lower().strip()
     top_k = top_k or settings.rag_top_k
 
-    rows = _collect_chunks()
-    rows = _apply_source_filter(rows, query)
-    if not rows and backend in {"bm25", "hybrid"}:
-        return []
-
-    rows = _apply_document_summary_filter(rows, query)
-
     rewritten = _rewrite_query(query, session_id=session_id) if backend == "hybrid" else query
 
     candidate_k = max(top_k, settings.rag_candidate_k)
-    bm25_hits = _bm25_recall(rows, query, top_k=candidate_k, reason="bm25") if rows else []
+    bm25_hits = _fts_recall(query, candidate_k)
 
     if backend == "langchain":
         vector_hits = _search_langchain(query, top_k=candidate_k)
