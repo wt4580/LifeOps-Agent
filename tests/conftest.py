@@ -32,6 +32,12 @@ atexit.register(knowledge_engine.dispose)
 
 
 @pytest.fixture(autouse=True)
+def isolate_request_recovery_store(tmp_path, monkeypatch):
+    from app.src.common.config.base_config import settings
+    monkeypatch.setattr(settings, "checkpointer_db_path", str(tmp_path / "checkpointer.db"))
+
+
+@pytest.fixture(autouse=True)
 def mock_all_llm_calls():
     consumer_modules = [
         "app.src.agent.planner.planner",

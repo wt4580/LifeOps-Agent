@@ -122,7 +122,8 @@ async def _execute(events: asyncio.Queue, factory: Callable[[], Awaitable[Any]],
         code = exc.code if isinstance(exc, ChatRequestRejected) else "request_id_conflict"
         message = exc.message if isinstance(exc, ChatRequestRejected) else "请求标识已用于其他内容，请重新发起请求。"
         events.put_nowait({"type": "error", "code": code, "trace_id": current_trace_id(),
-                          "retryable": False, "outcome": "rejected", "message": message,
+                          "retryable": exc.retryable if isinstance(exc, ChatRequestRejected) else False,
+                          "outcome": exc.outcome if isinstance(exc, ChatRequestRejected) else "rejected", "message": message,
                           "invalidated_proposal_id": exc.invalidated_proposal_id if isinstance(exc, ChatRequestRejected) else None})
     except Exception as exc:
         metrics.increment("lifeops_chat_jobs_total", status="failed")

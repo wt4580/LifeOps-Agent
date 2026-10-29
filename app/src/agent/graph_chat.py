@@ -2200,6 +2200,7 @@ def _build_initial_state(
     operation_id: str | None = None,
     interrupted_context: dict | None = None,
     superseded_proposal_id: str | None = None,
+    request_key: str | None = None,
 ) -> ChatState:
     history = list(checkpoint_context.get("history") or [])
     history.append({"role": "user", "content": _resolve_relative_dates(user_message)})
@@ -2211,6 +2212,7 @@ def _build_initial_state(
     return {
         "session_id": session_id,
         "operation_id": operation_id or str(uuid4()),
+        "request_key": request_key,
         "interrupted_context": interrupted_context,
         "user_message": user_message,
         "history": history,
@@ -2357,7 +2359,7 @@ async def arun_chat_graph(
 ) -> ChatState:
     _set_progress_queue(session_id, progress_queue)
     state: ChatState | None = None
-    request_key = kwargs.pop("request_key", None)
+    request_key = kwargs.get("request_key")
     try:
         with turn_context(session_id) as turn:
             turn.request_key = request_key

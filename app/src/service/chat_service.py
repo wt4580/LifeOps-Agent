@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Callable
@@ -49,6 +50,34 @@ class ChatService:
     # ----------------------------------------------------------------------
 
     async def chat(self, message: str, session_id: str | None = None, progress_queue: asyncio.Queue | None = None, proposal_id: str | None = None, request_id: str | None = None) -> dict:
+        session_id = session_id or str(uuid4())
+        request_state = {}
+        try:
+            return await self._chat_impl(message, session_id, progress_queue, proposal_id, request_id, request_state)
+        except asyncio.CancelledError:
+            identity = request_state.get("identity")
+            if identity is not None:
+                from .request_recovery import record_cancellation
+                # A second stop or shutdown must not abandon the first cancellation's I/O.
+                finalizer = asyncio.create_task(self._request_io(record_cancellation, SessionLocal, identity))
+                while not finalizer.done():
+                    try:
+                        await asyncio.shield(finalizer)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not finalizer.cancelled():
+                    try:
+                        durable = finalizer.result()
+                    except Exception:
+                        durable = False
+                    if not durable:
+                        raise ChatRequestRejected("request_cancel_unconfirmed", "无法持久确认停止状态，请先核对实际记录，不要重复提交。",
+                                                  outcome="unconfirmed") from None
+            raise
+
+    async def _chat_impl(self, message, session_id, progress_queue, proposal_id, request_id, request_state) -> dict:
         """执行一次完整聊天请求。
 
         先保存用户消息，加载已有上下文，交给 LangGraph 统一处理路由/工具调用/HITL，
@@ -59,15 +88,26 @@ class ChatService:
                 progress_queue.put_nowait(msg)
 
         session_id = session_id or str(uuid4())
-        from .idempotency import start_request, finish_request
+        from .idempotency import start_request, claim_request, request_dispatched, request_fingerprint
         request_key = None
         message_id = None
+        recovery_identity = None
         if request_id is not None:
             request_key, message_id, cached = start_request(SessionLocal, session_id, request_id, message, proposal_id)
             from ..common.telemetry import bind_request_key
             bind_request_key(request_key)
+            recovery_identity = (request_key, session_id, message_id, request_fingerprint(message, proposal_id))
+            request_state["identity"] = recovery_identity
             if cached is not None:
+                await self._discard_response_journal(recovery_identity)
                 return cached
+            staged = await self._load_response_journal(recovery_identity)
+            if staged is not None:
+                from ..common.telemetry import metrics
+                metrics.increment("lifeops_request_recovery_total", status="restored_journal")
+                return await self._commit_response(recovery_identity, staged, stage=False)
+            if await self._request_io(request_dispatched, SessionLocal, request_key, session_id, message_id):
+                return await self._recover_request(get_chat_graph(), recovery_identity)
         if proposal_id is not None:
             graph = get_chat_graph()
             pending = await graph.aget_state({"configurable": {"thread_id": session_id}})
@@ -115,6 +155,9 @@ class ChatService:
         from .interruption_service import take_interruption
         interrupted_context = take_interruption(SessionLocal, session_id, message_id)
 
+        if request_key is not None and not await self._request_io(claim_request, SessionLocal, request_key, session_id, message_id):
+            return await self._recover_request(chat_graph, recovery_identity)
+
         state = await arun_chat_graph(
             compiled_graph=chat_graph,
             session_id=session_id,
@@ -147,11 +190,12 @@ class ChatService:
 
         # D) 保存助手消息：和 user 消息配对入库，方便后续摘要与回放。
         _push("正在保存对话...")
-        with SessionLocal() as db:
-            db.add(ChatMessage(session_id=session_id, role="assistant", content=answer))
-            if request_key is not None:
-                finish_request(db, request_key, result)
-            db.commit()
+        if recovery_identity is not None:
+            result = await self._commit_response(recovery_identity, result)
+        else:
+            with SessionLocal() as db:
+                db.add(ChatMessage(session_id=session_id, role="assistant", content=answer))
+                db.commit()
 
         # 图后旁路：学习/标注/摘要/记忆/反思等放独立后台线程执行，主响应立即返回，
         # 不再等这些 LLM 密集任务跑完（缓解"回答慢约一分钟"）。
@@ -163,6 +207,82 @@ class ChatService:
             )
 
         return result
+
+    @staticmethod
+    async def _request_io(function, *args):
+        """Join metadata I/O before acknowledging cancellation to the next queued job."""
+        worker = asyncio.create_task(asyncio.to_thread(function, *args))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if worker.done() and not worker.cancelled():
+                worker.exception()
+            raise
+
+    async def _load_response_journal(self, identity):
+        from .request_recovery import load_outcome
+        try:
+            return await self._request_io(load_outcome, *identity)
+        except (sqlite3.Error, OSError):
+            raise ChatRequestRejected("request_recovery_unavailable", "恢复存储暂不可用，尚未重新执行，可稍后重试原请求。",
+                                      outcome="unconfirmed", retryable=True) from None
+
+    async def _discard_response_journal(self, identity):
+        from .request_recovery import discard_outcome
+        from ..common.telemetry import metrics
+        try:
+            await self._request_io(discard_outcome, *identity)
+        except (sqlite3.Error, OSError):
+            metrics.increment("lifeops_request_recovery_total", status="cleanup_deferred")
+            logger.warning("request_journal_cleanup_deferred request_key=%s", identity[0])
+
+    async def _commit_response(self, identity, result, *, stage=True):
+        from .request_recovery import stage_outcome
+        from .idempotency import persist_response
+        from ..common.telemetry import metrics
+        if stage:
+            try:
+                result = await self._request_io(stage_outcome, *identity, result)
+            except (sqlite3.Error, OSError):
+                # The business response may still commit; uncertainty never permits a new graph.
+                metrics.increment("lifeops_request_recovery_total", status="stage_unavailable")
+                logger.warning("request_journal_stage_unavailable request_key=%s", identity[0])
+        key, session_id, message_id, _ = identity
+        saved = await self._request_io(persist_response, SessionLocal, key, session_id, message_id, result)
+        await self._discard_response_journal(identity)
+        return saved
+
+    async def _recover_request(self, graph, identity):
+        from .idempotency import request_result
+        from .request_recovery import completed_checkpoint
+        from ..common.telemetry import metrics
+        key, session_id, message_id, _ = identity
+        cached = await self._request_io(request_result, SessionLocal, key, session_id, message_id)
+        if cached is not None:
+            await self._discard_response_journal(identity)
+            return cached
+        staged = await self._load_response_journal(identity)
+        if staged is not None:
+            metrics.increment("lifeops_request_recovery_total", status="restored_journal")
+            return await self._commit_response(identity, staged, stage=False)
+        try:
+            recovered = await completed_checkpoint(graph, session_id, message_id, key) if graph is not None else None
+        except Exception:
+            raise ChatRequestRejected("request_recovery_unavailable", "执行现场暂不可读取，未重新执行，可稍后重试原请求。",
+                                      outcome="unconfirmed", retryable=True) from None
+        if recovered is not None:
+            metrics.increment("lifeops_request_recovery_total", status="restored_checkpoint")
+            return await self._commit_response(identity, recovered)
+        metrics.increment("lifeops_request_recovery_total", status="blocked")
+        raise ChatRequestRejected("request_outcome_unconfirmed", "上次请求的执行结果尚未确认，已阻止重新执行。请先查询实际记录，再决定是否发起新操作。",
+                                  outcome="unconfirmed")
 
     def _spawn_post_graph(
         self,

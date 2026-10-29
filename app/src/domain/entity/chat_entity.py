@@ -32,6 +32,16 @@ class ChatRequest(Base):
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class ChatExecution(Base):
+    """A durable dispatch claim. Missing legacy claims are not permission to replay."""
+    __tablename__ = "chat_executions"
+
+    request_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    message_id: Mapped[int] = mapped_column(Integer)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class InterruptedTurn(Base):
     __tablename__ = "interrupted_turns"
 

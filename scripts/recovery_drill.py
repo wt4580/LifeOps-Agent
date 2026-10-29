@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,7 @@ from .backup import DATABASES, create_snapshot, restore_snapshot
 USER = "recovery-demo"
 PASSWORD = "recovery-demo-2026"
 EXPENSE = {"session_id": USER, "message": "我花了10元买午饭", "request_id": "recovery-expense"}
+STAGED_EXPENSE = {"session_id": USER, "message": "我花了7元买晚饭", "request_id": "recovery-staged-expense"}
 
 
 def application_stage(stage, root, proof):
@@ -40,7 +42,8 @@ def application_stage(stage, root, proof):
     from app.src.common.config.chat_graph_holder import set_chat_graph
     from app.src.common.config.db_config import SessionLocal, engine
     from app.src.common.config.knowledge_db_config import knowledge_engine
-    from app.src.domain.entity.chat_entity import TodoItem, Transaction
+    from app.src.domain.entity.chat_entity import TodoItem, Transaction, ChatRequest
+    from app.src.service import idempotency, request_recovery
     from app.src.util.retrieval.retrieval import _index_documents_sqlite, _sync_document_records
 
     def chat(client, payload, *, cached=False):
@@ -73,22 +76,48 @@ def application_stage(stage, root, proof):
                 knowledge = chat(client, {"session_id": USER, "message": "报销需要哪些材料", "request_id": "recovery-rag-seed"})
                 assert knowledge["citations"], "Seed knowledge is missing"
                 expense = chat(client, EXPENSE)
+                original_persist = idempotency.persist_response
+                staged_key = idempotency._hash([USER, STAGED_EXPENSE["request_id"]])
+                def fail_response_commit(factory, key, *args):
+                    if key == staged_key:
+                        raise sqlite3.OperationalError("simulated final response persistence failure")
+                    return original_persist(factory, key, *args)
+                idempotency.persist_response = fail_response_commit
+                try:
+                    response = client.post("/api/chat/stream", json=STAGED_EXPENSE)
+                    response.raise_for_status()
+                    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+                    assert any(event.get("code") == "request_execution_failed" for event in events)
+                    assert not any(event["type"] == "final" for event in events)
+                finally:
+                    idempotency.persist_response = original_persist
+                with SessionLocal() as db:
+                    receipt = db.get(ChatRequest, staged_key)
+                    assert receipt.result_json is None
+                    staged = request_recovery.load_outcome(staged_key, USER, receipt.message_id, receipt.payload_hash)
+                    assert staged is not None
+                checks.append("graph_finished_but_response_commit_failed_with_staged_outcome")
                 draft = chat(client, {"session_id": USER, "message": "明天下午3点开会", "request_id": "recovery-draft"})
                 assert draft["proposal_id"], "Pending confirmation checkpoint is missing"
                 with SessionLocal() as db:
                     assert db.scalar(select(func.count()).select_from(TodoItem)) == 0
-                    assert db.scalar(select(func.count()).select_from(Transaction)) == 1
+                    assert db.scalar(select(func.count()).select_from(Transaction)) == 2
                 (root / "memory").mkdir(exist_ok=True)
                 (root / "memory/recovery.md").write_text("虚构演练：偏好室内活动", encoding="utf-8")
-                proof.write_text(json.dumps({"proposal_id": draft["proposal_id"], "expense": expense}, ensure_ascii=False), encoding="utf-8")
+                proof.write_text(json.dumps({"proposal_id": draft["proposal_id"], "expense": expense, "staged_expense": staged}, ensure_ascii=False), encoding="utf-8")
                 checks.extend(["expense_committed_once", "proposal_pending_not_written", "knowledge_index_created"])
             else:
                 previous = json.loads(proof.read_text(encoding="utf-8"))
                 replay = chat(client, EXPENSE, cached=True)
                 assert replay == previous["expense"], "Request receipt did not survive restore"
+                staged_replay = chat(client, STAGED_EXPENSE, cached=True)
+                assert staged_replay == previous["staged_expense"], "Staged final response did not survive restore"
+                assert chat(client, STAGED_EXPENSE, cached=True) == staged_replay
                 with SessionLocal() as db:
-                    assert db.scalar(select(func.count()).select_from(Transaction)) == 1, "Request replay duplicated expense"
+                    assert db.scalar(select(func.count()).select_from(Transaction)) == 2, "Request replay duplicated expense"
+                    assert db.get(ChatRequest, idempotency._hash([USER, STAGED_EXPENSE["request_id"]])).result_json is not None
                 checks.append("request_receipt_replay_without_duplicate_write")
+                checks.append("staged_outcome_recovered_after_fresh_process_without_reexecuting_or_losing_pending_draft")
                 confirmed = chat(client, {"session_id": USER, "message": "确认", "request_id": "recovery-confirm",
                                           "proposal_id": previous["proposal_id"]})
                 assert confirmed["used_tool"] == "plan_gate_confirm", "Checkpoint did not resume its pending confirmation"
