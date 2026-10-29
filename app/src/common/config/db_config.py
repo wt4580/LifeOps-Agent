@@ -77,133 +77,132 @@ def _ensure_sqlite_dir() -> None:
     Path(db_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 
 
-def _ensure_todo_columns() -> None:
+def _ensure_todo_columns(conn) -> None:
     """为已存在 todo_items 表补齐完成状态列（轻量迁移）。"""
 
     url = settings.database_url
     if not url.startswith("sqlite:///"):
         return
 
-    with engine.begin() as conn:
-        table_exists = conn.execute(
-            text("SELECT name FROM sqlite_master WHERE type='table' AND name='todo_items'")
-        ).fetchone()
-        if not table_exists:
-            return
+    table_exists = conn.execute(
+        text("SELECT name FROM sqlite_master WHERE type='table' AND name='todo_items'")
+    ).fetchone()
+    if not table_exists:
+        return
 
-        rows = conn.execute(text("PRAGMA table_info(todo_items)")).fetchall()
-        existing = {r[1] for r in rows}
+    rows = conn.execute(text("PRAGMA table_info(todo_items)")).fetchall()
+    existing = {r[1] for r in rows}
 
-        if "is_completed" not in existing:
-            conn.execute(text("ALTER TABLE todo_items ADD COLUMN is_completed BOOLEAN NOT NULL DEFAULT 0"))
-        if "completed_at" not in existing:
-            conn.execute(text("ALTER TABLE todo_items ADD COLUMN completed_at DATETIME"))
-        if "repeat_rule" not in existing:
-            conn.execute(text("ALTER TABLE todo_items ADD COLUMN repeat_rule VARCHAR(16)"))
-        if "repeat_until" not in existing:
-            conn.execute(text("ALTER TABLE todo_items ADD COLUMN repeat_until DATETIME"))
+    if "is_completed" not in existing:
+        conn.execute(text("ALTER TABLE todo_items ADD COLUMN is_completed BOOLEAN NOT NULL DEFAULT 0"))
+    if "completed_at" not in existing:
+        conn.execute(text("ALTER TABLE todo_items ADD COLUMN completed_at DATETIME"))
+    if "repeat_rule" not in existing:
+        conn.execute(text("ALTER TABLE todo_items ADD COLUMN repeat_rule VARCHAR(16)"))
+    if "repeat_until" not in existing:
+        conn.execute(text("ALTER TABLE todo_items ADD COLUMN repeat_until DATETIME"))
 
 
-def _ensure_life_events_columns() -> None:
+def _ensure_life_events_columns(conn) -> None:
     """为现有 life_events 表补齐 importance 列。"""
     url = settings.database_url
     if not url.startswith("sqlite:///"):
         return
-    with engine.begin() as conn:
-        table_exists = conn.execute(
-            text("SELECT name FROM sqlite_master WHERE type='table' AND name='life_events'")
-        ).fetchone()
-        if not table_exists:
-            return
-        rows = conn.execute(text("PRAGMA table_info(life_events)")).fetchall()
-        existing = {r[1] for r in rows}
-        if "importance" not in existing:
-            conn.execute(text("ALTER TABLE life_events ADD COLUMN importance VARCHAR(8) NOT NULL DEFAULT 'low'"))
-        if "event_time" not in existing:
-            conn.execute(text("ALTER TABLE life_events ADD COLUMN event_time DATETIME"))
+    table_exists = conn.execute(
+        text("SELECT name FROM sqlite_master WHERE type='table' AND name='life_events'")
+    ).fetchone()
+    if not table_exists:
+        return
+    rows = conn.execute(text("PRAGMA table_info(life_events)")).fetchall()
+    existing = {r[1] for r in rows}
+    if "importance" not in existing:
+        conn.execute(text("ALTER TABLE life_events ADD COLUMN importance VARCHAR(8) NOT NULL DEFAULT 'low'"))
+    if "event_time" not in existing:
+        conn.execute(text("ALTER TABLE life_events ADD COLUMN event_time DATETIME"))
 
 
-def _ensure_user_profile_columns() -> None:
+def _ensure_user_profile_columns(conn) -> None:
     """为现有 user_profiles 表补齐新增列。"""
     url = settings.database_url
     if not url.startswith("sqlite:///"):
         return
-    with engine.begin() as conn:
-        table_exists = conn.execute(
-            text("SELECT name FROM sqlite_master WHERE type='table' AND name='user_profiles'")
-        ).fetchone()
-        if not table_exists:
-            return
-        rows = conn.execute(text("PRAGMA table_info(user_profiles)")).fetchall()
-        existing = {r[1] for r in rows}
-        new_columns = {
-            "age": "INTEGER",
-            "gender": "VARCHAR(16)",
-            "occupation": "VARCHAR(128)",
-            "city": "VARCHAR(64)",
-            "diet_json": "TEXT",
-            "allergies_json": "TEXT",
-            "sleep_schedule": "VARCHAR(64)",
-            "exercise_habits": "VARCHAR(128)",
-            "work_hours": "VARCHAR(32)",
-            "family_status": "VARCHAR(32)",
-            "goals_json": "TEXT",
-        }
-        for col, col_type in new_columns.items():
-            if col not in existing:
-                conn.execute(text(f"ALTER TABLE user_profiles ADD COLUMN {col} {col_type}"))
+    table_exists = conn.execute(
+        text("SELECT name FROM sqlite_master WHERE type='table' AND name='user_profiles'")
+    ).fetchone()
+    if not table_exists:
+        return
+    rows = conn.execute(text("PRAGMA table_info(user_profiles)")).fetchall()
+    existing = {r[1] for r in rows}
+    new_columns = {
+        "age": "INTEGER",
+        "gender": "VARCHAR(16)",
+        "occupation": "VARCHAR(128)",
+        "city": "VARCHAR(64)",
+        "diet_json": "TEXT",
+        "allergies_json": "TEXT",
+        "sleep_schedule": "VARCHAR(64)",
+        "exercise_habits": "VARCHAR(128)",
+        "work_hours": "VARCHAR(32)",
+        "family_status": "VARCHAR(32)",
+        "goals_json": "TEXT",
+    }
+    for col, col_type in new_columns.items():
+        if col not in existing:
+            conn.execute(text(f"ALTER TABLE user_profiles ADD COLUMN {col} {col_type}"))
 
 
-def _ensure_memory_columns() -> None:
+def _ensure_memory_columns(conn) -> None:
     url = settings.database_url
     if not url.startswith("sqlite:///"):
         return
-    with engine.begin() as conn:
-        table_exists = conn.execute(
-            text("SELECT name FROM sqlite_master WHERE type='table' AND name='memory_candidates'")
-        ).fetchone()
-        if not table_exists:
-            return
-        rows = conn.execute(text("PRAGMA table_info(memory_candidates)")).fetchall()
-        existing = {r[1] for r in rows}
-        if "confidence" not in existing:
-            conn.execute(text("ALTER TABLE memory_candidates ADD COLUMN confidence FLOAT NOT NULL DEFAULT 1.0"))
-        if "insight_type" not in existing:
-            conn.execute(text("ALTER TABLE memory_candidates ADD COLUMN insight_type VARCHAR(16) NOT NULL DEFAULT 'explicit'"))
+    table_exists = conn.execute(
+        text("SELECT name FROM sqlite_master WHERE type='table' AND name='memory_candidates'")
+    ).fetchone()
+    if not table_exists:
+        return
+    rows = conn.execute(text("PRAGMA table_info(memory_candidates)")).fetchall()
+    existing = {r[1] for r in rows}
+    if "confidence" not in existing:
+        conn.execute(text("ALTER TABLE memory_candidates ADD COLUMN confidence FLOAT NOT NULL DEFAULT 1.0"))
+    if "insight_type" not in existing:
+        conn.execute(text("ALTER TABLE memory_candidates ADD COLUMN insight_type VARCHAR(16) NOT NULL DEFAULT 'explicit'"))
 
 
-def _ensure_chat_message_columns() -> None:
+def _ensure_chat_message_columns(conn) -> None:
     """chat_messages 增量列迁移（现有库缺列时自动补齐）。"""
     url = settings.database_url
     if not url.startswith("sqlite:///"):
         return
-    with engine.begin() as conn:
-        table_exists = conn.execute(
-            text("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_messages'")
-        ).fetchone()
-        if not table_exists:
-            return
-        rows = conn.execute(text("PRAGMA table_info(chat_messages)")).fetchall()
-        existing = {r[1] for r in rows}
-        if "topic" not in existing:
-            conn.execute(text("ALTER TABLE chat_messages ADD COLUMN topic VARCHAR(64)"))
+    table_exists = conn.execute(
+        text("SELECT name FROM sqlite_master WHERE type='table' AND name='chat_messages'")
+    ).fetchone()
+    if not table_exists:
+        return
+    rows = conn.execute(text("PRAGMA table_info(chat_messages)")).fetchall()
+    existing = {r[1] for r in rows}
+    if "topic" not in existing:
+        conn.execute(text("ALTER TABLE chat_messages ADD COLUMN topic VARCHAR(64)"))
+
+
+def _baseline(conn):
+    """Adopt legacy databases using only the historically supported additions."""
+    Base.metadata.create_all(bind=conn)
+    _ensure_todo_columns(conn)
+    _ensure_memory_columns(conn)
+    _ensure_user_profile_columns(conn)
+    _ensure_life_events_columns(conn)
+    _ensure_chat_message_columns(conn)
+    for table, column, definition in (
+        ("memory_candidates", "session_id", "VARCHAR(64)"),
+        ("conversation_summaries", "summarized_through_id", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        columns = {r[1] for r in conn.execute(text(f"PRAGMA table_info({table})"))}
+        if column not in columns:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
 
 
 def init_db() -> None:
     _ensure_sqlite_dir()
     from ...domain.entity import chat_entity  # noqa: F401
-    Base.metadata.create_all(bind=engine)
-    _ensure_todo_columns()
-    _ensure_memory_columns()
-    _ensure_user_profile_columns()
-    _ensure_life_events_columns()
-    _ensure_chat_message_columns()
-    if settings.database_url.startswith("sqlite:///"):
-        with engine.begin() as conn:
-            for table, column, definition in (
-                ("memory_candidates", "session_id", "VARCHAR(64)"),
-                ("conversation_summaries", "summarized_through_id", "INTEGER NOT NULL DEFAULT 0"),
-            ):
-                columns = {r[1] for r in conn.execute(text(f"PRAGMA table_info({table})"))}
-                if column not in columns:
-                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {definition}"))
+    from .schema_migrations import migrate
+    migrate(engine, Base.metadata, [("legacy_business_baseline_v1", _baseline)])
