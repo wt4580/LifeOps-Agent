@@ -19,6 +19,19 @@ from pathlib import Path
 from .e2e_cases import cases
 
 
+def source_revision(root):
+    """Revision metadata must not prevent writing a completed evaluation report."""
+    fallback = os.getenv("GIT_REVISION") or "unknown"
+    if not (root / ".git").exists():
+        return fallback
+    try:
+        result = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=root,
+                                capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return fallback
+    return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else fallback
+
+
 def percentile(values, q):
     values = sorted(values)
     if not values:
@@ -188,13 +201,7 @@ def evaluate(mode, limit=0):
         for result in results:
             groups[result["group"]].append(result)
         latencies = [result["latency_ms"] for result in results]
-        revision = (
-            subprocess.run(
-                ["git", "rev-parse", "--short", "HEAD"], cwd=root, capture_output=True, text=True
-            ).stdout.strip()
-            if (root / ".git").exists()
-            else os.getenv("GIT_REVISION", "unknown")
-        )
+        revision = source_revision(root)
         corpus_hash = hashlib.sha256(
             b"".join(path.read_bytes() for path in sorted((root / "examples" / "knowledge").glob("*.txt")))
         ).hexdigest()
