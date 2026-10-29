@@ -28,6 +28,7 @@ jobs:
             python -m ruff check --select E9,F63,F7,F82 app tests scripts
             python -m pytest tests -q --junitxml=/reports/unit.xml
             python -m app.eval.run_e2e --output /reports/e2e.json
+            python -m scripts.recovery_drill --output /reports/recovery.json
           '
           docker start -a lifeops-test
           test "$(docker inspect -f '{{.State.ExitCode}}' lifeops-test)" = 0

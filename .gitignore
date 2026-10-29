@@ -46,6 +46,7 @@ htmlcov/
 !/app/src/data/.gitkeep
 /artifacts/
 /reports/
+/backups/
 
 # Downloaded models and vector indexes.
 bge-*/

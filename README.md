@@ -157,7 +157,7 @@ python -m app.src
 | Docker Compose | **冒烟通过** | 就绪、登录、确认/取消、来源引用与执行摘要 |
 | kind | **部署及冒烟通过** | 独立命名空间、单副本、PVC 与实际 HTTP 流程 |
 
-2026-10-29 本地源码补充验证：**307 项单元与回归测试、100/100 条模拟端到端流程契约通过**，覆盖 FTS5 旧库迁移、增删改同步、回滚、重启复用和并发更新。本次未重新构建或部署 Docker / kind。
+2026-10-29 补充验证：工具契约改造后 **100/100 条模拟端到端流程契约通过**；加入备份恢复能力后，当前源码在 Linux 测试容器中 **378 项单元与回归测试通过**，跨进程恢复演练 **10 个检查点通过**。覆盖 FTS5 迁移与同步、工具参数拒绝、队列容量、请求幂等、待确认 checkpoint 和数据恢复。本次使用已有测试镜像只读挂载源码，未重建或更新运行中的 Docker / kind 部署。
 
 [查看流程报告](app/eval/reports/e2e-contract.md) · [查看逐例结果与源码指纹](app/eval/reports/e2e-contract.json)
 
@@ -189,6 +189,26 @@ python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e
 | GitHub Actions | [ci.yml](.github/workflows/ci.yml) | 容器验证与报告归档 |
 
 Docker / kind 已完成本地验证。流水线配置已提供，Jenkins 执行节点仍需接入；可选 ML 镜像目标需单独验证。kind 使用已有 `dev` 集群和独立的 `lifeops-demo` 命名空间；Jenkins 需要具备 Docker CLI 与 daemon 访问权限的 Linux 执行节点。
+
+## 备份与恢复
+
+先停止所有应用进程和定时任务，再使用 [快照工具](scripts/backup.py)备份业务库、知识库、checkpoint 与个人记忆。三份 SQLite 之间没有分布式事务，`--service-stopped` 是操作者对已停服的明确声明，脚本不会自动停止服务；不应把此入口用于在线跨库一致性备份。
+
+```bash
+# 替换成实际配置的路径；output 的父目录须已存在，目标目录须不存在。
+python -m scripts.backup create --business-db /data/lifeops.db --knowledge-db /data/knowledge.db --checkpoint-db /data/checkpointer.db --memory-dir /data/memory --output /backups/snapshot-001 --service-stopped
+python -m scripts.backup verify /backups/snapshot-001
+python -m scripts.backup restore /backups/snapshot-001 --output /data-restored
+```
+
+快照使用 SQLite backup API，包含 WAL 中已提交的数据，并附文件大小、SHA-256 与完整性检查。恢复只写入全新目录，不覆盖现有数据。恢复后，将数据库和个人记忆配置指向新目录，保留旧目录用于回退，再启动服务。快照包含个人数据与认证信息，应存放在受控目录；不包含环境密钥、原始参考文档、模型权重或诊断日志，部署时需分别保留这些资源。
+
+```bash
+# 全程使用临时目录与虚构资料；两个独立应用进程验证恢复，无需 API Key。
+python -m scripts.recovery_drill --output artifacts/recovery-drill.json
+```
+
+演练覆盖恢复后登录、原请求回执重放不重复记账、待确认 checkpoint 恢复并创建一次待办、脱离原始文档的持久化 FTS 检索和个人记忆文件恢复。Jenkins 与 GitHub Actions 的容器验证已接入该演练。
 
 ## 项目结构
 
