@@ -27,7 +27,8 @@ from ..common.harness.context import (
     turn_context,
     ensure_turn_active,
 )
-from ..common.harness.interceptors import CallContext, PolicyViolation, tool_chain
+from ..common.harness.interceptors import CallContext, InvalidToolArguments, PolicyViolation, tool_chain
+from ..domain.tool_registry import tool_catalog
 
 # LLM 每次可见的最近对话条数，必须与 chat_prune_target 一致以避免盲区
 RECENT_DIALOGUE_LIMIT = 50
@@ -420,26 +421,11 @@ def _node_decompose(state: ChatState) -> ChatState:
         "## 不需要拆解的场景\n"
         "- 一个工具就能完成的请求\n"
         "- 纯聊天的请求\n\n"
-        "## 工具说明\n"
-        "- query_weather: 查天气\n"
-        "- query_todos: 查待办事项\n"
-        "- query_calendar: 查日历日程\n"
-        "- query_knowledge: 查知识库\n"
-        "- propose_todo: 创建待办\n"
-"  - args 结构：{\"title\":\"动作导向短句\",\"text\":\"用户原话\",\"due_date\":\"YYYY-MM-DD|null\",\"due_time\":\"HH:MM|null\",\"start_date\":\"YYYY-MM-DD|null\",\"end_date\":\"YYYY-MM-DD|null\",\"repeat\":\"once|daily|weekly|null\",\"repeat_until\":\"YYYY-MM-DD|null\",\"duration_min\":\"分钟|null\"}\n"
-"  - 规则：日期可能以 start_date 形式给出，此时回填 due_date；\"每天\\/每周\"等周期信息放 repeat；具体钟点放 due_time；只有文字没有日期时间时全部为 null\n"
-"  - 重要：用户给出持续范围（\"接下来一周\\/一周\\/两周\\/未来N天\\/这几天\"等）时，必须计算 end_date：end_date = 开始日期 + 天数 - 1（一周=7天），并把 end_date 同写到 repeat_until。示例：今天是 2026-08-30，用户说\"接下来一周每天做2小时LeetCode\" → start_date=2026-08-31, end_date=2026-09-06, repeat=daily, repeat_until=2026-09-06, duration_min=120\n"
-        "- decompose_goal: 拆解长期目标\n"
-        "- clarify: 反问用户补充信息（身份/角色/缺少关键参数时使用）\n"
-        "- revise_proposal: 修改待办草案\n"
-        "- record_expense: 记录收支，args 包括 amount、transaction_type、account_name、category、description、transaction_at（按用户指定日期解析为本地 ISO 时间；未指定则 null）\n"
-        "- query_expenses: 查询账目\n"
-        "- query_accounts: 查询账户余额\n"
-        "- create_account: 创建账户\n"
-        "- ask_user_confirm_balance: 让用户确认更新余额\n"
-        "- query_database: 执行只读 SQL 查询\n"
-        "- revive_topic: 用户明确提到之前讨论过的任务/话题时，找回该过往任务的记录来回答\n"
-        "- normal_chat: 普通对话\n\n"
+        "## 工具契约\n"
+        "可用工具、参数 schema、副作用与确认要求见输入 tools；只选择其中列出的动作，禁止构造确认或其他内部动作。\n"
+        "参数不能包含用户身份或权限；身份由服务端提供。不要猜金额、账户名或未提供的事实，缺少关键信息时先查库再澄清。\n"
+        "待办日期为 YYYY-MM-DD，时间为 HH:MM；周期为 once/daily/weekly。每天/每周的持续范围需计算结束日期并设置 repeat_until。\n"
+        "创建草案不等于创建待办；必须等用户确认。修改草案使用 revise_proposal。\n\n"
         "## 纯闲聊判断\n"
         "如果用户只是打招呼、寒暄、说心情、纯聊天，没有任何查询/操作意图：\n"
         '- action 设为 "normal_chat"\n'
@@ -463,6 +449,7 @@ def _node_decompose(state: ChatState) -> ChatState:
         "available_topics": available_topics or [],
         "past_tasks": load_task_index(session_id),
         "business_db_inventory": db_inventory,
+        "tools": tool_catalog(),
     }
     raw = chat_completion(
         [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
@@ -816,6 +803,7 @@ def _build_proposal_item(args: dict, fallback_text: str = "") -> dict:
             due_val = candidate.isoformat(sep=" ", timespec="seconds")
         except (ValueError, IndexError):
             due_val = None
+    due_val = args.get("due_at") or due_val
     if due_val:
         item["due_at"] = due_val
 
@@ -1447,11 +1435,13 @@ def _run_tool_impl(state: ChatState) -> ChatState:
             lines.append(f"总支出：{analysis['total_expense']:.2f}元")
             lines.append(f"总收入：{analysis['total_income']:.2f}元")
             lines.append(f"结余：{analysis['net']:.2f}元")
-            if analysis["by_category"]:
-                lines.append("\n按分类：")
-                for c in analysis["by_category"]:
+            grouping = "by_account" if group_by == "account" else "by_category"
+            label_key = "account_name" if group_by == "account" else "category"
+            if analysis[grouping]:
+                lines.append("\n按账户：" if group_by == "account" else "\n按分类：")
+                for c in analysis[grouping]:
                     label = "支出" if c["total"] < 0 else "收入"
-                    lines.append(f"  {c['category']}：{abs(c['total']):.2f}元（{c['count']}笔）")
+                    lines.append(f"  {c[label_key]}：{label}{abs(c['total']):.2f}元（{c['count']}笔）")
             state["answer"] = "\n".join(lines)
             _push_delta(state, state["answer"])
             _append_trace(state, _trace_step(step_type="tool", name="query_expenses",
@@ -1641,14 +1631,32 @@ def _node_run_tool(state: ChatState) -> ChatState:
         name=f"tool:{action}",
         session_id=session_id,
         turn=get_turn_context(session_id),
-        payload={"action": action, "args": decision.get("args") or {}},
+        payload={"action": action, "args": decision.get("args") if decision.get("args") is not None else {},
+                 "internal_authorized": action == "ask_user_confirm_balance" and bool(state.get("pending_balance_update"))},
     )
     try:
         from ..service.idempotency import write_scope
         turn = get_turn_context(session_id)
         operation = state.get("operation_id") or (turn.turn_id if turn else str(uuid4()))
+        def execute_validated():
+            state["decision"] = {**decision, "args": call_ctx.payload["args"]}
+            state["tool_error"] = None
+            return _run_tool_impl(state)
         with write_scope(session_id, f"{operation}:{state.get('plan_index', 0)}:{action}"):
-            return tool_chain().invoke(call_ctx, lambda: _run_tool_impl(state))
+            return tool_chain().invoke(call_ctx, execute_validated)
+    except InvalidToolArguments as exc:
+        state["used_tool"] = action
+        state["tool_error"] = {"code": "invalid_tool_arguments", "action": action,
+                               "issues": exc.issues, "retryable": False}
+        state["answer"] = "这一步的参数不完整或格式不正确，尚未执行。请补充或检查：" + "、".join(
+            issue["field"] for issue in exc.issues)
+        # Keep prior step evidence, but route directly to finalize on rejection.
+        state["retry_info"] = None
+        if state.get("plan_index", 0) > 0:
+            state["answer"] += "。前序已提交的操作仍然有效。"
+        _push_delta(state, state["answer"])
+        _append_trace(state, _trace_step(step_type="postprocess", name="tool_arguments_invalid", output=state["tool_error"]))
+        return state
     except PolicyViolation as exc:
         logger.warning(
             "tool policy blocked action=%s session=%s reason=%s",
@@ -1657,6 +1665,8 @@ def _node_run_tool(state: ChatState) -> ChatState:
             exc.reason,
         )
         state["used_tool"] = action
+        state["tool_error"] = {"code": "tool_policy_blocked", "action": action, "retryable": False}
+        state["retry_info"] = None
         # 详细原因进 trace / 日志；主回答保持简洁，避免把内部表名、session 细节暴露给用户。
         state["answer"] = "出于安全考虑，这次操作没有执行。请换个更具体的说法再试一次。"
         _append_trace(
@@ -1712,6 +1722,8 @@ def _push_upcoming_todos(state: ChatState):
 
 # 主动决策节点：基于近期事件/待办/画像，决定是否追加主动建议。
 def _node_proactive_decision(state: ChatState) -> ChatState:
+    if state.get("tool_error"):
+        return state
     _push_progress(state, "正在分析是否需要主动建议...")
     recent_events = state.get("recent_events", [])
     upcoming_todos = state.get("upcoming_todos", [])
@@ -1781,7 +1793,7 @@ _MAX_RETRIES = 2
 
 def _node_verify(state: ChatState) -> ChatState:
     """审查单步工具执行结果，不通过时标记 retry。"""
-    if state.get("turn_aborted"):
+    if state.get("turn_aborted") or state.get("tool_error"):
         return state
     if state.get("mode") == "quick":
         return state
@@ -1863,7 +1875,7 @@ def _node_verify(state: ChatState) -> ChatState:
 
 def _node_quality_gate(state: ChatState) -> ChatState:
     """最终回答质量审查：quick 模式跳过；HITL/计划确认等固定措辞轮次不再重写。"""
-    if state.get("turn_aborted"):
+    if state.get("turn_aborted") or state.get("tool_error"):
         return state
     if state.get("mode") == "quick":
         return state
@@ -1920,7 +1932,7 @@ def _node_finalize(state: ChatState) -> ChatState:
     # 多步计划：把各 step 结果汇总成一个连贯回答。
     plan = state.get("plan") or []
     completed_steps = [s for s in plan if s.get("result")]
-    if not state.get("turn_aborted") and len(completed_steps) >= 2:
+    if not state.get("turn_aborted") and not state.get("tool_error") and len(completed_steps) >= 2:
         parts = []
         for i, step in enumerate(completed_steps):
             result = (step.get("result") or "").strip()
@@ -1975,7 +1987,7 @@ def _node_finalize(state: ChatState) -> ChatState:
 # -----------------------------
 
 def _node_advance_plan(state: ChatState) -> ChatState:
-    if state.get("turn_aborted"):
+    if state.get("turn_aborted") or state.get("tool_error"):
         return state
     plan = state.get("plan") or []
     plan_index = state.get("plan_index", 0)
@@ -1987,7 +1999,7 @@ def _node_advance_plan(state: ChatState) -> ChatState:
 
 
 def _route_after_advance(state: ChatState) -> str:
-    if state.get("turn_aborted"):
+    if state.get("turn_aborted") or state.get("tool_error"):
         return "finalize"
     if state.get("retry_info") and state.get("retry_count", 0) <= _MAX_RETRIES:
         return "decompose"
@@ -2199,6 +2211,7 @@ def _build_initial_state(
             "steps": steps,
         },
         "used_tool": None,
+        "tool_error": None,
         "citations": [],
         "forced_action": forced_action,
         "forced_args": forced_args or {},
@@ -2274,6 +2287,8 @@ def _finish_turn_result(state: ChatState, turn: TurnContext) -> ChatState:
     status = "success"
     if state.get("turn_aborted"):
         status = "budget_exceeded"
+    elif state.get("tool_error"):
+        status = "tool_rejected"
     elif state.get("__interrupt__") or state.get("interrupt_message"):
         status = "waiting_for_input"
     turn.finish(status)

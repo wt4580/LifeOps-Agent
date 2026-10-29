@@ -30,3 +30,4 @@ class ChatDto(BaseModel):
     used_tool: Optional[str] =Field(None, description="使用的工具")
     citations: Optional[list[dict]] =Field(None, description="引用列表")
     trace: Optional[dict] =Field(None, description="审计轨迹")
+    tool_error: Optional[dict] = Field(None, description="工具参数或执行策略拒绝的结构化原因")

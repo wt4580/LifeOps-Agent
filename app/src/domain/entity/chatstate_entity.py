@@ -20,6 +20,7 @@ class ChatState(TypedDict, total=False):
     forced_args: dict[str, Any] | None
     answer: str
     used_tool: str | None
+    tool_error: dict[str, Any] | None
 
     clarification_item: str | None
 

@@ -11,6 +11,7 @@
 - ``BudgetInterceptor``：单轮 LLM / 工具调用次数与墙钟预算
 - ``TraceInterceptor``：每次调用的耗时记录
 - ``ToolPolicyInterceptor``：未知动作白名单 + query_database 只读校验
+- ``ToolArgumentsInterceptor``：与规划目录同源的参数 schema 校验
 - ``SessionScopeInterceptor``：query_database 必须限定当前 session_id
 """
 
@@ -28,6 +29,8 @@ from typing import Any, Protocol
 
 from .context import TurnContext, TurnLimitExceeded
 from .sql_scope import check_session_scope
+from ...domain.tool_registry import TOOLS, validate_tool_args
+from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,12 @@ class PolicyViolation(BaseException):
         super().__init__(reason)
         self.reason = reason
         self.interceptor = interceptor
+
+
+class InvalidToolArguments(PolicyViolation):
+    def __init__(self, issues):
+        super().__init__("工具参数不符合契约", interceptor="ToolArgumentsInterceptor")
+        self.issues = issues
 
 
 @dataclass
@@ -120,35 +129,8 @@ class TraceInterceptor:
         )
 
 
-# 允许由 LLM 决策层触发的工具动作。
-# 新增工具时务必同步这里，否则会被策略层当成未知动作拒绝。
-ALLOWED_TOOL_ACTIONS: frozenset[str] = frozenset(
-    {
-        "normal_chat",
-        "query_todos",
-        "query_knowledge",
-        "query_weather",
-        "query_calendar",
-        "propose_todo",
-        "ask_user_confirm_proposal",
-        "revise_proposal",
-        "decompose_goal",
-        "clarify",
-        "revive_topic",
-        "record_expense",
-        "query_expenses",
-        "query_accounts",
-        "create_account",
-        "ask_user_confirm_balance",
-        "query_database",
-        # 内部 / HITL 状态，可能通过 forced_action 进入 run_tool
-        "plan_proposal",
-        "plan_gate_confirm",
-        "plan_gate_cancel",
-        "plan_gate_wait",
-        "confirm_proposal",
-    }
-)
+# Generated from the same contracts exposed to the planner.
+ALLOWED_TOOL_ACTIONS: frozenset[str] = frozenset(TOOLS)
 
 
 def _check_read_only(sql: str) -> str | None:
@@ -176,6 +158,10 @@ class ToolPolicyInterceptor:
             ctx.block_reason = f"未知工具动作 {action or '(empty)'}，已拒绝执行。"
             return Decision.ABORT
 
+        if not TOOLS[action].model_visible and not ctx.payload.get("internal_authorized"):
+            ctx.block_reason = "该动作只能恢复服务端已有的确认流程。"
+            return Decision.ABORT
+
         if action == "query_database":
             args = ctx.payload.get("args")
             sql = str(args.get("sql") or "") if isinstance(args, dict) else ""
@@ -185,6 +171,28 @@ class ToolPolicyInterceptor:
                     ctx.block_reason = reason
                     return Decision.ABORT
 
+        return Decision.CONTINUE
+
+    def after(self, ctx: CallContext, result: Any) -> Any:
+        return result
+
+
+class ToolArgumentsInterceptor:
+    """Reject malformed arguments before services can read or mutate business data."""
+
+    def before(self, ctx: CallContext) -> Decision:
+        if ctx.kind != "tool":
+            return Decision.CONTINUE
+        action = ctx.payload.get("action")
+        if action not in TOOLS:
+            return Decision.CONTINUE  # ToolPolicyInterceptor owns unknown actions.
+        try:
+            ctx.payload["args"] = validate_tool_args(action, ctx.payload.get("args", {}))
+        except ValidationError as exc:
+            issues = [{"field": ".".join(str(part)[:64] for part in item["loc"]) or "args",
+                       "type": item["type"]}
+                      for item in exc.errors(include_input=False, include_context=False, include_url=False)[:8]]
+            raise InvalidToolArguments(issues) from None
         return Decision.CONTINUE
 
     def after(self, ctx: CallContext, result: Any) -> Any:
@@ -280,6 +288,7 @@ _TOOL_CHAIN = InterceptorChain(
         BudgetInterceptor(),
         TraceInterceptor(),
         ToolPolicyInterceptor(),
+        ToolArgumentsInterceptor(),
         SessionScopeInterceptor(),
     ]
 )

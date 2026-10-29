@@ -297,6 +297,7 @@ def test_async_graph_hitl_revision_and_confirmation(business, monkeypatch):
         first=await graph.arun_chat_graph(compiled_graph=compiled,session_id="alice",user_message="安排开会",
             forced_action="propose_todo",forced_args={"title":"meeting","due_at":"2026-10-28T15:00:00"})
         assert first["proposal_id"]
+        assert first["proposal"]["items"][0]["due_at"] == "2026-10-28T15:00:00"
         assert (await compiled.aget_state({"configurable":{"thread_id":"alice"}})).tasks
         second=await graph.arun_chat_graph(compiled_graph=compiled,session_id="alice",user_message="可以改成后天吗")
         assert second["used_tool"] == "revise_proposal"

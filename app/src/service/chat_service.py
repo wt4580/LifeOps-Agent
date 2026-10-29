@@ -138,7 +138,8 @@ class ChatService:
         trace = state.get("trace")
 
         result = {"answer": answer, "session_id": session_id, "proposal_id": proposal_id,
-                  "proposal": proposal_payload, "used_tool": used_tool, "citations": citations, "trace": trace}
+                  "proposal": proposal_payload, "used_tool": used_tool, "citations": citations, "trace": trace,
+                  "tool_error": state.get("tool_error")}
 
         # D) 保存助手消息：和 user 消息配对入库，方便后续摘要与回放。
         _push("正在保存对话...")
