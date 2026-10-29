@@ -21,6 +21,9 @@ from pathlib import Path
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
+from threading import RLock
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import func, select
 from rank_bm25 import BM25Okapi
@@ -32,6 +35,25 @@ from ...common.config.llm_config import chat_completion
 from ...common.config.base_config import settings
 from ...common.harness.context import background_context, TurnLimitExceeded
 from ..ingest.scanner import scan_documents
+
+
+_chunk_snapshots = WeakKeyDictionary()
+_snapshot_lock = RLock()
+
+
+@lru_cache(maxsize=8192)
+def _cached_tokens(text, tokenizer):
+    return tuple(tokenizer(text))
+
+
+@lru_cache(maxsize=8)
+def _cached_bm25(texts, factory, tokenizer):
+    return factory([_cached_tokens(text, tokenizer) for text in texts])
+
+
+def _bm25_for_texts(texts):
+    # Preserve IDF for the exact filtered corpus, not a different global corpus.
+    return _cached_bm25(tuple(text or "" for text in texts), BM25Okapi, _tokenize)
 
 
 @dataclass
@@ -503,10 +525,24 @@ def _rewrite_query(query: str, session_id: str = "") -> str:
 
 
 def _collect_chunks() -> list[DocumentChunk]:
-    """从数据库取出全部 chunk（MVP 实现，后续可替换为更高效索引）。"""
+    """Reuse detached chunks until a database-side corpus revision changes."""
+    from ...common.config.knowledge_db_config import ensure_retrieval_revision
+    from sqlalchemy import text
 
     with KnowledgeSessionLocal() as db:
-        return db.execute(select(DocumentChunk)).scalars().all()
+        engine = db.get_bind()
+        if engine.dialect.name != "sqlite":
+            return db.execute(select(DocumentChunk).order_by(DocumentChunk.id)).scalars().all()
+        ensure_retrieval_revision(engine)
+        revision = db.execute(text("SELECT revision FROM retrieval_revision WHERE id=1")).scalar_one()
+        with _snapshot_lock:
+            cached = _chunk_snapshots.get(engine)
+            if cached is None or cached[0] != revision:
+                rows = db.execute(select(DocumentChunk).order_by(DocumentChunk.id)).scalars().all()
+                db.expunge_all()
+                cached = (revision, tuple(rows))
+                _chunk_snapshots[engine] = cached
+            return list(cached[1])
 
 
 def _is_personal_state_query(query: str) -> bool:
@@ -595,8 +631,7 @@ def _bm25_recall(rows: list[DocumentChunk], query: str, top_k: int, reason: str)
     if not tokens:
         return []
 
-    corpus_tokens = [_tokenize(r.chunk_text or "") for r in rows]
-    bm25 = BM25Okapi(corpus_tokens)
+    bm25 = _bm25_for_texts(r.chunk_text for r in rows)
     scores = bm25.get_scores(tokens)
 
     min_score = getattr(settings, "rag_evidence_min_score", 0.02)
@@ -606,7 +641,8 @@ def _bm25_recall(rows: list[DocumentChunk], query: str, top_k: int, reason: str)
         return float(min(s, 1.0)) * _BM25_SCORE_MAX
 
     citations: list[Citation] = []
-    for r, s in zip(rows, scores):
+    # Sort before bounded presentation scores lose the differences above 1.
+    for r, s in sorted(zip(rows, scores), key=lambda pair: float(pair[1]), reverse=True):
         if s < min_score:
             continue
         norm = _norm_bm25(s)
@@ -627,7 +663,6 @@ def _bm25_recall(rows: list[DocumentChunk], query: str, top_k: int, reason: str)
             )
         )
 
-    citations.sort(key=lambda c: c.score, reverse=True)
     return citations[:top_k]
 
 
@@ -797,15 +832,13 @@ def _apply_document_summary_filter(rows: list, query: str) -> list:
     if not docs:
         return rows
 
-    corpus = [_tokenize(d.summary) for d in docs if d.summary and _tokenize(d.summary)]
-    if not corpus:
-        return rows
     # 简化：用文档摘要 BM25 匹配查询
-    doc_map = {d.file_path: d.summary for d in docs if d.summary and _tokenize(d.summary)}
+    doc_map = {d.file_path: d.summary for d in docs if d.summary and _cached_tokens(d.summary, _tokenize)}
+    if not doc_map:
+        return rows
     doc_paths = list(doc_map.keys())
     doc_texts = [doc_map[p] for p in doc_paths]
-    doc_corpus_tokens = [_tokenize(t) for t in doc_texts]
-    bm25 = BM25Okapi(doc_corpus_tokens)
+    bm25 = _bm25_for_texts(doc_texts)
     query_tokens = _tokenize(query)
     if not query_tokens:
         return rows
@@ -837,7 +870,7 @@ def search_chunks(query: str, top_k: int = 5, session_id: str = "") -> list[Cita
 
     rows = _apply_document_summary_filter(rows, query)
 
-    rewritten = _rewrite_query(query, session_id=session_id)
+    rewritten = _rewrite_query(query, session_id=session_id) if backend == "hybrid" else query
 
     candidate_k = max(top_k, settings.rag_candidate_k)
     bm25_hits = _bm25_recall(rows, query, top_k=candidate_k, reason="bm25") if rows else []

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import asyncio
 import re
+from uuid import uuid4
 from datetime import datetime, timedelta
 from typing import Any, TypedDict
 
@@ -720,7 +721,7 @@ def _infer_transaction_date(message: str) -> str | None:
     now = datetime.now()
     for word, days in (("大前天", 3), ("前天", 2), ("昨天", 1), ("今天", 0)):
         if word in message:
-            return (now - timedelta(days=days)).isoformat(timespec="seconds")
+            return (now - timedelta(days=days)).date().isoformat()
     match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", message)
     return match.group(0) if match else None
 
@@ -847,22 +848,25 @@ def _handle_interrupt_resume(state: ChatState, user_answer: str) -> ChatState:
             items = proposal.get("items") or []
             if items:
                 from ..domain.entity.chat_entity import TodoItem
-                from ..common.config.db_config import SessionLocal
                 session_id = state.get("session_id", "")
                 with SessionLocal() as db:
-                    for it in items:
-                        raw_due = it.get("due_at") or it.get("due_date") or it.get("start_date")
-                        due_at = _parse_due_value(raw_due)
-                        repeat_until = _parse_due_value(it.get("repeat_until") or it.get("end_date"))
-                        db.add(TodoItem(
-                            session_id=session_id,
-                            title=it.get("title", ""),
-                            due_at=due_at,
-                            repeat_rule=_coerce_repeat(it.get("repeat")),
-                            repeat_until=repeat_until,
-                            source="plan_proposal",
-                        ))
-                    db.commit()
+                    from ..service.idempotency import MISSING, begin_write, finish_write
+                    key, cached = begin_write(db, session_id, "confirm_todos", items, state.get("proposal_id"))
+                    if cached is MISSING:
+                        for it in items:
+                            raw_due = it.get("due_at") or it.get("due_date") or it.get("start_date")
+                            due_at = _parse_due_value(raw_due)
+                            repeat_until = _parse_due_value(it.get("repeat_until") or it.get("end_date"))
+                            db.add(TodoItem(
+                                session_id=session_id,
+                                title=it.get("title", ""),
+                                due_at=due_at,
+                                repeat_rule=_coerce_repeat(it.get("repeat")),
+                                repeat_until=repeat_until,
+                                source="plan_proposal",
+                            ))
+                        finish_write(db, key, {"confirmed": True})
+                        db.commit()
             state["proposal_confirmed"] = True
             state["proposal_id"] = None
             state["proposal"] = None
@@ -898,7 +902,8 @@ def _handle_interrupt_resume(state: ChatState, user_answer: str) -> ChatState:
             try:
                 from ..service.bookkeeping_service import bookkeeping_service
                 result = bookkeeping_service.set_account_balance(
-                    account_id=pending["id"], balance=pending["new_balance"], session_id=state["session_id"]
+                    account_id=pending["id"], balance=pending["new_balance"], session_id=state["session_id"],
+                    operation_key=pending.get("operation_key"),
                 )
                 state["used_tool"] = "ask_user_confirm_balance"
                 state["answer"] = f"已更新账户「{result['name']}」余额为 {result['balance']:.2f}元。"
@@ -1247,7 +1252,6 @@ def _run_tool_impl(state: ChatState) -> ChatState:
         title = args.get("title")
         pending_text = args.get("text") or state["user_message"]
         if title:
-            from uuid import uuid4
             proposal_id = str(uuid4())
             proposal_payload = {"items": [_build_proposal_item(args, pending_text)]}
         else:
@@ -1520,6 +1524,7 @@ def _run_tool_impl(state: ChatState) -> ChatState:
 
             state["pending_balance_update"] = {
                 "id": existing["id"], "name": name,
+                "operation_key": str(uuid4()),
                 "current_balance": current_balance, "new_balance": balance
             }
             state["used_tool"] = "ask_user_confirm_balance"
@@ -1638,7 +1643,11 @@ def _node_run_tool(state: ChatState) -> ChatState:
         payload={"action": action, "args": decision.get("args") or {}},
     )
     try:
-        return tool_chain().invoke(call_ctx, lambda: _run_tool_impl(state))
+        from ..service.idempotency import write_scope
+        turn = get_turn_context(session_id)
+        operation = state.get("operation_id") or (turn.turn_id if turn else str(uuid4()))
+        with write_scope(session_id, f"{operation}:{state.get('plan_index', 0)}:{action}"):
+            return tool_chain().invoke(call_ctx, lambda: _run_tool_impl(state))
     except PolicyViolation as exc:
         logger.warning(
             "tool policy blocked action=%s session=%s reason=%s",
@@ -2154,6 +2163,7 @@ def _build_initial_state(
     upcoming_todos: list[dict] | None = None,
     event_window_start: str | None = None,
     event_window_end: str | None = None,
+    operation_id: str | None = None,
 ) -> ChatState:
     history = list(checkpoint_context.get("history") or [])
     history.append({"role": "user", "content": _resolve_relative_dates(user_message)})
@@ -2164,6 +2174,7 @@ def _build_initial_state(
 
     return {
         "session_id": session_id,
+        "operation_id": operation_id or str(uuid4()),
         "user_message": user_message,
         "history": history,
         "recent_dialogue": list(checkpoint_context.get("recent_dialogue") or history[-16:]),

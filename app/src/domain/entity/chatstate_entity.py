@@ -4,6 +4,7 @@ from typing import Any, TypedDict
 # ChatState is the data packet flowing through the graph.
 class ChatState(TypedDict, total=False):
     session_id: str
+    operation_id: str
     user_message: str
     profile_context: str | None
     pre_advice: str | None

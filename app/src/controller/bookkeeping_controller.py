@@ -1,19 +1,22 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Header
 
 from ..common.domain.response import success_response
 from ..domain.dto.bookkeeping_dto import AccountCreateRequest, TransactionCreateRequest, ExpenseAnalysisRequest
 from ..service.bookkeeping_service import bookkeeping_service, BookkeepingError
+from ..service.idempotency import IdempotencyConflict
 
 router = APIRouter()
 
 
 @router.post("/api/accounts")
-def create_account(req: AccountCreateRequest):
+def create_account(req: AccountCreateRequest, idempotency_key: str | None = Header(default=None, min_length=1, max_length=128)):
     try:
         result = bookkeeping_service.add_account(
-            name=req.name, balance=req.balance, session_id=req.session_id or ""
+            name=req.name, balance=req.balance, session_id=req.session_id or "", operation_key=idempotency_key
         )
         return success_response(data=result)
+    except IdempotencyConflict as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except BookkeepingError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -39,7 +42,7 @@ def delete_account(account_id: int, session_id: str = Query(default="")):
 
 
 @router.post("/api/transactions")
-def create_transaction(req: TransactionCreateRequest):
+def create_transaction(req: TransactionCreateRequest, idempotency_key: str | None = Header(default=None, min_length=1, max_length=128)):
     try:
         result = bookkeeping_service.record_transaction(
             amount=req.amount,
@@ -49,8 +52,11 @@ def create_transaction(req: TransactionCreateRequest):
             category=req.category,
             description=req.description,
             transaction_at=req.transaction_at,
+            operation_key=idempotency_key,
         )
         return success_response(data=result)
+    except IdempotencyConflict as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except BookkeepingError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

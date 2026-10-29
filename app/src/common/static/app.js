@@ -1,4 +1,4 @@
-﻿// LifeOps Agent - 简化版交互逻辑
+// LifeOps Agent - 简化版交互逻辑
 
 // DOM 元素
 const chatLog = document.getElementById("chat-log");
@@ -34,6 +34,43 @@ const logoutBtn = document.getElementById("logout-btn");
 const appSection = document.getElementById("app-section");
 
 let sessionId = localStorage.getItem("lifeops_session_id") || "";
+const pendingChatRequests = new Map();
+
+function pendingStorageKey(owner) {
+  return `lifeops_pending_requests:${encodeURIComponent(owner)}`;
+}
+
+function readPendingRequests(owner) {
+  try {
+    const records = JSON.parse(sessionStorage.getItem(pendingStorageKey(owner)) || "[]");
+    return Array.isArray(records) ? records.filter(payload =>
+      payload && payload.session_id === owner && typeof payload.message === "string" &&
+      typeof payload.request_id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(payload.request_id)
+    ) : [];
+  } catch (_) { return []; }
+}
+
+function persistPendingRequest(request, remove = false) {
+  try {
+    const payload = request.payload;
+    const records = readPendingRequests(payload.session_id).filter(item => item.request_id !== payload.request_id);
+    if (!remove) records.push(payload);
+    if (records.length) sessionStorage.setItem(pendingStorageKey(payload.session_id), JSON.stringify(records));
+    else sessionStorage.removeItem(pendingStorageKey(payload.session_id));
+  } catch (_) { /* Storage may be disabled/full; same-page retry still works. */ }
+}
+
+function restorePendingRequests(owner) {
+  for (const payload of readPendingRequests(owner)) {
+    if (pendingChatRequests.has(payload.request_id)) continue;
+    const request = createChatRequest(payload.message, payload.proposal_id || null, payload);
+    request.turn.answerDiv.textContent = "上次请求的结果未确认，可点击“重试这条消息”查询或继续原请求。";
+    request.turn.setRetryVisible(true);
+    if (payload.proposal_id) {
+      proposalRequests.set(JSON.stringify([owner, payload.proposal_id, payload.message]), request);
+    }
+  }
+}
 
 let proposalId = null;
 let currentTodoView = "upcoming";
@@ -218,7 +255,7 @@ function appendChat(role, text) {
   return div;
 }
 
-function appendAssistantTurn(requestId, turnSessionId) {
+function appendAssistantTurn(requestId, turnSessionId, retry) {
   const wrapper = document.createElement("div");
   wrapper.className = "chat-line assistant assistant-turn";
 
@@ -241,6 +278,12 @@ function appendAssistantTurn(requestId, turnSessionId) {
   stopBtn.className = "assistant-stop-btn";
   stopBtn.textContent = "停止";
   stopBtn.hidden = true;
+  const retryBtn = document.createElement("button");
+  retryBtn.type = "button";
+  retryBtn.className = "assistant-retry-btn";
+  retryBtn.textContent = "重试这条消息";
+  retryBtn.hidden = true;
+  retryBtn.addEventListener("click", () => retry());
   let stopPending = false;
   stopBtn.addEventListener("click", () => {
     if (stopPending) return;
@@ -292,6 +335,7 @@ function appendAssistantTurn(requestId, turnSessionId) {
   thoughtHeader.appendChild(thoughtLabel);
   thoughtHeader.appendChild(thoughtToggle);
   thoughtHeader.appendChild(stopBtn);
+  thoughtHeader.appendChild(retryBtn);
 
   wrapper.appendChild(thoughtHeader);
   wrapper.appendChild(thoughtDiv);
@@ -306,6 +350,18 @@ function appendAssistantTurn(requestId, turnSessionId) {
     expandThought,
     collapseThought,
     stopBtn,
+    retryBtn,
+    setRetryVisible(visible) {
+      retryBtn.hidden = !visible;
+      retryBtn.disabled = !visible;
+    },
+    resetAttempt() {
+      stopPending = false;
+      stopBtn.disabled = false;
+      stopBtn.textContent = "停止";
+      setThoughtLines(thoughtDiv, ["正在处理这条消息..."]);
+      answerDiv.textContent = "回答：正在生成中...";
+    },
     setStopVisible(visible) {
       stopBtn.hidden = !visible;
       stopBtn.disabled = stopPending;
@@ -391,116 +447,37 @@ if (closeProposal) {
   });
 }
 
-// 确认待办草案
+// 草案确认/取消也通过同一请求生命周期执行，失败后复用原请求。
 let confirmBusy = false;
-if (confirmProposal) {
-  confirmProposal.addEventListener("click", async () => {
-    const proposalId = window.currentProposalId;
-    if (!proposalId) {
-      alert("没有可确认的草案");
-      return;
-    }
-    if (confirmBusy) {
-      alert("正在确认中，请稍候");
-      return;
-    }
+const proposalRequests = new Map();
 
-    confirmBusy = true;
-    confirmProposal.disabled = true;
-    try {
-      const res = await fetch("/api/chat/stream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: "确认", session_id: sessionId, proposal_id: proposalId }),
-      });
-      if (!res.ok || !res.body) {
-        alert("确认失败，请重试");
-        return;
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
-      let statusLine = null;
-      let finalResult = null;
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() || "";
-        for (const part of parts) {
-          const line = part.split("\n").find((item) => item.startsWith("data: "));
-          if (!line) continue;
-          let payload;
-          try {
-            payload = JSON.parse(line.slice(6));
-          } catch (_) {
-            continue;
-          }
-          if (payload.type === "status") {
-            const msg = payload.message || "";
-            if (msg.startsWith("排队中")) {
-              if (!statusLine) {
-                statusLine = document.createElement("div");
-                statusLine.className = "todo-confirm-status";
-                statusLine.style.color = "#888";
-                proposalContent.appendChild(statusLine);
-              }
-              statusLine.textContent = msg;
-            }
-          } else if (payload.type === "final") {
-            finalResult = payload.result;
-          }
-        }
-      }
-
-      const confirmed = finalResult && (finalResult.proposal_confirmed === true || finalResult.used_tool === "plan_gate_confirm");
-      if (!finalResult) throw new Error("草案未能确认，可能已失效，请使用最新卡片");
-      hideProposal();
-      loadTodos("/api/todos/upcoming?days=7");
-
-      if (!finalResult) {
-        appendChat("assistant", "没有收到确认结果，请重试");
-        return;
-      }
-      const answerText = finalResult.answer || (confirmed ? "好的，已添加到待办。" : "已处理。");
-      appendChat("assistant", confirmed ? `✅ ${answerText}` : answerText);
-    } catch (error) {
-      alert(`确认失败: ${error.message}`);
-    } finally {
-      confirmBusy = false;
-      confirmProposal.disabled = false;
-    }
-  });
+async function sendProposalDecision(message) {
+  const proposalId = window.currentProposalId;
+  if (confirmBusy || !proposalId) return;
+  const key = JSON.stringify([sessionId, proposalId, message]);
+  let request = proposalRequests.get(key);
+  if (!request) {
+    request = createChatRequest(message, proposalId);
+    proposalRequests.set(key, request);
+  }
+  confirmBusy = true;
+  confirmProposal.disabled = true;
+  rejectProposal.disabled = true;
+  try {
+    return await executeChatRequest(request);
+  } finally {
+    confirmBusy = false;
+    confirmProposal.disabled = false;
+    rejectProposal.disabled = false;
+    if (request.completed || request.cancelled) proposalRequests.delete(key);
+  }
 }
 
-// 拒绝待办草案
+if (confirmProposal) {
+  confirmProposal.addEventListener("click", () => sendProposalDecision("确认"));
+}
 if (rejectProposal) {
-  rejectProposal.addEventListener("click", async () => {
-    if (confirmBusy || !window.currentProposalId) return;
-    confirmBusy = true;
-    rejectProposal.disabled = true;
-    try {
-      const response = await fetch("/api/chat/stream", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: "取消", session_id: sessionId, proposal_id: window.currentProposalId }),
-      });
-      if (!response.ok) throw new Error("取消失败，请重试");
-      const events = (await response.text()).split("\n\n").filter((part) => part.startsWith("data: "))
-        .map((part) => JSON.parse(part.slice(6)));
-      const final = events.find((event) => event.type === "final");
-      if (!final || final.result.used_tool !== "plan_gate_cancel") throw new Error("草案已失效，请使用最新卡片");
-      appendChat("assistant", final.result.answer);
-      hideProposal();
-    } catch (error) {
-      alert(error.message);
-    } finally {
-      confirmBusy = false;
-      rejectProposal.disabled = false;
-    }
-  });
+  rejectProposal.addEventListener("click", () => sendProposalDecision("取消"));
 }
 
 // ========================================
@@ -632,6 +609,7 @@ async function handleLogin() {
     appSection.style.display = "";
     requestAnim("idle");
     loadTodos("/api/todos/upcoming?days=7");
+    restorePendingRequests(sessionId);
   } catch (err) {
     document.getElementById("login-error").textContent = err.message;
     console.error("Login error:", err);
@@ -650,6 +628,8 @@ if (sessionId) {
       sessionId = "";
       appSection.style.display = "none";
       loginSection.style.display = "";
+    } else {
+      restorePendingRequests(sessionId);
     }
   });
 } else {
@@ -671,6 +651,18 @@ if (loginInput) {
 if (logoutBtn) {
   logoutBtn.addEventListener("click", async () => {
     try { await fetch("/api/auth/logout", { method: "POST" }); } catch (_) { /* local logout */ }
+    try { sessionStorage.removeItem(pendingStorageKey(sessionId)); } catch (_) { /* unavailable */ }
+    for (const [id, request] of pendingChatRequests) {
+      if (request.payload.session_id === sessionId) {
+        request.turn.setRetryVisible(false);
+        pendingChatRequests.delete(id);
+      }
+    }
+    for (const [key, request] of proposalRequests) {
+      if (request.payload.session_id === sessionId) proposalRequests.delete(key);
+    }
+    hideProposal();
+    chatLog.innerHTML = "";
     localStorage.removeItem("lifeops_session_id");
     sessionId = "";
     appSection.style.display = "none";
@@ -699,15 +691,41 @@ function abortActiveStream() {
 async function sendChatMessage() {
   const message = chatInput.value.trim();
   if (!message) return;
-
-  appendChat("user", message);
   chatInput.value = "";
-  const requestId = crypto.randomUUID();
-  const turnSessionId = sessionId;
-  const assistantTurn = appendAssistantTurn(requestId, turnSessionId);
+  return executeChatRequest(createChatRequest(message));
+}
+
+function createChatRequest(message, proposalId = null, originalPayload = null) {
+  const payload = originalPayload ? { ...originalPayload } : { message, session_id: sessionId, request_id: crypto.randomUUID() };
+  if (proposalId) payload.proposal_id = proposalId;
+  const request = {
+    payload: Object.freeze(payload),
+    body: JSON.stringify(payload),
+    running: false,
+    completed: false,
+    cancelled: false,
+  };
+  appendChat("user", message);
+  request.turn = appendAssistantTurn(payload.request_id, payload.session_id, () => executeChatRequest(request));
+  pendingChatRequests.set(payload.request_id, request);
+  persistPendingRequest(request);
+  return request;
+}
+
+async function executeChatRequest(request) {
+  if (request.running || request.completed || request.cancelled) return null;
+  const { payload, turn: assistantTurn } = request;
+  if (!sessionId || sessionId !== payload.session_id) {
+    assistantTurn.answerDiv.textContent = "请先登录发送这条消息的账号，再重试。";
+    return null;
+  }
+  request.running = true;
+  assistantTurn.setRetryVisible(false);
+  assistantTurn.resetAttempt();
 
   const controller = new AbortController();
-  activeStream = { controller, aborted: false };
+  const stream = { controller, aborted: false };
+  activeStream = stream;
 
   let stopped = false;
   let queued = false;
@@ -716,6 +734,7 @@ async function sendChatMessage() {
   let thinkingStarted = false;
   let usedKbFlow = false;
   let streamLine = null;
+  let serverError = null;
 
   function showStopIfActive() {
     if (stopped || finalResult) return;
@@ -729,7 +748,7 @@ async function sendChatMessage() {
     const res = await fetch("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, session_id: turnSessionId, request_id: requestId }),
+      body: request.body,
       signal: controller.signal,
     });
     if (!res.ok || !res.body) {
@@ -746,17 +765,21 @@ async function sendChatMessage() {
       try {
         chunk = await reader.read();
       } catch (err) {
-        if (err && (err.name === "AbortError") && activeStream && activeStream.aborted) {
+        if (err && (err.name === "AbortError") && stream.aborted) {
           stopped = true;
           break;
         }
         throw err;
       }
       const { value, done } = chunk;
+      if (sessionId !== request.payload.session_id) {
+        try { await reader.cancel(); } catch (_) { /* old identity's response is discarded */ }
+        return null;
+      }
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
 
-      const parts = buffer.split("\n\n");
+      const parts = buffer.split(/\r?\n\r?\n/);
       buffer = parts.pop() || "";
 
       for (const part of parts) {
@@ -836,6 +859,7 @@ async function sendChatMessage() {
             }
           }
         } else if (payload.type === "error") {
+          serverError = payload.message || "请求未能完成";
           hideStop();
           requestAnim("think_end");
           if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：错误: ${payload.message || "未知错误"}`;
@@ -846,14 +870,20 @@ async function sendChatMessage() {
           requestAnim(usedKbFlow ? "idle" : "think_end");
         }
       }
+      if (finalResult || stopped || serverError) {
+        try { await reader.cancel(); } catch (_) { /* terminal event already received */ }
+        break;
+      }
     }
 
     if (stopped) {
+      request.cancelled = true;
       hideStop();
       requestAnim("idle");
       if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, ["（已停止）"]);
       if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：已停止`;
     } else if (finalResult) {
+      request.completed = true;
       const finalAnswer = finalResult.answer || assistantText || "";
       assistantTurn.collapseThought();
       if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：${finalAnswer}`;
@@ -861,6 +891,11 @@ async function sendChatMessage() {
 
       if (finalResult.proposal_id && finalResult.proposal && ["plan_proposal", "revise_proposal"].includes(finalResult.used_tool)) {
         showProposal(finalResult.proposal_id, finalResult.proposal);
+      }
+
+      if (payload.proposal_id && ["plan_gate_confirm", "plan_gate_cancel"].includes(finalResult.used_tool)) {
+        if (window.currentProposalId === payload.proposal_id) hideProposal();
+        loadTodos("/api/todos/upcoming?days=7");
       }
 
       if (Array.isArray(finalResult.citations) && finalResult.citations.length > 0) {
@@ -873,16 +908,29 @@ async function sendChatMessage() {
         }
         renderCitations(finalResult.citations);
       }
-    } else if (assistantTurn?.answerDiv) {
-      assistantTurn.answerDiv.textContent = `回答：${assistantText || "未收到回复"}`;
+    } else {
+      throw new Error(serverError || "连接已结束，但未收到最终结果");
     }
   } catch (error) {
     hideStop();
     requestAnim("think_end");
-    if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, ["请求失败"]);
-    if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：错误: ${error.message}`;
+    if (stream.aborted && error.name === "AbortError") {
+      request.cancelled = true;
+      assistantTurn.answerDiv.textContent = "回答：已停止接收，请核对实际处理结果。";
+    } else if (!finalResult) {
+      setThoughtLines(assistantTurn.thoughtDiv, [error.message || "请求失败"]);
+      assistantTurn.answerDiv.textContent = "结果未确认，可点击“重试这条消息”继续确认原请求；无需重新发送。";
+      assistantTurn.setRetryVisible(true);
+    }
   } finally {
-    activeStream = null;
+    request.running = false;
+    if (activeStream === stream) activeStream = null;
+    hideStop();
+    if (request.completed || request.cancelled) {
+      pendingChatRequests.delete(payload.request_id);
+      persistPendingRequest(request, true);
+      if (payload.proposal_id) proposalRequests.delete(JSON.stringify([payload.session_id, payload.proposal_id, payload.message]));
+    }
   }
   return finalResult || null;
 }

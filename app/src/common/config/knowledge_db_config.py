@@ -9,12 +9,39 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import RLock
+from weakref import WeakSet
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from .base_config import settings
 
+_revision_engines = WeakSet()
+_revision_lock = RLock()
+
+
+def ensure_retrieval_revision(engine):
+    """Invalidate caches for committed corpus changes, including other processes."""
+    if engine.dialect.name != "sqlite":
+        return
+    with _revision_lock:
+        if engine in _revision_engines:
+            return
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE IF NOT EXISTS retrieval_revision "
+                "(id INTEGER PRIMARY KEY, revision INTEGER NOT NULL)"
+            ))
+            conn.execute(text("INSERT OR IGNORE INTO retrieval_revision VALUES (1, 0)"))
+            for table in ("documents", "document_chunks"):
+                for action in ("INSERT", "UPDATE", "DELETE"):
+                    conn.execute(text(
+                        f"CREATE TRIGGER IF NOT EXISTS revision_{table}_{action.lower()} "
+                        f"AFTER {action} ON {table} BEGIN "
+                        "UPDATE retrieval_revision SET revision=revision+1 WHERE id=1; END"
+                    ))
+        _revision_engines.add(engine)
 
 class KnowledgeBase(DeclarativeBase):
     """知识库 ORM 基类。"""
@@ -79,3 +106,4 @@ def init_knowledge_db() -> None:
 
     KnowledgeBase.metadata.create_all(bind=knowledge_engine)
     _ensure_document_chunks_columns()
+    ensure_retrieval_revision(knowledge_engine)

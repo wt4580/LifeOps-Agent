@@ -15,7 +15,7 @@ class ChatVo(BaseModel):
     message: str=Field(..., description="用户输入的自然语言文本")
     session_id: Optional[str]=Field(None, description="会话 ID")
     proposal_id: str | None = None
-    request_id: str | None = None
+    request_id: str | None = Field(default=None, min_length=1, max_length=128)
 
     @field_validator("message",mode="before")
     @classmethod

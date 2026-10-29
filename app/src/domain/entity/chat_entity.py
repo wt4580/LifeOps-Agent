@@ -13,6 +13,25 @@ from sqlalchemy.orm import Mapped, mapped_column
 from ...common.config.db_config import Base
 
 
+class WriteOperation(Base):
+    __tablename__ = "write_operations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ChatRequest(Base):
+    __tablename__ = "chat_requests"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
 

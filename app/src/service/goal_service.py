@@ -71,6 +71,11 @@ class GoalService:
             except ValueError:
                 pass
         with SessionLocal() as db:
+            from .idempotency import MISSING, begin_write, finish_write
+            key, cached = begin_write(db, session_id, "save_goal",
+                                      [title, category, target_date, sub_goals, milestones, notes])
+            if cached is not MISSING:
+                return cached
             g = GoalItem(
                 session_id=session_id,
                 title=title,
@@ -83,10 +88,13 @@ class GoalService:
                 notes=notes,
             )
             db.add(g)
+            db.flush()
+            result = self._serialize_goal(g)
+            finish_write(db, key, result)
             db.commit()
             db.refresh(g)
             logger.info("goal saved id=%s title=%s", g.id, title[:40])
-            return self._serialize_goal(g)
+            return result
 
     def update_progress(self, goal_id: int, progress_pct: float) -> bool:
         with SessionLocal() as db:

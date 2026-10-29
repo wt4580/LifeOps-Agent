@@ -3,6 +3,18 @@ on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check browser script and request retry behavior
+        run: |
+          node --check app/src/common/static/app.js
+          node --test tests/frontend/chat-retry.test.cjs
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 25

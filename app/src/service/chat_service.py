@@ -47,7 +47,7 @@ class ChatService:
     # 主聊天流程
     # ----------------------------------------------------------------------
 
-    async def chat(self, message: str, session_id: str | None = None, progress_queue: asyncio.Queue | None = None, proposal_id: str | None = None) -> dict:
+    async def chat(self, message: str, session_id: str | None = None, progress_queue: asyncio.Queue | None = None, proposal_id: str | None = None, request_id: str | None = None) -> dict:
         """执行一次完整聊天请求。
 
         先保存用户消息，加载已有上下文，交给 LangGraph 统一处理路由/工具调用/HITL，
@@ -58,6 +58,13 @@ class ChatService:
                 progress_queue.put_nowait(msg)
 
         session_id = session_id or str(uuid4())
+        from .idempotency import start_request, finish_request
+        request_key = None
+        message_id = None
+        if request_id is not None:
+            request_key, message_id, cached = start_request(SessionLocal, session_id, request_id, message, proposal_id)
+            if cached is not None:
+                return cached
         if proposal_id is not None:
             graph = get_chat_graph()
             pending = await graph.aget_state({"configurable": {"thread_id": session_id}})
@@ -66,9 +73,12 @@ class ChatService:
 
         # A) 用户消息先落库，保证审计链完整。
         _push("正在保存消息...")
-        with SessionLocal() as db:
-            db.add(ChatMessage(session_id=session_id, role="user", content=message))
-            db.commit()
+        if message_id is None:
+            with SessionLocal() as db:
+                msg = ChatMessage(session_id=session_id, role="user", content=message)
+                db.add(msg)
+                db.commit()
+                message_id = msg.id
 
         # B) 前置处理：加载已有上下文，extraction 移入图内执行。
         _push("正在加载上下文...")
@@ -110,6 +120,7 @@ class ChatService:
             recent_events=recent_events,
             important_events=important_events,
             upcoming_todos=upcoming_todos,
+            operation_id=f"message:{message_id}",
             event_window_start=event_window_start,
             event_window_end=event_window_end,
         )
@@ -123,10 +134,15 @@ class ChatService:
         citations = state.get("citations") or []
         trace = state.get("trace")
 
+        result = {"answer": answer, "session_id": session_id, "proposal_id": proposal_id,
+                  "proposal": proposal_payload, "used_tool": used_tool, "citations": citations, "trace": trace}
+
         # D) 保存助手消息：和 user 消息配对入库，方便后续摘要与回放。
         _push("正在保存对话...")
         with SessionLocal() as db:
             db.add(ChatMessage(session_id=session_id, role="assistant", content=answer))
+            if request_key is not None:
+                finish_request(db, request_key, result)
             db.commit()
 
         # 图后旁路：学习/标注/摘要/记忆/反思等放独立后台线程执行，主响应立即返回，
@@ -137,15 +153,7 @@ class ChatService:
                 state=state, answer=answer, progress=lambda _message: None,
             )
 
-        return {
-            "answer": answer,
-            "session_id": session_id,
-            "proposal_id": proposal_id,
-            "proposal": proposal_payload,
-            "used_tool": used_tool,
-            "citations": citations,
-            "trace": trace,
-        }
+        return result
 
     def _spawn_post_graph(
         self,
@@ -265,7 +273,7 @@ class ChatService:
 
         async def run_job():
             try:
-                return await self.chat(message=message, session_id=normalized, progress_queue=events, proposal_id=proposal_id)
+                return await self.chat(message=message, session_id=normalized, progress_queue=events, proposal_id=proposal_id, request_id=request_id)
             except asyncio.CancelledError:
                 await self._clear_stale_interrupt(normalized)
                 raise

@@ -10,6 +10,7 @@ from sqlalchemy.orm import joinedload
 from ..common.config.db_config import SessionLocal
 from ..common.config.log_config import logger
 from ..domain.entity.chat_entity import Account, Transaction
+from .idempotency import MISSING, begin_write, finish_write
 
 # 常用支出分类
 EXPENSE_CATEGORIES = {"餐饮", "交通", "购物", "娱乐", "医疗", "教育", "住房", "日用品", "服饰", "通讯", "其他"}
@@ -32,10 +33,13 @@ def _local_transaction_time(value: datetime) -> str:
 
 
 class BookkeepingService:
-    def add_account(self, name: str, balance: float = 0.0, session_id: str = "") -> dict:
+    def add_account(self, name: str, balance: float = 0.0, session_id: str = "", *, operation_key: str | None = None) -> dict:
         if not math.isfinite(balance):
             raise BookkeepingError("余额必须为有限数值")
         with SessionLocal() as db:
+            key, cached = begin_write(db, session_id, "add_account", [name, balance], operation_key)
+            if cached is not MISSING:
+                return cached
             existing = db.execute(
                 select(Account).where(Account.session_id == session_id, Account.name == name)
             ).scalars().first()
@@ -43,6 +47,9 @@ class BookkeepingService:
                 raise BookkeepingError(f"账户 '{name}' 已存在")
             acc = Account(session_id=session_id, name=name, balance=balance)
             db.add(acc)
+            db.flush()
+            result = {"id": acc.id, "name": acc.name, "balance": acc.balance}
+            finish_write(db, key, result)
             db.commit()
             db.refresh(acc)
             return {"id": acc.id, "name": acc.name, "balance": acc.balance}
@@ -79,6 +86,7 @@ class BookkeepingService:
         category: str | None = None,
         description: str | None = None,
         transaction_at: str | None = None,
+        operation_key: str | None = None,
     ) -> dict:
         if not math.isfinite(amount) or amount == 0:
             raise BookkeepingError("金额必须为有限的非零数值")
@@ -88,6 +96,10 @@ class BookkeepingService:
             raise BookkeepingError("交易日期格式不正确") from exc
 
         with SessionLocal() as db:
+            key, cached = begin_write(db, session_id, "record_transaction",
+                                      [amount, account_id, account_name, category, description, transaction_at], operation_key)
+            if cached is not MISSING:
+                return cached
             resolved_account_id = account_id
             resolved_account_name = account_name
 
@@ -127,9 +139,8 @@ class BookkeepingService:
                     Account.id == resolved_account_id, Account.session_id == session_id
                 ).values(balance=func.round(func.coalesce(Account.balance, 0) + amount, 2)))
 
-            db.commit()
-            db.refresh(tx)
-            return {
+            db.flush()
+            result = {
                 "id": tx.id,
                 "amount": tx.amount,
                 "category": tx.category,
@@ -137,6 +148,9 @@ class BookkeepingService:
                 "account_name": tx.account_name,
                 "transaction_at": _local_transaction_time(tx.transaction_at) if tx.transaction_at else None,
             }
+            finish_write(db, key, result)
+            db.commit()
+            return result
 
     def list_transactions(
         self,
@@ -257,16 +271,21 @@ class BookkeepingService:
                 return None
             return {"id": acc.id, "name": acc.name, "balance": acc.balance}
 
-    def set_account_balance(self, account_id: int, balance: float, session_id: str = "") -> dict:
+    def set_account_balance(self, account_id: int, balance: float, session_id: str = "", *, operation_key: str | None = None) -> dict:
         if not math.isfinite(balance):
             raise BookkeepingError("余额必须为有限数值")
         with SessionLocal() as db:
+            key, cached = begin_write(db, session_id, "set_account_balance", [account_id, balance], operation_key)
+            if cached is not MISSING:
+                return cached
             acc = db.execute(
                 select(Account).where(Account.id == account_id, Account.session_id == session_id)
             ).scalars().first()
             if not acc:
                 raise BookkeepingError("账户不存在")
             acc.balance = balance
+            result = {"id": acc.id, "name": acc.name, "balance": acc.balance}
+            finish_write(db, key, result)
             db.commit()
             db.refresh(acc)
             return {"id": acc.id, "name": acc.name, "balance": acc.balance}

@@ -430,7 +430,8 @@ body {
   border-color: var(--border-strong);
 }
 
-.assistant-stop-btn {
+.assistant-stop-btn,
+.assistant-retry-btn {
   border: 1px solid var(--danger, #c64b4b);
   background: transparent;
   color: var(--danger, #c64b4b);
@@ -449,6 +450,20 @@ body {
 }
 
 .assistant-stop-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.assistant-retry-btn {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+.assistant-retry-btn:hover:not(:disabled) {
+  background: var(--bg-secondary);
+}
+
+.assistant-retry-btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }

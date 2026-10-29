@@ -82,6 +82,13 @@ class PlanService:
         from ..common.config.db_config import SessionLocal
         from ..domain.entity.chat_entity import TodoItem
         from datetime import datetime
+        from .idempotency import MISSING, begin_write, finish_write, saved_write
+
+        if not session_id:
+            return False
+        saved = saved_write(SessionLocal, session_id, "plan_confirm", proposal_id)
+        if saved is not MISSING:
+            return bool(saved)
         
         if proposal_id not in self.proposal_cache:
             logger.warning("Proposal %s not found in cache", proposal_id)
@@ -92,7 +99,8 @@ class PlanService:
         items = self.proposal_cache[proposal_id]
         
         with SessionLocal() as db:
-            for item_data in items:
+            key, cached = begin_write(db, session_id, "plan_confirm", items, proposal_id)
+            for item_data in items if cached is MISSING else []:
                 title = (item_data.get("title") or "").strip()
                 if not title:
                     continue
@@ -121,10 +129,11 @@ class PlanService:
                     completed_at=None,
                 )
                 db.add(todo)
+            finish_write(db, key, True)
             db.commit()
         
         # 从缓存中移除
-        del self.proposal_cache[proposal_id]
+        self.proposal_cache.pop(proposal_id, None)
         self.proposal_owners.pop(proposal_id, None)
         
         return True
