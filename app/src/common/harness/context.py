@@ -154,6 +154,10 @@ class TurnContext:
     parent_turn_id: str | None = None
     status: str = "running"
     last_state: dict | None = field(default=None, repr=False)
+    last_node: str | None = None
+    partial_answer: str = field(default="", repr=False)
+    interrupted_context: dict | None = field(default=None, repr=False)
+    committed_writes: dict = field(default_factory=dict, repr=False)
     _records_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def add_record(self, record: dict) -> None:

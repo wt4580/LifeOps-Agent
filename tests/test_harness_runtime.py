@@ -174,6 +174,21 @@ def test_stream_cancellation_closes_and_records(monkeypatch):
     assert get_turn_context("cancel-stream") is None
 
 
+def test_interrupted_context_reaches_model_and_partial_answer_is_preserved(monkeypatch):
+    stream = Stream([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="先考虑室内"), finish_reason=None)])])
+    _, create = client_for(monkeypatch, response=stream)
+    def cancel(_):
+        raise asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError), turn_context("continuation") as turn:
+        turn.interrupted_context = {"original_request": "安排周末", "current_user_message": "不要户外活动"}
+        llm_config.chat_completion([{"role": "user", "content": "不要户外活动"}], on_token=cancel,
+                                  runtime_context={"scenario": "normal_chat", "session_id": "continuation"})
+    assert turn.partial_answer == "先考虑室内"
+    sent = str(create.call_args.kwargs["messages"])
+    assert "安排周末" in sent and "不要户外活动" in sent and "用户主动中断" in sent
+    assert "original_request" not in str(turn.summary())
+
+
 def test_background_budget_does_not_replace_foreground(monkeypatch):
     client_for(monkeypatch)
     with turn_context("same") as foreground:

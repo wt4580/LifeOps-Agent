@@ -166,6 +166,19 @@ test('a stopped request is not replayed', async () => {
   assert.equal(b.calls.length, 1);
 });
 
+test('a persisted cancellation returned on retry invites a new supplement without replay', async () => {
+  const b = browser(() => response([{ type: 'final', result: {
+    request_status: 'cancelled', answer: '上一轮已中止',
+  } }]));
+  const request = b.context.createChatRequest('安排周末');
+  await b.context.executeChatRequest(request);
+  assert.equal(request.cancelled, true);
+  assert.equal(b.retry().hidden, true);
+  assert.match(request.turn.answerDiv.textContent, /补充条件/);
+  await b.context.executeChatRequest(request);
+  assert.equal(b.calls.length, 1);
+});
+
 test('retry cannot be sent using another logged-in identity', async () => {
   const b = browser(() => { throw new TypeError('offline'); });
   const request = b.context.createChatRequest('我花了10块钱');

@@ -456,6 +456,7 @@ def _node_decompose(state: ChatState) -> ChatState:
     )
     payload = {
         "user_message": user_msg,
+        "interrupted_context": state.get("interrupted_context"),
         "session_id": session_id,
         "profile_context": state.get("profile_context", ""),
         "recent_dialogue": _format_dialogue_with_times(dialogue),
@@ -2050,6 +2051,9 @@ def _route_after_interrupt(state: ChatState) -> str:
 def _guarded_node(node):
     def run(state):
         ensure_turn_active()
+        turn = get_turn_context(state.get("session_id"))
+        if turn is not None:
+            turn.last_node = node.__name__
         result = state
         try:
             result = node(state)
@@ -2164,6 +2168,7 @@ def _build_initial_state(
     event_window_start: str | None = None,
     event_window_end: str | None = None,
     operation_id: str | None = None,
+    interrupted_context: dict | None = None,
 ) -> ChatState:
     history = list(checkpoint_context.get("history") or [])
     history.append({"role": "user", "content": _resolve_relative_dates(user_message)})
@@ -2175,6 +2180,7 @@ def _build_initial_state(
     return {
         "session_id": session_id,
         "operation_id": operation_id or str(uuid4()),
+        "interrupted_context": interrupted_context,
         "user_message": user_message,
         "history": history,
         "recent_dialogue": list(checkpoint_context.get("recent_dialogue") or history[-16:]),
@@ -2318,6 +2324,9 @@ async def arun_chat_graph(
     state: ChatState | None = None
     try:
         with turn_context(session_id) as turn:
+            turn.interrupted_context = kwargs.get("interrupted_context")
+            if turn.interrupted_context:
+                turn.interrupted_context = {**turn.interrupted_context, "current_user_message": user_message}
             try:
                 timeout_scope = asyncio.timeout(turn.budget.remaining_seconds())
                 async with timeout_scope:
@@ -2345,6 +2354,11 @@ async def arun_chat_graph(
                         ctx = await aload_chat_checkpoint_context(compiled_graph, session_id)
                         state = _build_initial_state(session_id=session_id, user_message=user_message, checkpoint_context=ctx, **kwargs)
                         result = await compiled_graph.ainvoke(state, config=config)
+            except asyncio.CancelledError:
+                from ..service.interruption_service import save_interruption
+                save_interruption(SessionLocal, turn, turn.last_state or state or {},
+                                  kwargs.get("operation_id"), user_message)
+                raise
             except (TurnLimitExceeded, GraphRecursionError, TimeoutError) as exc:
                 if isinstance(exc, TimeoutError) and not timeout_scope.expired():
                     raise

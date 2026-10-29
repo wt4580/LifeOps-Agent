@@ -32,6 +32,17 @@ class ChatRequest(Base):
     result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class InterruptedTurn(Base):
+    __tablename__ = "interrupted_turns"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    source_message_id: Mapped[int] = mapped_column(Integer)
+    snapshot_json: Mapped[str] = mapped_column(Text)
+    consumed_by_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
 

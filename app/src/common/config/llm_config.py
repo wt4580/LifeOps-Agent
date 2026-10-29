@@ -116,6 +116,9 @@ def chat_completion(
 
     session_id = ctx.get("session_id")
     turn = None if budget_bypassed() else get_turn_context(session_id)
+    if turn is not None and turn.interrupted_context:
+        from ...service.interruption_service import continuation_messages
+        enriched_messages = [*continuation_messages(turn.interrupted_context), *enriched_messages]
     call_ctx = CallContext(
         kind="llm",
         name=str(ctx.get("scenario", "unknown")),
@@ -125,6 +128,10 @@ def chat_completion(
         usage={"usage_source": "not_sent", "prompt_tokens": None, "completion_tokens": None, "charged_tokens": 0},
     )
     finish_reason = "unknown"
+    capture_answer = str(ctx.get("scenario", "")) in {
+        "normal_chat", "rag_answer", "query_todos_summarize", "query_weather_summarize",
+        "calendar_summarize", "finalize_merge",
+    }
 
     def request():
         nonlocal finish_reason
@@ -156,6 +163,8 @@ def chat_completion(
                 attempted = True
                 response = client.chat.completions.create(**kwargs, stream=True)
                 full_text = ""
+                if turn is not None and capture_answer:
+                    turn.partial_answer = ""
                 finish_reason = "stream"
                 try:
                     for chunk in response:
@@ -168,6 +177,8 @@ def chat_completion(
                         delta = choice.delta.content or ""
                         full_text += delta
                         if delta:
+                            if turn is not None and capture_answer:
+                                turn.partial_answer = full_text[-4000:]
                             on_token(delta)
                 finally:
                     close = getattr(response, "close", None)

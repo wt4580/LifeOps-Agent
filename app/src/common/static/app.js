@@ -876,12 +876,12 @@ async function executeChatRequest(request) {
       }
     }
 
-    if (stopped) {
+    if (stopped || finalResult?.request_status === "cancelled") {
       request.cancelled = true;
       hideStop();
       requestAnim("idle");
       if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, ["（已停止）"]);
-      if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：已停止`;
+      if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = "回答：已停止。可以发送补充条件，继续处理上一轮任务。";
     } else if (finalResult) {
       request.completed = true;
       const finalAnswer = finalResult.answer || assistantText || "";

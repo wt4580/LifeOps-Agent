@@ -5,6 +5,7 @@ from typing import Any, TypedDict
 class ChatState(TypedDict, total=False):
     session_id: str
     operation_id: str
+    interrupted_context: dict[str, Any] | None
     user_message: str
     profile_context: str | None
     pre_advice: str | None

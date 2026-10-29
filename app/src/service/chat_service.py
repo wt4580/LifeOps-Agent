@@ -109,6 +109,8 @@ class ChatService:
         
         _push("正在进入思考流程...")
         chat_graph = get_chat_graph()
+        from .interruption_service import take_interruption
+        interrupted_context = take_interruption(SessionLocal, session_id, message_id)
 
         state = await arun_chat_graph(
             compiled_graph=chat_graph,
@@ -121,6 +123,7 @@ class ChatService:
             important_events=important_events,
             upcoming_todos=upcoming_todos,
             operation_id=f"message:{message_id}",
+            interrupted_context=interrupted_context,
             event_window_start=event_window_start,
             event_window_end=event_window_end,
         )
@@ -278,12 +281,7 @@ class ChatService:
                 await self._clear_stale_interrupt(normalized)
                 raise
 
-        queued = submit_chat_job(
-            normalized,
-            events,
-            run_job,
-            request_id=request_id,
-        )
+        queued = submit_chat_job(normalized, events, run_job, request_id=request_id)
 
         if queued:
             yield (
