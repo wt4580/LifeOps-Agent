@@ -193,6 +193,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"]
     )
+    from ..telemetry import TelemetryMiddleware
+    app.add_middleware(TelemetryMiddleware)
     register_routers(app)  # 注册所有路由
 
     return app

@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Iterator
 
 from ..config.base_config import settings
+from ..telemetry import current_trace_id
 
 
 class TurnLimitExceeded(BaseException):
@@ -154,6 +155,8 @@ class TurnContext:
     parent_turn_id: str | None = None
     status: str = "running"
     last_state: dict | None = field(default=None, repr=False)
+    trace_id: str | None = field(default_factory=current_trace_id)
+    request_key: str | None = None
     last_node: str | None = None
     partial_answer: str = field(default="", repr=False)
     interrupted_context: dict | None = field(default=None, repr=False)
@@ -180,6 +183,7 @@ class TurnContext:
         with self._records_lock:
             records = list(self.records)
         return {"turn_id": self.turn_id, "parent_turn_id": self.parent_turn_id,
+                "trace_id": self.trace_id, "request_key": self.request_key,
                 "phase": self.phase, "status": self.status,
                 "operation": self.operation,
                 "call_status_counts": dict(Counter(record.get("status", "unknown") for record in records)),
@@ -269,17 +273,23 @@ def _exception_status(exc: BaseException) -> str:
 def _write_audit(ctx: TurnContext) -> None:
     # Import lazily to keep the context module independent of storage details.
     from .audit import write_turn
+    from ..telemetry import metrics
+    metrics.turn(ctx.summary())
     write_turn(ctx.session_id, ctx.summary())
 
 
 @contextmanager
-def background_context(session_id: str, *, parent_turn_id: str | None = None, operation: str = "post_graph") -> Iterator[TurnContext]:
+def background_context(session_id: str, *, parent_turn_id: str | None = None, operation: str = "post_graph",
+                       trace_id: str | None = None, request_key: str | None = None) -> Iterator[TurnContext]:
     """A separate task-local budget; never replaces the foreground registry entry."""
     ctx = TurnContext(session_id=session_id, phase="background", operation=operation, parent_turn_id=parent_turn_id, budget=TurnBudget(
         max_llm_calls=settings.background_max_llm_calls, max_tool_calls=0,
         deadline_seconds=settings.background_deadline_seconds,
         max_total_tokens=settings.background_max_tokens,
     ))
+    if trace_id is not None:
+        ctx.trace_id = trace_id
+    ctx.request_key = request_key
     token = _CURRENT_TURN.set(ctx)
     bypass_token = _BUDGET_BYPASS.set(False)
     try:

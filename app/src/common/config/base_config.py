@@ -179,6 +179,7 @@ class Settings(BaseSettings):
     chat_max_inflight_jobs: int = Field(default=32, ge=1)
     chat_max_session_jobs: int = Field(default=8, ge=1)
     chat_shutdown_grace_seconds: float = Field(default=15.0, ge=0)
+    ops_metrics_token: str = ""
     # 单轮最多 LLM 调用次数（含 decompose / 工具内 LLM / verify / quality_gate）。
     chat_turn_max_llm_calls: int = Field(default=20, ge=0, alias="CHAT_TURN_MAX_LLM_CALLS")
     # 单轮最多工具执行次数。

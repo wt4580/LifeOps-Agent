@@ -157,7 +157,7 @@ python -m app.src
 | Docker Compose | **冒烟通过** | 就绪、登录、确认/取消、来源引用与执行摘要 |
 | kind | **部署及冒烟通过** | 独立命名空间、单副本、PVC 与实际 HTTP 流程 |
 
-2026-10-29 补充验证：工具契约改造后 **100/100 条模拟端到端流程契约通过**；加入备份恢复能力后，当前源码在 Linux 测试容器中 **378 项单元与回归测试通过**，跨进程恢复演练 **10 个检查点通过**。覆盖 FTS5 迁移与同步、工具参数拒绝、队列容量、请求幂等、待确认 checkpoint 和数据恢复。本次使用已有测试镜像只读挂载源码，未重建或更新运行中的 Docker / kind 部署。
+2026-10-29 补充验证：当前源码在 Linux 测试容器中 **391 项单元与回归测试、100/100 条模拟端到端流程契约通过**；前端 **13 项测试通过**，跨进程恢复及关联演练 **12 个检查点通过**。覆盖 FTS5 同步、工具参数拒绝、队列容量、请求幂等、数据恢复、HTTP/Agent/审计关联与监控鉴权。本次使用已有测试镜像只读挂载源码，未重建或更新运行中的 Docker / kind 部署。
 
 [查看流程报告](app/eval/reports/e2e-contract.md) · [查看逐例结果与源码指纹](app/eval/reports/e2e-contract.json)
 
@@ -189,6 +189,27 @@ python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e
 | GitHub Actions | [ci.yml](.github/workflows/ci.yml) | 容器验证与报告归档 |
 
 Docker / kind 已完成本地验证。流水线配置已提供，Jenkins 执行节点仍需接入；可选 ML 镜像目标需单独验证。kind 使用已有 `dev` 集群和独立的 `lifeops-demo` 命名空间；Jenkins 需要具备 Docker CLI 与 daemon 访问权限的 Linux 执行节点。
+
+## 运行诊断
+
+每个 HTTP 请求返回服务端生成的 `X-Trace-ID`，结构化请求日志记录该标识、路由模板、状态码和完整响应耗时（包含 SSE 流和排队时间）。Agent 审计与 `harness_summary` 同时携带 HTTP 标识、`turn_id` 和哈希化的请求回执键。重试有新的 HTTP 标识，但复用原回执；缓存回答里的执行轨迹仍属于最初那次执行。
+
+设置独立的 `OPS_METRICS_TOKEN` 后，可通过 Bearer 认证读取 Prometheus 文本格式指标；默认未配置时 `/metrics` 返回 404。Compose 会从同名环境变量传入令牌。普通用户登录 Cookie 不授予监控权限。
+
+```bash
+curl -H "Authorization: Bearer $OPS_METRICS_TOKEN" http://127.0.0.1:5001/metrics
+```
+
+| 指标 | 用途 |
+| --- | --- |
+| `lifeops_http_requests_total` / `lifeops_http_request_duration_seconds` | HTTP 状态和完整响应耗时分布，按路由模板聚合 |
+| `lifeops_chat_active_jobs` / `lifeops_chat_pending_jobs` / `lifeops_chat_capacity` | 运行中、排队中任务及容量 |
+| `lifeops_chat_rejections_total` / `lifeops_chat_queue_wait_seconds` | 全局容量、会话容量、停机拒绝，以及入队等待分布 |
+| `lifeops_chat_jobs_total` / `lifeops_agent_turns_total` | 区分请求处理完成、取消、工具拒绝、预算耗尽与执行失败 |
+| `lifeops_agent_calls_total` / `lifeops_agent_call_duration_seconds` | 工具与模型调用状态、耗时分布 |
+| `lifeops_agent_charged_tokens_total` | 区分供应商报告的 token 与缺失 usage 时的预算预留量 |
+
+指标是单进程内存聚合，重启会归零，需由外部采集器持久化；HTTP 200 不代表 SSE 中的 Agent 任务成功，应同时观察任务和 turn 指标。标签不包含用户名、会话 ID、问题、工具参数或任意 URL，持久化审计仍写入 `HARNESS_TRACE_DIR`。
 
 ## 备份与恢复
 

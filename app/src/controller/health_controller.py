@@ -1,9 +1,25 @@
-from fastapi import APIRouter, HTTPException
+import hmac
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response
 from sqlalchemy import text
 from ..common.domain.response import success_response
 from ..common.config.base_config import settings
 
 router = APIRouter()
+
+
+@router.get("/metrics", include_in_schema=False)
+async def operational_metrics(request: Request):
+    if not settings.ops_metrics_token:
+        raise HTTPException(status_code=404, detail="Not found")
+    expected = "Bearer " + settings.ops_metrics_token
+    supplied = request.headers.get("authorization", "")
+    if not hmac.compare_digest(supplied.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Bearer"})
+    from ..common.telemetry import metrics
+    from ..service.session_queue import queue_gauges
+    return Response(metrics.render(queue_gauges()), media_type="text/plain; version=0.0.4",
+                    headers={"Cache-Control": "no-store"})
 
 @router.get("/health", include_in_schema=False)
 def healthz():

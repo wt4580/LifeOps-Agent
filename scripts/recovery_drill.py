@@ -43,13 +43,22 @@ def application_stage(stage, root, proof):
     from app.src.domain.entity.chat_entity import TodoItem, Transaction
     from app.src.util.retrieval.retrieval import _index_documents_sqlite, _sync_document_records
 
-    def chat(client, payload):
+    def chat(client, payload, *, cached=False):
         response = client.post("/api/chat/stream", json=payload)
         response.raise_for_status()
         events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
         finals = [event["result"] for event in events if event["type"] == "final"]
         assert len(finals) == 1, "Expected a completed SSE response"
         assert not finals[0].get("tool_error"), "Tool execution was rejected"
+        summary = next(step["output"] for step in finals[0]["trace"]["steps"] if step.get("name") == "harness_summary")
+        if cached:
+            assert summary["trace_id"] != response.headers["x-trace-id"], "A retry must have a fresh HTTP trace"
+        else:
+            assert summary["trace_id"] == response.headers["x-trace-id"], "HTTP and agent traces are disconnected"
+            records = [json.loads(line) for path in (root / "harness").glob("*.jsonl")
+                       for line in path.read_text(encoding="utf-8").splitlines()]
+            assert any(record.get("trace_id") == summary["trace_id"] and record.get("request_key") == summary["request_key"]
+                       and record["turn_id"] == summary["turn_id"] for record in records), "Persistent audit correlation is missing"
         return finals[0]
 
     checks = []
@@ -75,7 +84,7 @@ def application_stage(stage, root, proof):
                 checks.extend(["expense_committed_once", "proposal_pending_not_written", "knowledge_index_created"])
             else:
                 previous = json.loads(proof.read_text(encoding="utf-8"))
-                replay = chat(client, EXPENSE)
+                replay = chat(client, EXPENSE, cached=True)
                 assert replay == previous["expense"], "Request receipt did not survive restore"
                 with SessionLocal() as db:
                     assert db.scalar(select(func.count()).select_from(Transaction)) == 1, "Request replay duplicated expense"
@@ -92,6 +101,7 @@ def application_stage(stage, root, proof):
                 checks.append("persisted_fts_search_without_original_documents")
                 assert (root / "memory/recovery.md").read_text(encoding="utf-8") == "虚构演练：偏好室内活动"
                 checks.append("personal_memory_restored")
+            checks.append("http_agent_and_persistent_audit_correlated")
     finally:
         set_chat_graph(None)
         engine.dispose()

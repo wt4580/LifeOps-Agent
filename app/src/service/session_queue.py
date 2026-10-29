@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from contextvars import copy_context
 from typing import Any, Awaitable, Callable
+from ..common.telemetry import metrics
 
 JOB_END = object()
 JOB_STOPPED = object()
@@ -40,7 +43,7 @@ class _Gate:
 
     def submit(self, events: asyncio.Queue, factory: Callable[[], Awaitable[Any]], request_id: str | None = None) -> None:
         self._pending += 1
-        self._queue.put_nowait((events, factory, request_id))
+        self._queue.put_nowait((events, factory, request_id, copy_context(), time.monotonic()))
         if self._worker is None or self._worker.done():
             self._worker = asyncio.create_task(self._run())
 
@@ -53,8 +56,9 @@ class _Gate:
     async def _run(self) -> None:
         try:
             while not self._queue.empty():
-                events, factory, self.current_request_id = self._queue.get_nowait()
-                self.current = asyncio.create_task(_execute(events, factory))
+                events, factory, self.current_request_id, context, queued_at = self._queue.get_nowait()
+                metrics.observe("lifeops_chat_queue_wait_seconds", time.monotonic() - queued_at)
+                self.current = asyncio.create_task(_execute(events, factory), context=context)
                 self._pending -= 1
                 try:
                     await asyncio.shield(self.current)
@@ -82,10 +86,11 @@ class _Gate:
     async def close(self) -> None:
         self.closing = True
         while not self._queue.empty():
-            events, _, _ = self._queue.get_nowait()
+            events, _, _, _, _ = self._queue.get_nowait()
             self._pending -= 1
             events.put_nowait(JOB_STOPPED)
             events.put_nowait(JOB_END)
+            metrics.increment("lifeops_chat_jobs_total", status="cancelled")
         if self._worker is not None:
             self._worker.cancel()
             await asyncio.gather(self._worker, return_exceptions=True)
@@ -95,10 +100,15 @@ class _Gate:
 async def _execute(events: asyncio.Queue, factory: Callable[[], Awaitable[Any]]) -> None:
     try:
         result = await factory()
+        status = "cancelled" if isinstance(result, dict) and result.get("request_status") == "cancelled" else (
+            "tool_rejected" if isinstance(result, dict) and result.get("tool_error") else "completed")
+        metrics.increment("lifeops_chat_jobs_total", status=status)
         events.put_nowait({"type": "final", "result": result})
     except asyncio.CancelledError:
+        metrics.increment("lifeops_chat_jobs_total", status="cancelled")
         events.put_nowait(JOB_STOPPED)
     except Exception as exc:
+        metrics.increment("lifeops_chat_jobs_total", status="failed")
         events.put_nowait({"type": "error", "message": str(exc)})
     finally:
         events.put_nowait(JOB_END)
@@ -124,13 +134,16 @@ def submit_chat_job(session_id: str, events: asyncio.Queue, factory: Callable[[]
     """
     from ..common.config.base_config import settings
     if not _accepting:
+        metrics.increment("lifeops_chat_rejections_total", reason="draining")
         raise ChatCapacityExceeded("服务正在关闭，请稍后重试")
     # No await between admission and submit: atomic within this process/event loop.
     count = sum(g._pending + int(g.current is not None and not g.current.done()) for g in _GATES.values())
     if count >= settings.chat_max_inflight_jobs:
+        metrics.increment("lifeops_chat_rejections_total", reason="global_limit")
         raise ChatCapacityExceeded("服务繁忙，请稍后重试")
     gate = _gate_for(session_id)
     if gate.closing or gate._pending + int(gate.current is not None and not gate.current.done()) >= settings.chat_max_session_jobs:
+        metrics.increment("lifeops_chat_rejections_total", reason="session_limit")
         raise ChatCapacityExceeded("当前会话请求过多，请等待已有任务完成")
     queued = gate.is_busy
     gate.submit(events, factory, request_id)
@@ -168,3 +181,12 @@ async def shutdown_chat_jobs(grace_seconds: float = 15.0) -> None:
     if workers:
         await asyncio.wait(workers, timeout=max(0, grace_seconds))
     await asyncio.gather(*(close_session(sid) for sid, _ in gates))
+
+
+def queue_gauges():
+    """Called by an async endpoint on the queue's owning event loop; no per-user labels."""
+    from ..common.config.base_config import settings
+    return {"lifeops_chat_active_jobs": sum(int(g.current is not None and not g.current.done()) for g in _GATES.values()),
+            "lifeops_chat_pending_jobs": sum(g._pending for g in _GATES.values()),
+            "lifeops_chat_sessions": len(_GATES), "lifeops_chat_accepting": int(_accepting),
+            "lifeops_chat_capacity": settings.chat_max_inflight_jobs}

@@ -16,6 +16,7 @@ services:
       DEMO_SEED: "true"
       BACKGROUND_LEARNING_ENABLED: "false"
       SCHEDULER_ENABLED: "false"
+      OPS_METRICS_TOKEN: "${OPS_METRICS_TOKEN:-}"
     volumes:
       - demo-data:/data
     read_only: true

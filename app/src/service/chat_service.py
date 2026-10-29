@@ -63,6 +63,8 @@ class ChatService:
         message_id = None
         if request_id is not None:
             request_key, message_id, cached = start_request(SessionLocal, session_id, request_id, message, proposal_id)
+            from ..common.telemetry import bind_request_key
+            bind_request_key(request_key)
             if cached is not None:
                 return cached
         if proposal_id is not None:
@@ -124,6 +126,7 @@ class ChatService:
             upcoming_todos=upcoming_todos,
             operation_id=f"message:{message_id}",
             interrupted_context=interrupted_context,
+            request_key=request_key,
             event_window_start=event_window_start,
             event_window_end=event_window_end,
         )
@@ -253,10 +256,11 @@ class ChatService:
 
         def _worker() -> None:
             try:
-                parent = next((step.get("output", {}).get("turn_id")
+                parent = next((step.get("output", {})
                                for step in reversed((state.get("trace") or {}).get("steps", []))
-                               if step.get("name") == "harness_summary"), None)
-                with background_context(session_id, parent_turn_id=parent):
+                               if step.get("name") == "harness_summary"), {})
+                with background_context(session_id, parent_turn_id=parent.get("turn_id"),
+                                        trace_id=parent.get("trace_id"), request_key=parent.get("request_key")):
                     asyncio.run(_run_all())
             except TurnLimitExceeded:
                 logger.info("post_graph budget reached session=%s", session_id)

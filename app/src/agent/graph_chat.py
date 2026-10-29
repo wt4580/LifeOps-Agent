@@ -2337,8 +2337,10 @@ async def arun_chat_graph(
 ) -> ChatState:
     _set_progress_queue(session_id, progress_queue)
     state: ChatState | None = None
+    request_key = kwargs.pop("request_key", None)
     try:
         with turn_context(session_id) as turn:
+            turn.request_key = request_key
             turn.interrupted_context = kwargs.get("interrupted_context")
             if turn.interrupted_context:
                 turn.interrupted_context = {**turn.interrupted_context, "current_user_message": user_message}
