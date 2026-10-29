@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import pytest
 
 from app.src.service.session_queue import (
     JOB_END,
@@ -10,6 +12,138 @@ from app.src.service.session_queue import (
     is_session_busy,
     submit_chat_job,
 )
+
+
+@pytest.fixture(autouse=True)
+def running_queue():
+    from app.src.service.session_queue import start_chat_jobs
+    start_chat_jobs()
+    yield
+    start_chat_jobs()
+
+
+def test_idle_workers_and_gates_are_reclaimed():
+    from app.src.service import session_queue as queue
+    async def scenario():
+        for i in range(50):
+            events = asyncio.Queue()
+            async def work():
+                return "done"
+            submit_chat_job(f"idle-{i}", events, work)
+            await _drain(events)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not any(sid.startswith("idle-") for sid in queue._GATES)
+    asyncio.run(scenario())
+
+
+def test_capacity_rejects_without_running_factory_and_recovers(monkeypatch):
+    from app.src.service import session_queue as queue
+    from app.src.common.config.base_config import settings
+    monkeypatch.setattr(settings, "chat_max_inflight_jobs", 2)
+    monkeypatch.setattr(settings, "chat_max_session_jobs", 1)
+    async def scenario():
+        release = asyncio.Event()
+        async def work():
+            await release.wait()
+        first, second = asyncio.Queue(), asyncio.Queue()
+        submit_chat_job("capacity-a", first, work)
+        with pytest.raises(queue.ChatCapacityExceeded, match="当前会话"):
+            submit_chat_job("capacity-a", asyncio.Queue(), work)
+        submit_chat_job("capacity-b", second, work)
+        with pytest.raises(queue.ChatCapacityExceeded, match="服务繁忙"):
+            submit_chat_job("capacity-c", asyncio.Queue(), work)
+        assert "capacity-c" not in queue._GATES
+        release.set()
+        await _drain(first)
+        await _drain(second)
+        await close_session("capacity-a")
+        await close_session("capacity-b")
+        third = asyncio.Queue()
+        submit_chat_job("capacity-c", third, work)
+        await _drain(third)
+        await close_session("capacity-c")
+    asyncio.run(scenario())
+
+
+def test_shutdown_joins_cleanup_and_terminates_waiting_streams():
+    from app.src.service import session_queue as queue
+    async def scenario():
+        started, cleanup_started, release_cleanup = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        ran = []
+        async def current():
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await release_cleanup.wait()
+                ran.append("cleaned")
+        async def waiting():
+            ran.append("must not run")
+        first, second = asyncio.Queue(), asyncio.Queue()
+        submit_chat_job("shutdown", first, current)
+        await started.wait()
+        submit_chat_job("shutdown", second, waiting)
+        shutdown = asyncio.create_task(queue.shutdown_chat_jobs(0))
+        await cleanup_started.wait()
+        assert not shutdown.done()
+        assert not queue.accepting_chat_jobs()
+        with pytest.raises(queue.ChatCapacityExceeded):
+            submit_chat_job("new-during-shutdown", asyncio.Queue(), waiting)
+        assert (await _drain(second))[1]
+        release_cleanup.set()
+        await shutdown
+        assert (await _drain(first))[1]
+        assert ran == ["cleaned"]
+        assert "shutdown" not in queue._GATES
+        queue.start_chat_jobs()
+    try:
+        asyncio.run(scenario())
+    finally:
+        queue.start_chat_jobs()
+
+
+def test_graceful_shutdown_allows_accepted_work_to_finish():
+    from app.src.service import session_queue as queue
+    async def scenario():
+        events = asyncio.Queue()
+        async def work():
+            await asyncio.sleep(0.01)
+            return "finished"
+        submit_chat_job("drain-success", events, work)
+        await queue.shutdown_chat_jobs(1)
+        assert await _drain(events) == ([{"type": "final", "result": "finished"}], False)
+    try:
+        asyncio.run(scenario())
+    finally:
+        queue.start_chat_jobs()
+
+
+def test_overload_stream_returns_retryable_error_before_chat_runs(monkeypatch):
+    from app.src.service.chat_service import ChatService
+    from app.src.common.config.base_config import settings
+    monkeypatch.setattr(settings, "chat_max_inflight_jobs", 1)
+    async def scenario():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        async def occupied():
+            started.set()
+            await release.wait()
+        submit_chat_job("occupied", asyncio.Queue(), occupied)
+        await started.wait()
+        service = ChatService()
+        async def must_not_run(**kwargs):
+            pytest.fail("Rejected requests must not enter chat or persist input")
+        monkeypatch.setattr(service, "chat", must_not_run)
+        events = [event async for event in service.chat_stream("hello", "overloaded")]
+        payload = json.loads(events[0].removeprefix("data: "))
+        assert payload["type"] == "error"
+        assert payload["code"] == "chat_capacity_exceeded"
+        assert payload["retryable"] is True
+        release.set()
+        await close_session("occupied")
+    asyncio.run(scenario())
 
 
 async def _drain(events: asyncio.Queue, timeout: float = 1.5):

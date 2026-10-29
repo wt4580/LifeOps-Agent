@@ -12,6 +12,9 @@ def healthz():
 
 @router.get("/health/ready", include_in_schema=False)
 def ready():
+    from ..service.session_queue import accepting_chat_jobs
+    if not accepting_chat_jobs():
+        raise HTTPException(status_code=503, detail="Application is draining")
     from ..common.config.db_config import SessionLocal
     from ..common.config.knowledge_db_config import KnowledgeSessionLocal
     from ..common.config.chat_graph_holder import get_chat_graph

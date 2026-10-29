@@ -176,6 +176,9 @@ class Settings(BaseSettings):
     # -------------------------
     # 墙钟上限：超过后不再发起新的 LLM/工具调用，直接收口成兜底回答。
     chat_turn_deadline_seconds: float = Field(default=120.0, gt=0, alias="CHAT_TURN_DEADLINE_SECONDS")
+    chat_max_inflight_jobs: int = Field(default=32, ge=1)
+    chat_max_session_jobs: int = Field(default=8, ge=1)
+    chat_shutdown_grace_seconds: float = Field(default=15.0, ge=0)
     # 单轮最多 LLM 调用次数（含 decompose / 工具内 LLM / verify / quality_gate）。
     chat_turn_max_llm_calls: int = Field(default=20, ge=0, alias="CHAT_TURN_MAX_LLM_CALLS")
     # 单轮最多工具执行次数。

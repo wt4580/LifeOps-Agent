@@ -108,6 +108,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         if settings.scheduler_enabled and not settings.demo_mode:
             start_scheduler()
 
+        from ...service.session_queue import start_chat_jobs
+        start_chat_jobs()
+
         logger.info("LifeOps-Agent started successfully")
     except Exception as e:
         logger.error(f"Application startup failed: {e}")
@@ -121,6 +124,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         from ...service.scheduler import stop_scheduler
         stop_scheduler()
+
+        from ...service.session_queue import shutdown_chat_jobs
+        await shutdown_chat_jobs(settings.chat_shutdown_grace_seconds)
 
         if resource_stack is not None:
             await resource_stack.aclose()

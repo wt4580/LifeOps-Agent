@@ -28,7 +28,7 @@ from ..agent.memory.personal_memory import (
 from ..agent.graph_chat import aload_chat_checkpoint_context, arun_chat_graph, load_chat_checkpoint_context
 from ..util.retrieval.retrieval import index_documents
 from ..common.config.log_config import logger
-from .session_queue import JOB_END, JOB_STOPPED, cancel_and_wait, submit_chat_job
+from .session_queue import JOB_END, JOB_STOPPED, ChatCapacityExceeded, cancel_and_wait, submit_chat_job
 
 _POST_GRAPH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="postgraph")
 
@@ -281,7 +281,11 @@ class ChatService:
                 await self._clear_stale_interrupt(normalized)
                 raise
 
-        queued = submit_chat_job(normalized, events, run_job, request_id=request_id)
+        try:
+            queued = submit_chat_job(normalized, events, run_job, request_id=request_id)
+        except ChatCapacityExceeded as exc:
+            yield f"data: {json.dumps({'type': 'error', 'code': 'chat_capacity_exceeded', 'retryable': True, 'message': str(exc)}, ensure_ascii=False)}\n\n"
+            return
 
         if queued:
             yield (
