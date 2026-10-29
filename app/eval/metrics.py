@@ -2,7 +2,8 @@
 """检索质量指标计算。
 
 指标说明（对外可展示的硬指标）：
-  - Recall@k：在返回的前 k 条结果中，是否命中期望文档（命中比例）。
+  - Recall@k：前 k 个去重文档覆盖的相关文档数 / 全部相关文档数。
+  - HitRate@k：前 k 个去重文档是否至少命中一个相关文档，按查询取均值。
   - MRR（Mean Reciprocal Rank）：首个命中文档的排名倒数之均值。
     全未命中计 0。衡量"正确答案排多靠前"。
   - NDCG@k（Normalized Discounted Cumulative Gain）：
@@ -35,14 +36,23 @@ def _unique_basename_paths(ranked_paths: list[str]) -> list[str]:
     return out
 
 
-def recall_at_k(ranked_paths: list[str], expected: list[str], k: int) -> float:
-    """前 k 条结果中是否至少命中一个期望文档 -> 0.0 / 1.0。"""
-    if not expected:
+def hit_at_k(ranked_paths: list[str], expected: list[str], k: int) -> float:
+    """Per-query hit indicator; averaging gives HitRate@k, not Recall@k."""
+    if not expected or k <= 0:
         return 0.0
     for p in _unique_basename_paths(ranked_paths)[:k]:
         if _is_hit(p, expected):
             return 1.0
     return 0.0
+
+
+def recall_at_k(ranked_paths: list[str], expected: list[str], k: int) -> float:
+    if not expected or k <= 0:
+        return 0.0
+    expected_set = set(expected)
+    retrieved = {path.replace("\\", "/").split("/")[-1]
+                 for path in _unique_basename_paths(ranked_paths)[:k]}
+    return len(retrieved & expected_set) / len(expected_set)
 
 
 def mrr(ranked_paths: list[str], expected: list[str]) -> float:
@@ -56,7 +66,7 @@ def mrr(ranked_paths: list[str], expected: list[str]) -> float:
 def dcg_at_k(ranked_paths: list[str], expected: list[str], k: int) -> float:
     """DCG：相关文档的位置越靠前、增益越高（log2 折扣）。"""
     dcg = 0.0
-    for i, p in enumerate(_unique_basename_paths(ranked_paths)[:k], start=1):
+    for i, p in enumerate(_unique_basename_paths(ranked_paths)[:max(0, k)], start=1):
         if _is_hit(p, expected):
             dcg += 1.0 / math.log2(i + 1)
     return dcg
@@ -73,7 +83,7 @@ def _ideal_dcg(expected_count: int, k: int) -> float:
 def ndcg_at_k(ranked_paths: list[str], expected: list[str], k: int) -> float:
     if not expected:
         return 0.0
-    idcg = _ideal_dcg(len(expected), k)
+    idcg = _ideal_dcg(len(set(expected)), k)
     if idcg == 0.0:
         return 0.0
     return dcg_at_k(ranked_paths, expected, k) / idcg
@@ -89,9 +99,10 @@ def evaluate_retrieval_results(results: list[dict], k_values: tuple[int, ...] = 
     if n == 0:
         return {}
 
-    agg: dict = {"n": n, "k_values": list(k_values)}
+    agg: dict = {"n": n, "k_values": list(k_values), "metric_version": 2}
     for k in k_values:
         agg[f"recall@{k}"] = sum(recall_at_k(r["ranked_paths"], r["expected"], k) for r in results) / n
+        agg[f"hit_rate@{k}"] = sum(hit_at_k(r["ranked_paths"], r["expected"], k) for r in results) / n
     agg["mrr"] = sum(mrr(r["ranked_paths"], r["expected"]) for r in results) / n
     for k in k_values:
         agg[f"ndcg@{k}"] = sum(ndcg_at_k(r["ranked_paths"], r["expected"], k) for r in results) / n

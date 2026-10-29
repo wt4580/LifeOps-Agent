@@ -7,6 +7,8 @@ from app.eval.metrics import (
     mrr,
     ndcg_at_k,
     recall_at_k,
+    hit_at_k,
+    evaluate_retrieval_results,
     _unique_basename_paths,
 )
 
@@ -52,3 +54,25 @@ def test_dcg_matches_binary_gain():
     ranked = [r"E:\kb\a.txt", r"E:\kb\b.txt"]
     expected_dcg = 1.0 / math.log2(2)  # 位置1命中
     assert math.isclose(dcg_at_k(ranked, ["a.txt"], 5), expected_dcg)
+
+
+def test_recall_measures_fraction_of_relevant_documents_not_any_hit():
+    ranked = ["folder/a.txt", "folder/a.txt", "folder/c.txt"]
+    assert recall_at_k(ranked, ["a.txt", "b.txt"], 1) == 0.5
+    assert hit_at_k(ranked, ["a.txt", "b.txt"], 1) == 1
+    report = evaluate_retrieval_results([{"query": "two sources", "expected": ["a.txt", "b.txt"], "ranked_paths": ranked}])
+    assert report["recall@1"] == 0.5 and report["hit_rate@1"] == 1
+    assert report["metric_version"] == 2
+
+
+def test_repeated_ground_truth_does_not_lower_recall_or_ndcg():
+    assert recall_at_k(["a.txt"], ["a.txt", "a.txt"], 5) == 1
+    assert ndcg_at_k(["a.txt"], ["a.txt", "a.txt"], 5) == 1
+
+
+def test_nonpositive_cutoff_and_empty_labels_are_not_success():
+    for k in (0, -1):
+        assert recall_at_k(["a.txt"], ["a.txt"], k) == 0
+        assert hit_at_k(["a.txt"], ["a.txt"], k) == 0
+        assert dcg_at_k(["a.txt"], ["a.txt"], k) == 0
+    assert recall_at_k(["a.txt"], [], 5) == 0
