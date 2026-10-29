@@ -1,0 +1,19 @@
+[
+  {"id":"breakfast-topic","query":"早餐包子豆浆怎么评价","expected":["breakfast_guide.txt"]},
+  {"id":"personal-guideline","query":"我今天早餐吃了包子，按指南合适吗","expected":["breakfast_guide.txt"]},
+  {"id":"first-person-template","query":"早餐资料中的鸡蛋燕麦例子是不是我吃过的","expected":["breakfast_guide.txt"]},
+  {"id":"unknown-diary-owner","query":"个人日志里有人吃蛋糕能说明我吃过吗","expected":["third_party_log.txt"]},
+  {"id":"two-reference-genres","query":"早餐指南和第三方日记分别记了什么","expected":["breakfast_guide.txt","third_party_log.txt"]},
+  {"id":"reimbursement-documents","query":"报销申请需要发票和哪些文件","expected":["reimbursement_manual.txt"]},
+  {"id":"expense-workflow","query":"差旅报销审批流程","expected":["reimbursement_manual.txt"]},
+  {"id":"meeting-preparation","query":"开会之前准备议程与会议纪要","expected":["meeting_manual.txt"]},
+  {"id":"schedule-not-completion","query":"日历安排开会代表已经参加了吗","expected":["meeting_manual.txt"]},
+  {"id":"study-practice-review","query":"学习复盘和练习怎么分配","expected":["study_guide.txt"]},
+  {"id":"study-plan-not-completion","query":"学习记录的计划能当作已学完吗","expected":["study_guide.txt"]},
+  {"id":"expense-paraphrase","query":"报账凭证怎么交","expected":["reimbursement_manual.txt"]},
+  {"id":"short-food-query","query":"燕麦","expected":["breakfast_guide.txt"]},
+  {"id":"short-diary-query","query":"蛋糕","expected":["third_party_log.txt"]},
+  {"id":"history-and-guide","query":"昨天提到的豆浆可参照哪个文档","expected":["breakfast_guide.txt"]},
+  {"id":"out-of-domain-geology","query":"火星玄武岩同位素","expected":[]},
+  {"id":"out-of-domain-physics","query":"量子纠缠光子偏振","expected":[]}
+]

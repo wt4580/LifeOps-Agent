@@ -121,12 +121,12 @@ def test_partial_summary_filter_and_summary_updates(knowledge):
     assert len(r.search_chunks("alpha")) == 3
 
 
-def test_personal_source_filter_retains_previous_fallback(knowledge):
+def test_personal_query_retains_guidelines_as_reference_material(knowledge):
     _, factory = knowledge
     add(factory, "我今天吃了鸡胸肉", "guide", doc_topic="guideline")
     assert r.search_chunks("我今天吃了什么")
     add(factory, "我今天吃了米饭", "diary", doc_topic="personal_log")
-    assert {hit.path for hit in r.search_chunks("我今天吃了什么")} == {"diary"}
+    assert {hit.path for hit in r.search_chunks("我今天吃了什么")} == {"diary", "guide"}
 
 
 def test_query_syntax_is_literal_and_identifier_tokens_are_preserved(knowledge):

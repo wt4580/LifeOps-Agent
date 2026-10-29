@@ -412,6 +412,7 @@ def _node_decompose(state: ChatState) -> ChatState:
         "- 若存在查询线索，优先拆成多步：先用 query_database 查相关表，再基于查到的结果作答（normal_chat / query_knowledge）。不要一见缺少参数就反问。\n"
         "- query_database 查业务表时，必须用输入中提供的 session_id 过滤（SQL 里加 WHERE 限定该用户的数据）。\n"
         "- 只有确认库里确实不存在该信息、且只有用户本人能提供时，才使用 clarify 反问。\n\n"
+        "- 用户问自己的饮食/行为时，聊天用户原话和带时间的记录用于了解其经历，指南可另作评价依据；不要用指南代替个人记录，也不要把助手旧回答当作用户自述。\n\n"
         "## 需要拆解的场景\n"
         '- 用户确认/要求同时执行多个操作（如"都干""全做"）\n'
         "- 需要查询多个不同信息才能回答（天气+日程、日程+待办等）\n"
@@ -599,6 +600,8 @@ def _build_normal_chat_answer(
             "- 仅当用户本轮明确提起某个\"过往任务\"时，才去回答/回顾那个任务（此时相关任务记录已提供给你）。\n"
             "- 引用任何事件、待办、过往任务时，注意其时间标注与当前时间的差距，不要把过去的事项当成当前正在发生的事。\n"
             "- 涉及实时数据（天气/待办/日历/账目）时，优先基于实时查询结果回答，不要凭历史记忆编造。"
+            "参考资料、指南、文件名中的‘个人日志’以及助手旧回答，都不能证明当前用户实际做过什么。"
+            "描述个人经历需要明确的用户自述或带来源的记录；区分假设、否定、计划和已经发生的行为。"
         ),
     }]
     md_context = load_markdown_context(session_id=session_id)
@@ -1052,6 +1055,7 @@ def _run_tool_impl(state: ChatState) -> ChatState:
                 "reason": c.reason,
                 "source_type": c.source_type,
                 "doc_topic": c.doc_topic,
+                "evidence_role": "reference_material",
             }
             for c in citations
         ]
@@ -1088,6 +1092,16 @@ def _run_tool_impl(state: ChatState) -> ChatState:
 
         _push_anim(state, "kb_found")
         _push_anim(state, "kb_think_start")
+        from ..service.evidence_service import load_user_statements, needs_user_history
+        operation = state.get("operation_id", "")
+        message_id = operation.removeprefix("message:") if operation.startswith("message:") else ""
+        user_statements = load_user_statements(
+            state.get("session_id", ""), before_message_id=int(message_id) if message_id.isdigit() else None,
+        ) if needs_user_history(user_q) else []
+        tool_results = [{"action": step.get("action"), "result": str(step["result"])[:800]}
+                        for step in (state.get("plan") or [])[:state.get("plan_index", 0)]
+                        if step.get("action") in {"query_database", "query_todos", "query_accounts", "query_expenses", "query_calendar"}
+                        and step.get("result")][-5:]
         state["answer"] = rag_answer(
             user_q,
             citations,
@@ -1095,6 +1109,8 @@ def _run_tool_impl(state: ChatState) -> ChatState:
             pre_advice=state.get("pre_advice"),
             on_token=_make_on_token(state),
             session_id=state.get("session_id"),
+            user_statements=user_statements,
+            tool_results=tool_results,
         )
 
         _append_trace(
@@ -1892,6 +1908,7 @@ def _node_quality_gate(state: ChatState) -> ChatState:
         "你是回答质量评审员。检查最终回答是否完整、准确地回应了用户。\n"
         "注意：如果回答正确地说「没有找到事件」或类似结论，不要生成包含新信息的 fix。\n"
         "fix 只能基于 assistant_answer 已有的结论补充措辞，绝不能添加原文没有的事实。\n"
+        "保留个人自述与参考资料的来源和时间差异；不能把指南、助手旧回答或待办改写成用户已经发生的行为。\n"
         "## 输出格式\n"
         "输出严格 JSON：\n"
         '{"passed": true|false, "missing": ["遗漏点"], "fix": "修正后的完整回答"}'
@@ -1943,7 +1960,7 @@ def _node_finalize(state: ChatState) -> ChatState:
             try:
                 summary = chat_completion(
                     [
-                        {"role": "system", "content": "你是生活助理。请把下面几个步骤的结果合并成一段连贯、自然的中文回复。\n## 要求\n按主次顺序排列信息，不要编造。输出纯文本。"},
+                        {"role": "system", "content": "你是生活助理。请把下面几个步骤的结果合并成一段连贯、自然的中文回复。\n## 要求\n按主次顺序排列信息，不要编造。保留用户自述与参考资料的来源和时间，不把指南建议、助手旧回答或待办当成已经发生的行为。输出纯文本。"},
                         {"role": "user", "content": combined},
                     ],
                     temperature=0.2,

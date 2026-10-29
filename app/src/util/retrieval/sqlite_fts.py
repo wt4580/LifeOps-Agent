@@ -86,18 +86,14 @@ def match_expression(query, tokenize):
     return " OR ".join('"' + _term(token) + '"' for token in tokens)
 
 
-def search(db, expression, limit, personal=False):
-    """Apply the existing source/summary filters in SQL before taking top-k.
+def search(db, expression, limit):
+    """Apply summary relevance in SQL before taking top-k; do not exclude genres.
 
     IDF now uses the persistent global corpus rather than a per-query subset.
     FTS5 returns negative BM25 values: lower is better.
     """
     if not expression or limit <= 0:
         return []
-    source = ""
-    if personal:
-        allowed = "COALESCE(doc_topic,'other') NOT IN ('guideline','recipe','manual','paper')"
-        source = f" AND ({allowed} OR NOT EXISTS (SELECT 1 FROM document_chunks WHERE {allowed}))"
     summary = """
       AND (
         NOT EXISTS (SELECT 1 FROM lexical_summary WHERE lexical_summary MATCH :query)
@@ -110,6 +106,6 @@ def search(db, expression, limit, personal=False):
     return db.execute(text(
         "SELECT c.id, bm25(lexical_chunk) AS lexical_score "
         "FROM lexical_chunk JOIN document_chunks c ON c.id=lexical_chunk.rowid "
-        "WHERE lexical_chunk MATCH :query" + source + summary +
+        "WHERE lexical_chunk MATCH :query" + summary +
         " ORDER BY lexical_score ASC, c.id ASC LIMIT :limit"
     ), {"query": expression, "limit": limit}).all()

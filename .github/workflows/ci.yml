@@ -29,6 +29,7 @@ jobs:
             python -m pytest tests -q --junitxml=/reports/unit.xml
             python -m app.eval.run_e2e --output /reports/e2e.json
             python -m scripts.recovery_drill --output /reports/recovery.json
+            python -m app.eval.run_reference --output /reports/reference.json
           '
           docker start -a lifeops-test
           test "$(docker inspect -f '{{.State.ExitCode}}' lifeops-test)" = 0

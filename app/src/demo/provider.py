@@ -134,7 +134,7 @@ def response_for(messages, context):
     if scenario == "rewrite_query":
         return payload.get("question") or payload.get("query") or text
     if scenario == "rag_answer":
-        evidence = text.split("Context:\n", 1)[-1].split("\n\nQuestion:", 1)[0]
+        evidence = text.split("\n\nContext:\n", 1)[-1].split("\n\nQuestion:", 1)[0]
         lines = [line.lstrip("> ") for line in evidence.splitlines() if line.strip() and not line.startswith("[1]")]
         return "[演示回答] 根据虚构资料：" + " ".join(lines)[:420] + " [1]"
     if scenario == "query_todos_summarize":

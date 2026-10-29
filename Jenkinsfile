@@ -25,6 +25,7 @@ pipeline {
                         python -m pytest tests -q --junitxml=/reports/unit.xml
                         python -m app.eval.run_e2e --output /reports/e2e.json
                         python -m scripts.recovery_drill --output /reports/recovery.json
+                        python -m app.eval.run_reference --output /reports/reference.json
                     '
                     docker start -a "$TEST_CONTAINER"
                     test "$(docker inspect -f '{{.State.ExitCode}}' "$TEST_CONTAINER")" = 0
