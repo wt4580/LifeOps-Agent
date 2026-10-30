@@ -88,7 +88,7 @@ Harness 独立于模型可修改的图状态，对模型与工具调用施加统
 
 ### 数据库升级
 
-离线验证统一入口为 `python -m scripts.verify --output artifacts/verification`。它依次执行静态检查、单元测试、模拟 E2E、跨进程恢复和参考检索评测；单项失败后继续收集其他检查结果，最终以非零状态报告失败。各项日志及增量汇总 `verification.json` 会保留，`complete=false` 表示验证尚未完整结束。GitHub Actions 与 Jenkins 已配置此入口；CI 实际运行结果需以对应构建记录为准。
+离线验证统一入口为 `python -m scripts.verify --output artifacts/verification`。它依次执行静态检查、单元测试、模拟 E2E、跨进程恢复和参考检索评测；单项失败后继续收集其他检查结果，最终以非零状态报告失败。每次运行必须使用空输出目录，避免旧报告混入。各项日志及增量汇总 `verification.json` 会保留，`complete=false` 表示验证尚未完整结束。GitHub Actions 与 Jenkins 已配置此入口；CI 实际运行结果需以对应构建记录为准。
 
 评测迭代可运行 `python -m app.eval.compare artifacts/baseline.json artifacts/candidate.json --output artifacts/comparison.json`，比较两份 E2E 报告的逐案例结果。命令要求模式、模型、语料、检索后端、案例内容指纹及案例 ID 集合一致，输出退步、改善和仍失败的案例；有成功转失败时返回非零退出码。比较仅证明对应案例的结果变化，不代表真实模型统计准确率；案例指纹覆盖问题及预期结果；修改案例含义后应建立新基线，旧版缺少指纹的报告需重新生成。
 

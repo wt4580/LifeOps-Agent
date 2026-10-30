@@ -10,6 +10,8 @@ import time
 def verify(output):
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    if any(output.iterdir()):
+        raise ValueError("Verification output must be empty; use a new directory for each run")
     stages = [
         ("lint", ["ruff", "check", "--select", "E9,F63,F7,F82", "app", "tests", "scripts"]),
         ("unit", ["pytest", "tests", "-q", f"--junitxml={output / 'unit.xml'}"]),
