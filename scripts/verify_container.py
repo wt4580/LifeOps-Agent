@@ -22,15 +22,22 @@ def verify_container(image, output, context="desktop-linux"):
         created = True
         with (output / "container.log").open("w", encoding="utf-8") as log:
             attached = subprocess.run([*docker, "start", "-a", name], stdout=log, stderr=subprocess.STDOUT)
-        state = subprocess.run([*docker, "inspect", name, "--format", "{{json .State}}"],
+        state = subprocess.run([*docker, "inspect", name, "--format", '{"state":{{json .State}},"image_id":{{json .Image}}}'],
                                check=True, capture_output=True, text=True)
-        status = json.loads(state.stdout)
+        identity = json.loads(state.stdout)
+        status = identity["state"]
         # Anonymous Docker volume survives process exit, unlike tmpfs.
         exported = subprocess.run([*docker, "cp", f"{name}:/reports/.", str(output)])
-        report = {"image": image, "container": name, "state": status,
+        try:
+            evidence = json.loads((output / "verification" / "verification.json").read_text(encoding="utf-8"))
+            evidence_passed = evidence.get("complete") is True and evidence.get("passed") is True
+        except (OSError, ValueError, AttributeError):
+            evidence_passed = False
+        report = {"image": image, "image_id": identity["image_id"], "container": name, "state": status,
+                  "evidence_complete_and_passed": evidence_passed,
                   "attach_exit_code": attached.returncode, "reports_exported": exported.returncode == 0}
         (output / "container-result.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-        return status.get("Status") == "exited" and status.get("ExitCode") == 0 and exported.returncode == 0
+        return status.get("Status") == "exited" and status.get("ExitCode") == 0 and exported.returncode == 0 and evidence_passed
     finally:
         if created:
             subprocess.run([*docker, "rm", "-f", "-v", name], check=True)
