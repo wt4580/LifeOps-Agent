@@ -454,12 +454,22 @@ def _node_decompose(state: ChatState) -> ChatState:
         "business_db_inventory": db_inventory,
         "tools": tool_catalog(),
     }
-    raw = chat_completion(
-        [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
-        temperature=0.0,
-        runtime_context={"scenario": "decompose", "session_id": state.get("session_id")},
-        on_token=_make_on_token(state),
-    )
+    from ..common.domain.model_errors import ModelOutputIncompleteError
+    try:
+        raw = chat_completion(
+            [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+            temperature=0.0,
+            runtime_context={"scenario": "decompose", "session_id": state.get("session_id")},
+            on_token=_make_on_token(state),
+        )
+    except ModelOutputIncompleteError as exc:
+        state["tool_error"], state["answer"] = failure_result(
+            exc, action="planner", effect="conversation", committed={})
+        state["plan"] = []
+        state["plan_index"] = 0
+        state["decision"] = {"action": "normal_chat", "args": {}}
+        _push_delta(state, state["answer"])
+        return state
     cleaned = re.sub(r"^```(?:json)?\s*", "", raw.strip())
     cleaned = re.sub(r"\s*```$", "", cleaned).strip()
     try:
@@ -1606,7 +1616,7 @@ def _node_run_tool(state: ChatState) -> ChatState:
 
     预算超限时直接收口成本轮兜底回答，并置 ``turn_aborted`` 让下游节点跳过。
     """
-    if state.get("turn_aborted"):
+    if state.get("turn_aborted") or state.get("tool_error"):
         return state
 
     session_id = state.get("session_id", "")

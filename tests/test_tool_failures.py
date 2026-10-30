@@ -278,3 +278,16 @@ def test_background_storage_failure_logs_only_exception_type(monkeypatch, caplog
         chat_service.ChatService()._maybe_cleanup_stale_data()
     assert "RuntimeError" in caplog.text
     assert secret not in caplog.text
+
+
+def test_truncated_planning_stops_without_fallback_or_write(monkeypatch):
+    from app.src.common.domain.model_errors import ModelOutputIncompleteError
+    planner = Mock(side_effect=ModelOutputIncompleteError())
+    monkeypatch.setattr(graph, "chat_completion", planner)
+    write = Mock(side_effect=AssertionError("must not write"))
+    monkeypatch.setattr(bookkeeping.bookkeeping_service, "record_transaction", write)
+    result = graph.run_chat_graph(compiled_graph=graph.build_chat_graph(checkpointer=MemorySaver()),
+                                  session_id="truncated-plan", user_message="record an expense and explain it")
+    assert result["tool_error"]["code"] == "model_output_incomplete"
+    assert planner.call_count == 1
+    write.assert_not_called()
