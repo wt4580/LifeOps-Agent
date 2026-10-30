@@ -10,6 +10,8 @@ def test_failed_stage_retains_evidence_and_runs_remaining_checks(tmp_path, monke
     calls = []
 
     def run(command, **kwargs):
+        from pathlib import Path
+        assert kwargs["cwd"] == Path(__file__).resolve().parents[1]
         calls.append(command)
         kwargs["stdout"].write("stage evidence\n")
         if len(calls) == 2:
@@ -44,3 +46,17 @@ def test_changed_source_invalidates_otherwise_green_run(tmp_path, monkeypatch):
     assert report["meta"]["source_sha256"] == "before"
     assert not report["source_unchanged"]
     assert all(stage["passed"] for stage in report["stages"])
+
+
+def test_failed_atomic_report_update_retains_previous_snapshot(tmp_path, monkeypatch):
+    from pathlib import Path
+    from scripts.verify import save_report
+    target = tmp_path / "verification.json"
+    save_report(target, {"complete": False})
+    def denied(self, destination):
+        raise OSError("injected publication failure")
+    monkeypatch.setattr(Path, "replace", denied)
+    with pytest.raises(OSError):
+        save_report(target, {"complete": True})
+    assert json.loads(target.read_text()) == {"complete": False}
+    assert not target.with_name("verification.json.tmp").exists()

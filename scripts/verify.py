@@ -2,11 +2,25 @@
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import os
 import json
 from pathlib import Path
 import subprocess
 import sys
 import time
+
+
+def save_report(path, report):
+    """Publish complete JSON atomically; retain the prior snapshot on failure."""
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(report, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def source_fingerprint():
@@ -49,7 +63,7 @@ def verify(output):
         with (output / f"{name}.log").open("w", encoding="utf-8") as log:
             try:
                 result = subprocess.run([sys.executable, "-m", *arguments], stdout=log, stderr=subprocess.STDOUT,
-                                        timeout=600, check=False)
+                                        cwd=Path(__file__).resolve().parents[1], timeout=600, check=False)
                 code = result.returncode
             except subprocess.TimeoutExpired:
                 log.write("\nVerification stage exceeded 600 seconds\n")
@@ -62,10 +76,9 @@ def verify(output):
                         "duration_seconds": round(time.perf_counter() - started, 2)})
         source_unchanged = source_unchanged and source_fingerprint() == initial_source
         # Persist incrementally, so earlier evidence survives a later interruption.
-        (output / "verification.json").write_text(json.dumps({"offline": True, "meta": metadata,
+        save_report(output / "verification.json", {"offline": True, "meta": metadata,
             "source_unchanged": source_unchanged, "stages": results,
-            "complete": len(results) == len(stages), "passed": len(results) == len(stages) and source_unchanged and all(r["passed"] for r in results)},
-            indent=2), encoding="utf-8")
+            "complete": len(results) == len(stages), "passed": len(results) == len(stages) and source_unchanged and all(r["passed"] for r in results)})
     return source_unchanged and all(result["passed"] for result in results)
 
 
