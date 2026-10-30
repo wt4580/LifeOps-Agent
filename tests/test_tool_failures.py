@@ -343,3 +343,17 @@ def test_late_sql_policy_violation_prevents_earlier_write(monkeypatch, sql):
                                   session_id="sql-plan", user_message="record then query")
     assert result["tool_error"]["code"] == "model_output_invalid"
     write.assert_not_called()
+
+
+@pytest.mark.parametrize("payload", [{}, {"action": "ask_user_confirm_balance"},
+    {"action": "record_expense", "args": {"amount": "bad"}},
+    {"action": "normal_chat", "needs_plan": "false"},
+    {"action": "normal_chat", "mode": "unsupported"},
+    {"action": "normal_chat", "assistant_message": {"text": "bad"}}])
+def test_single_action_planner_contract_is_explicit(monkeypatch, payload):
+    planner = Mock(return_value=json.dumps(payload))
+    monkeypatch.setattr(graph, "chat_completion", planner)
+    result = graph.run_chat_graph(compiled_graph=graph.build_chat_graph(checkpointer=MemorySaver()),
+                                  session_id="invalid-single", user_message="process a task")
+    assert result["tool_error"]["code"] == "model_output_invalid"
+    assert planner.call_count == 1

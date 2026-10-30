@@ -474,6 +474,12 @@ def _node_decompose(state: ChatState) -> ChatState:
     cleaned = re.sub(r"\s*```$", "", cleaned).strip()
     try:
         data = json.loads(cleaned)
+        if not isinstance(data, dict) or type(data.get("needs_plan", False)) is not bool:
+            raise ValueError("Invalid planner envelope")
+        if data.get("mode", "normal") not in {"normal", "quick"}:
+            raise ValueError("Invalid planner mode")
+        if not isinstance(data.get("assistant_message", ""), str):
+            raise ValueError("Invalid planner message")
         state["mode"] = data.get("mode", "normal")
         if data.get("needs_plan"):
             steps = data.get("steps")
@@ -509,11 +515,15 @@ def _node_decompose(state: ChatState) -> ChatState:
                 len(steps),
             )
         else:
+            action = data.get("action")
+            if not isinstance(action, str) or action not in TOOLS or not TOOLS[action].model_visible:
+                raise ValueError("Invalid planner action")
+            arguments = validate_tool_args(action, data.get("args", {}))
             state["plan"] = []
             state["plan_index"] = 0
             state["decision"] = {
-                "action": data.get("action", "normal_chat"),
-                "args": data.get("args") or {},
+                "action": action,
+                "args": arguments,
                 "assistant_message": data.get("assistant_message", ""),
                 "trace": {"intent": "llm_decide", "why": data.get("reason", "LLM 决策")},
             }
