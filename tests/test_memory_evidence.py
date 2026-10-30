@@ -47,3 +47,28 @@ def test_valid_inference_remains_uncertain_and_batch_is_bounded():
     assert item.insight_type == "inferred" and item.confidence == 0.7
     with pytest.raises(ValidationError):
         MemoryExtraction(items=[item] * 21)
+
+
+def test_candidate_api_preserves_uncertainty_and_identity(tmp_path, monkeypatch):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.src.common.config.db_config import Base
+    from app.src.domain.entity.chat_entity import MemoryCandidate
+    from app.src.service import memory_service as module
+    engine = create_engine(f"sqlite:///{(tmp_path / 'memory.db').as_posix()}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(module, "SessionLocal", factory)
+    try:
+        with factory() as db:
+            db.add_all([MemoryCandidate(session_id="alice", kind="pattern", title="uncertain", confidence=0.6, insight_type="inferred"),
+                        MemoryCandidate(session_id="bob", kind="event", title="private")])
+            db.commit()
+        rows = module.MemoryService().get_memory_candidates("alice")
+        assert len(rows) == 1
+        assert rows[0]["confidence"] == 0.6
+        assert rows[0]["insight_type"] == "inferred"
+        assert rows[0]["verified"] is False
+        assert rows[0]["created_at"]
+    finally:
+        engine.dispose()

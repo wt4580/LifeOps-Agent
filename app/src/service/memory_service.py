@@ -130,6 +130,10 @@ class MemoryService:
                 "title": r.title,
                 "occurred_at": r.occurred_at,
                 "notes": r.notes,
+                "confidence": r.confidence,
+                "insight_type": r.insight_type or "unknown",
+                "verified": False,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
             }
             for r in rows
         ]
