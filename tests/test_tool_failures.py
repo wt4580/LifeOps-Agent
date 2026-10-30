@@ -267,3 +267,14 @@ def test_tool_dispatch_logs_exclude_arguments_and_planner_reasons(caplog):
         graph._run_tool_impl(state)
     assert "run_tool dispatch started" in caplog.text
     assert secret not in caplog.text
+
+
+def test_background_storage_failure_logs_only_exception_type(monkeypatch, caplog):
+    import logging
+    from app.src.service import chat_service
+    secret = "database-parameter-private-account-8271"
+    monkeypatch.setattr(chat_service, "SessionLocal", Mock(side_effect=RuntimeError(secret)))
+    with caplog.at_level(logging.WARNING):
+        chat_service.ChatService()._maybe_cleanup_stale_data()
+    assert "RuntimeError" in caplog.text
+    assert secret not in caplog.text

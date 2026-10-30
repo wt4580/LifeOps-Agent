@@ -311,7 +311,7 @@ class ChatService:
                         session_id=session_id,
                     )
                 except Exception as exc:
-                    logger.info("post_chat_learn failed: %s", exc)
+                    logger.info("post_chat_learn failed error_type=%s", type(exc).__name__)
 
             # C.4) 图后条件提取：非 quick 模式才运行画像/事件提取。
             if state.get("mode") != "quick":
@@ -325,14 +325,14 @@ class ChatService:
                     if personal and personal.items:
                         self._store_personal_events(memory_owner_id, message, [item.model_dump() for item in personal.items])
                 except Exception as exc:
-                    logger.warning("extract profile/events failed session=%s err=%s", session_id, exc)
+                    logger.warning("extract profile/events failed session=%s error_type=%s", session_id, type(exc).__name__)
 
             # D.5) 话题/任务焦点标注：判定任务段 vs 闲聊段，管理开启/关闭/快照。
             try:
                 from ..service.topic_service import annotate_turn
                 annotate_turn(session_id, state, answer)
             except Exception as exc:
-                logger.warning("topic annotate failed session=%s err=%s", session_id, exc)
+                logger.warning("topic annotate failed session=%s error_type=%s", session_id, type(exc).__name__)
 
             # E) 按轮次刷新摘要，并在必要时裁剪历史，控制长期上下文长度。
             try:
@@ -340,7 +340,7 @@ class ChatService:
                 await self._maybe_update_summary(session_id)
                 self._maybe_prune_chat_history(session_id)
             except Exception as exc:
-                logger.warning("summary refresh failed session=%s err=%s", session_id, exc)
+                logger.warning("summary refresh failed session=%s error_type=%s", session_id, type(exc).__name__)
 
             # F) 旁路增强：抽取结构化记忆候选，但不阻塞主响应返回。
             try:
@@ -362,14 +362,14 @@ class ChatService:
                             )
                         db.commit()
             except Exception as exc:
-                logger.warning("memory extraction failed session=%s err=%s", session_id, exc)
+                logger.warning("memory extraction failed session=%s error_type=%s", session_id, type(exc).__name__)
 
             # G) 周期性深度反思：分析所有积累数据，推断隐含模式并更新画像。
             try:
                 progress("正在分析深层模式...")
                 await self._maybe_deep_reflection(session_id, memory_owner_id)
             except Exception as exc:
-                logger.warning("deep reflection failed session=%s err=%s", session_id, exc)
+                logger.warning("deep reflection failed session=%s error_type=%s", session_id, type(exc).__name__)
 
             # H) 定期清理过时数据，防止表无限膨胀。
             self._cleanup_counter += 1
@@ -387,7 +387,7 @@ class ChatService:
             except TurnLimitExceeded:
                 logger.info("post_graph budget reached session=%s", session_id)
             except Exception as exc:
-                logger.warning("post_graph worker failed session=%s err=%s", session_id, exc)
+                logger.warning("post_graph worker failed session=%s error_type=%s", session_id, type(exc).__name__)
 
         _POST_GRAPH_EXECUTOR.submit(_worker)
 
@@ -462,7 +462,7 @@ class ChatService:
                     as_node="proactive_decision",
                 )
         except Exception as exc:
-            logger.warning("clear stale interrupt failed session=%s err=%s", session_id, exc)
+            logger.warning("clear stale interrupt failed session=%s error_type=%s", session_id, type(exc).__name__)
 
     def _load_recent_dialogue(self, session_id: str, limit: int = 12) -> list[dict]:
         """读取最近 N 条对话消息。"""
@@ -908,7 +908,7 @@ class ChatService:
                             db.commit()
                             logger.info("Deep reflection updated profile for session=%s", session_id)
         except Exception as exc:
-            logger.warning("Deep reflection failed session=%s err=%s", session_id, exc)
+            logger.warning("Deep reflection failed session=%s error_type=%s", session_id, type(exc).__name__)
 
     def _get_summary(self, session_id: str) -> str | None:
         """获取最近一条会话摘要。"""
@@ -937,7 +937,7 @@ class ChatService:
             if deleted_candidates or deleted_events:
                 logger.info("Cleaned up stale data: memory_candidates=%s life_events=%s", deleted_candidates, deleted_events)
         except Exception as exc:
-            logger.warning("Stale data cleanup failed: %s", exc)
+            logger.warning("Stale data cleanup failed error_type=%s", type(exc).__name__)
 
     def _summary_cursor(self, session_id: str) -> int:
         with SessionLocal() as db:
@@ -1025,7 +1025,7 @@ class ChatService:
                     runtime_context={"scenario": "history_summary", "session_id": session_id},
                 )
             except Exception as exc:
-                logger.warning("Slide summary failed session=%s total=%s err=%s", session_id, total, exc)
+                logger.warning("Slide summary failed session=%s total=%s error_type=%s", session_id, total, type(exc).__name__)
 
             if summary_text.strip():
                 self._save_summary(session_id, summary_text.strip(), summarized_through_id=old_rows[-1].id)
