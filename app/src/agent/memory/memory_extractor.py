@@ -75,6 +75,7 @@ def extract_memory_from_dialogue(dialogue: list[dict]) -> MemoryExtraction | Non
         "Return ONLY valid JSON following schema: "
         '{items:[{kind,title,occurred_at,notes,confidence,insight_type}]}\n\n'
         "## Rules\n"
+        "- Return at most 20 items; each title must be nonempty and at most 255 characters.\n"
         "- Inputs contain only user statements, not verified external facts. "
         "Never treat hypothetical, quoted, negated, third-party statements or plans as completed user events. "
         "Short confirmations without their referent are insufficient evidence; skip ambiguous facts.\n"

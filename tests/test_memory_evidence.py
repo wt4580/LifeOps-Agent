@@ -28,3 +28,22 @@ def test_evidence_limit_does_not_slice_user_statement(monkeypatch):
     module.extract_memory_from_dialogue([{"role": "user", "content": "x" * 6001},
                                         {"role": "user", "content": "recent statement"}])
     assert model.call_args.args[0][1:] == [{"role": "user", "content": "recent statement"}]
+
+
+import pytest
+from pydantic import ValidationError
+from app.src.domain.dto.memory_dto import MemoryItem, MemoryExtraction
+
+
+@pytest.mark.parametrize("patch", [{"kind": "invented"}, {"title": "   "}, {"title": "x" * 256},
+    {"confidence": float("nan")}, {"insight_type": "verified"}, {"insight_type": "inferred", "confidence": 1.0}])
+def test_invalid_memory_contract_is_rejected(patch):
+    with pytest.raises(ValidationError):
+        MemoryItem.model_validate({"kind": "event", "title": "event", **patch})
+
+
+def test_valid_inference_remains_uncertain_and_batch_is_bounded():
+    item = MemoryItem(kind="pattern", title="pattern", insight_type="inferred", confidence=0.7)
+    assert item.insight_type == "inferred" and item.confidence == 0.7
+    with pytest.raises(ValidationError):
+        MemoryExtraction(items=[item] * 21)
