@@ -51,8 +51,11 @@ def main():
     sid = request("/api/auth/login", {"username": args.username, "password": args.password})["session_id"]
     token = "SMOKE" + uuid4().hex[:10]
 
-    def chat(message):
-        return request("/api/chat/stream", {"session_id": sid, "message": message}, sse=True)
+    def chat(message, *, request_id=None, proposal_id=None):
+        body = {"session_id": sid, "message": message, "request_id": request_id or uuid4().hex}
+        if proposal_id is not None:
+            body["proposal_id"] = proposal_id
+        return request("/api/chat/stream", body, sse=True)
 
     query = urllib.parse.urlencode({"session_id": sid})
 
@@ -69,9 +72,13 @@ def main():
     assert not matching(), "proposal wrote before confirmation"
     chat("取消")
     assert not matching(), "cancel wrote a todo"
-    chat(f"明天下午3点开会{token}")
-    chat("确认")
+    draft = chat(f"明天下午3点开会{token}")
+    confirmation_id = uuid4().hex
+    confirmed = chat("确认", request_id=confirmation_id, proposal_id=draft["proposal_id"])
     assert len(matching()) == 1, "confirmation did not write exactly once"
+    replayed = chat("确认", request_id=confirmation_id, proposal_id=draft["proposal_id"])
+    assert replayed == confirmed, "request replay did not return original response"
+    assert len(matching()) == 1, "request replay duplicated a todo"
     answer = chat("报销需要哪些材料")
     assert any("reimbursement.txt" in item["path"] for item in answer.get("citations", [])), "missing RAG evidence"
     assert any(step.get("name") == "harness_summary" for step in answer["trace"]["steps"]), "missing harness summary"
@@ -79,7 +86,7 @@ def main():
         json.dumps(
             {
                 "passed": True,
-                "checks": ["readiness", "login", "SSE", "HITL cancel", "HITL confirm", "RAG citation", "harness"],
+                "checks": ["readiness", "login", "SSE", "HITL cancel", "HITL confirm", "idempotent confirmation replay", "RAG citation", "harness"],
             }
         )
     )
