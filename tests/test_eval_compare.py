@@ -54,3 +54,18 @@ def test_legacy_report_without_case_fingerprint_is_rejected():
     legacy["meta"].pop("cases_sha256")
     with pytest.raises(ValueError, match="cases_sha256"):
         compare(legacy, report())
+
+
+def test_eval_usage_keeps_estimates_separate_from_reported_tokens():
+    from app.eval.run_e2e import usage_summary
+    rows = [{"passed": True, "llm_calls": 2, "reported_tokens": 10,
+             "charged_tokens": 400, "usage_missing_calls": 1}]
+    usage = usage_summary(rows, "real")
+    assert usage["reported_tokens_observed"] == 10
+    assert usage["budget_charged_tokens"] == 400
+    assert not usage["usage_complete"] and not usage["monetary_cost_measured"]
+    rows[0]["usage_missing_calls"] = 0
+    rows[0]["passed"] = False
+    assert not usage_summary(rows, "real")["usage_complete"]
+    assert not usage_summary([], "real")["usage_complete"]
+    assert usage_summary(rows, "contract")["simulated"]

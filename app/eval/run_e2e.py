@@ -48,6 +48,19 @@ def case_fingerprint(selected):
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def usage_summary(results, mode):
+    """Observed usage is not provider billing, especially on failed requests."""
+    missing = sum(row["usage_missing_calls"] for row in results)
+    failures = sum(not row["passed"] for row in results)
+    return {"llm_calls_observed": sum(row["llm_calls"] for row in results),
+            "reported_tokens_observed": sum(row["reported_tokens"] for row in results),
+            "budget_charged_tokens": sum(row["charged_tokens"] for row in results),
+            "usage_missing_calls": missing,
+            "usage_complete": bool(results) and missing == 0 and failures == 0,
+            "simulated": mode == "contract", "monetary_cost_measured": False,
+            "scope": "harness observations; failures may lack final summaries; budget charges are not provider invoices"}
+
+
 def stream_events(response):
     response.raise_for_status()
     return [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
@@ -248,6 +261,7 @@ def evaluate(mode, limit=0):
                 name: {"n": len(items), "passed": sum(item["passed"] for item in items)}
                 for name, items in groups.items()
             },
+            "usage": usage_summary(results, mode),
             "cases": results,
         }
 
