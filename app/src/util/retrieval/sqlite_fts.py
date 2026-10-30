@@ -19,32 +19,51 @@ def ensure_index(engine):
         if engine in _ready:
             return
         with engine.begin() as conn:
-            # Retire the previous full-corpus cache invalidation machinery.
-            for table in ("documents", "document_chunks"):
-                for action in ("insert", "update", "delete"):
-                    conn.execute(text(f"DROP TRIGGER IF EXISTS revision_{table}_{action}"))
-            conn.execute(text("CREATE TABLE IF NOT EXISTS lexical_index_state "
-                              "(id INTEGER PRIMARY KEY, version INTEGER NOT NULL)"))
-            initialized = conn.execute(text("SELECT version FROM lexical_index_state WHERE id=1")).first()
-            # A separate index for summaries avoids rebuilding BM25 over all summaries.
-            for kind, table, column in (("chunk", "document_chunks", "chunk_text"),
-                                        ("summary", "documents", "summary")):
-                conn.execute(text(f"CREATE VIRTUAL TABLE IF NOT EXISTS lexical_{kind} "
-                                  "USING fts5(tokens, tokenize='unicode61 remove_diacritics 0')"))
-                conn.execute(text(f"CREATE TABLE IF NOT EXISTS lexical_{kind}_dirty "
-                                  "(id INTEGER PRIMARY KEY)"))
-                for action, ref in (("INSERT", "new"), ("UPDATE", "new"), ("DELETE", "old")):
-                    # Restrict UPDATE triggers to indexed columns; metadata needs no re-tokenization.
-                    event = f"UPDATE OF {column}" if action == "UPDATE" else action
-                    conn.execute(text(
-                        f"CREATE TRIGGER IF NOT EXISTS lexical_{kind}_{action.lower()} "
-                        f"AFTER {event} ON {table} BEGIN "
-                        f"INSERT OR IGNORE INTO lexical_{kind}_dirty VALUES ({ref}.id); END"
-                    ))
-                if not initialized:
-                    conn.execute(text(f"INSERT OR IGNORE INTO lexical_{kind}_dirty SELECT id FROM {table}"))
-            conn.execute(text("INSERT OR IGNORE INTO lexical_index_state VALUES (1, 1)"))
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+            install_index(conn)
         _ready.add(engine)
+
+
+def install_index(conn):
+    # Retire the previous full-corpus cache invalidation machinery.
+    for table in ("documents", "document_chunks"):
+        for action in ("insert", "update", "delete"):
+            conn.execute(text(f"DROP TRIGGER IF EXISTS revision_{table}_{action}"))
+    conn.execute(text("CREATE TABLE IF NOT EXISTS lexical_index_state "
+                      "(id INTEGER PRIMARY KEY, version INTEGER NOT NULL)"))
+    initialized = conn.execute(text("SELECT version FROM lexical_index_state WHERE id=1")).first()
+    # A separate index for summaries avoids rebuilding BM25 over all summaries.
+    for kind, table, column in (("chunk", "document_chunks", "chunk_text"),
+                                ("summary", "documents", "summary")):
+        conn.execute(text(f"CREATE VIRTUAL TABLE IF NOT EXISTS lexical_{kind} "
+                          "USING fts5(tokens, tokenize='unicode61 remove_diacritics 0')"))
+        conn.execute(text(f"CREATE TABLE IF NOT EXISTS lexical_{kind}_dirty "
+                          "(id INTEGER PRIMARY KEY)"))
+        for action, ref in (("INSERT", "new"), ("UPDATE", "new"), ("DELETE", "old")):
+            # Restrict UPDATE triggers to indexed columns; metadata needs no re-tokenization.
+            event = f"UPDATE OF {column}" if action == "UPDATE" else action
+            conn.execute(text(
+                f"CREATE TRIGGER IF NOT EXISTS lexical_{kind}_{action.lower()} "
+                f"AFTER {event} ON {table} BEGIN "
+                f"INSERT OR IGNORE INTO lexical_{kind}_dirty VALUES ({ref}.id); END"
+            ))
+        if not initialized:
+            conn.execute(text(f"INSERT OR IGNORE INTO lexical_{kind}_dirty SELECT id FROM {table}"))
+    conn.execute(text("INSERT OR IGNORE INTO lexical_index_state VALUES (1, 1)"))
+    validate_index(conn)
+
+
+def validate_index(conn):
+    from ...common.config.schema_migrations import SchemaMigrationError
+    rows = conn.execute(text("SELECT id,version FROM lexical_index_state")).all()
+    if rows != [(1, 1)]:
+        raise SchemaMigrationError("Unsupported lexical index version")
+    for kind in ("chunk", "summary"):
+        for suffix in ("", "_dirty"):
+            conn.execute(text(f"SELECT * FROM lexical_{kind}{suffix} LIMIT 0"))
+        for action in ("insert", "update", "delete"):
+            if not conn.execute(text("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=:name"), {"name": f"lexical_{kind}_{action}"}).first():
+                raise SchemaMigrationError("Missing lexical index trigger")
 
 
 def sync_index(engine, tokenize):

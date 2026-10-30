@@ -37,37 +37,36 @@ def _ensure_sqlite_dir() -> None:
     Path(db_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 
 
-def _ensure_document_chunks_columns() -> None:
+def _ensure_document_chunks_columns(conn) -> None:
     url = settings.knowledge_database_url
     if not url.startswith("sqlite:///"):
         return
 
-    with knowledge_engine.begin() as conn:
-        table_exists = conn.execute(
-            text("SELECT name FROM sqlite_master WHERE type='table' AND name='document_chunks'")
-        ).fetchone()
-        if not table_exists:
-            return
+    table_exists = conn.execute(
+        text("SELECT name FROM sqlite_master WHERE type='table' AND name='document_chunks'")
+    ).fetchone()
+    if not table_exists:
+        return
 
-        rows = conn.execute(text("PRAGMA table_info(document_chunks)")).fetchall()
-        existing = {r[1] for r in rows}
+    rows = conn.execute(text("PRAGMA table_info(document_chunks)")).fetchall()
+    existing = {r[1] for r in rows}
 
-        if "source_type" not in existing:
-            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN source_type VARCHAR(32)"))
-        if "doc_topic" not in existing:
-            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN doc_topic VARCHAR(64)"))
-        if "section_title" not in existing:
-            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN section_title VARCHAR(255)"))
-        if "heading_level" not in existing:
-            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN heading_level INTEGER"))
-        if "is_table" not in existing:
-            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN is_table INTEGER"))
-        if "summary" not in existing:
-            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN summary TEXT"))
-        if "section_path" not in existing:
-            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN section_path VARCHAR(512)"))
-        if "section_rank" not in existing:
-            conn.execute(text("ALTER TABLE document_chunks ADD COLUMN section_rank INTEGER"))
+    if "source_type" not in existing:
+        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN source_type VARCHAR(32)"))
+    if "doc_topic" not in existing:
+        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN doc_topic VARCHAR(64)"))
+    if "section_title" not in existing:
+        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN section_title VARCHAR(255)"))
+    if "heading_level" not in existing:
+        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN heading_level INTEGER"))
+    if "is_table" not in existing:
+        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN is_table INTEGER"))
+    if "summary" not in existing:
+        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN summary TEXT"))
+    if "section_path" not in existing:
+        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN section_path VARCHAR(512)"))
+    if "section_rank" not in existing:
+        conn.execute(text("ALTER TABLE document_chunks ADD COLUMN section_rank INTEGER"))
 
 
 def init_knowledge_db() -> None:
@@ -77,7 +76,15 @@ def init_knowledge_db() -> None:
 
     from ...domain.entity import knowledge_entity  # noqa: F401
 
-    KnowledgeBase.metadata.create_all(bind=knowledge_engine)
-    _ensure_document_chunks_columns()
-    from ...util.retrieval.sqlite_fts import ensure_index
-    ensure_index(knowledge_engine)
+    from .schema_migrations import migrate
+    from ...util.retrieval.sqlite_fts import validate_index
+    migrate(knowledge_engine, KnowledgeBase.metadata,
+            [("legacy_knowledge_and_fts_v1", _baseline)],
+            namespace="knowledge", validate=validate_index)
+
+
+def _baseline(conn):
+    from ...util.retrieval.sqlite_fts import install_index
+    KnowledgeBase.metadata.create_all(bind=conn)
+    _ensure_document_chunks_columns(conn)
+    install_index(conn)

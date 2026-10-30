@@ -93,3 +93,23 @@ def test_concurrent_startups_serialize_upgrade(database):
     with ThreadPoolExecutor(max_workers=2) as pool:
         list(pool.map(lambda _: migrate(database, metadata, [("baseline", upgrade)]), range(2)))
     assert calls == [1]
+
+
+def test_knowledge_index_failure_rolls_back_entire_upgrade(database):
+    from app.src.common.config.knowledge_db_config import KnowledgeBase, _baseline
+    from app.src.util.retrieval.sqlite_fts import validate_index
+    from app.src.domain.entity import knowledge_entity  # noqa: F401
+
+    def fail_validation(conn):
+        validate_index(conn)
+        raise RuntimeError("index validation failed")
+
+    with pytest.raises(RuntimeError, match="index validation"):
+        migrate(database, KnowledgeBase.metadata, [("knowledge", _baseline)],
+                namespace="knowledge", validate=fail_validation)
+    assert not inspect(database).has_table("documents")
+    assert not inspect(database).has_table("knowledge_schema_revisions")
+    migrate(database, KnowledgeBase.metadata, [("knowledge", _baseline)],
+            namespace="knowledge", validate=validate_index)
+    migrate(database, KnowledgeBase.metadata, [("knowledge", _baseline)],
+            namespace="knowledge", validate=validate_index)
