@@ -88,6 +88,8 @@ Harness 独立于模型可修改的图状态，对模型与工具调用施加统
 
 ### 数据库升级
 
+离线验证统一入口为 `python -m scripts.verify --output artifacts/verification`。它依次执行静态检查、单元测试、模拟 E2E、跨进程恢复和参考检索评测；单项失败后继续收集其他检查结果，最终以非零状态报告失败。各项日志及增量汇总 `verification.json` 会保留，`complete=false` 表示验证尚未完整结束。GitHub Actions 与 Jenkins 已配置此入口；CI 实际运行结果需以对应构建记录为准。
+
 评测迭代可运行 `python -m app.eval.compare artifacts/baseline.json artifacts/candidate.json --output artifacts/comparison.json`，比较两份 E2E 报告的逐案例结果。命令要求模式、模型、语料、检索后端、案例内容指纹及案例 ID 集合一致，输出退步、改善和仍失败的案例；有成功转失败时返回非零退出码。比较仅证明对应案例的结果变化，不代表真实模型统计准确率；案例指纹覆盖问题及预期结果；修改案例含义后应建立新基线，旧版缺少指纹的报告需重新生成。
 
 业务 SQLite 库启动时使用 `business_schema_revisions` 记录迁移版本，以 `BEGIN IMMEDIATE` 串行执行升级；结构变更与版本记录同事务提交，失败整体回滚。首次升级兼容历史支持的缺失字段并保留记录；发现未知版本、版本链不一致或缺少当前模型必需的表/字段时拒绝启动。未来业务结构变化需追加迁移版本。知识库使用独立的 `knowledge_schema_revisions`，其表结构与 FTS 初始化同事务升级，并检查索引版本及必要触发器。此机制尚不覆盖 LangGraph 自身的 schema，也不自动降级数据库；升级前应停止服务并创建已校验的离线快照，回退时恢复快照与配套代码。

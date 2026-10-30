@@ -20,12 +20,8 @@ pipeline {
             steps {
                 sh '''
                     docker create --name "$TEST_CONTAINER" "$TEST_IMAGE" sh -ec '
-                        python -m ruff check --select E9,F63,F7,F82 app tests scripts
                         python -m compileall -q app scripts
-                        python -m pytest tests -q --junitxml=/reports/unit.xml
-                        python -m app.eval.run_e2e --output /reports/e2e.json
-                        python -m scripts.recovery_drill --output /reports/recovery.json
-                        python -m app.eval.run_reference --output /reports/reference.json
+                        python -m scripts.verify --output /reports
                     '
                     docker start -a "$TEST_CONTAINER"
                     test "$(docker inspect -f '{{.State.ExitCode}}' "$TEST_CONTAINER")" = 0
