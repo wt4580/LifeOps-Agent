@@ -31,3 +31,20 @@ def test_rebuild_preserves_source_and_recovers_existing_chunks(tmp_path):
 def test_requires_stopped_writers(tmp_path):
     with pytest.raises(ValueError, match="Stop all writers"):
         rebuild(tmp_path / "source.db", tmp_path / "target.db")
+
+
+def test_rejected_copy_is_removed_and_source_handle_closed(tmp_path):
+    import sqlite3
+    source, target = tmp_path / "future.db", tmp_path / "rejected.db"
+    with sqlite3.connect(source) as db:
+        db.execute("CREATE TABLE knowledge_schema_revisions(version INTEGER PRIMARY KEY,name TEXT)")
+        db.execute("INSERT INTO knowledge_schema_revisions VALUES(99,'future')")
+    db.close()
+    from app.src.common.config.schema_migrations import SchemaMigrationError
+    with pytest.raises(SchemaMigrationError):
+        rebuild(source, target, service_stopped=True)
+    assert not target.exists()
+    # Windows cannot rename a database if the copy operation left its handle open.
+    renamed = source.with_name("retained.db")
+    source.rename(renamed)
+    assert renamed.is_file()

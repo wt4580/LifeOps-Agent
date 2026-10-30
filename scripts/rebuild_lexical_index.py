@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -26,8 +27,8 @@ def rebuild(source, output, *, service_stopped=False):
         pass
     engine = None
     try:
-        with sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as original:
-            with sqlite3.connect(output) as copy:
+        with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as original:
+            with closing(sqlite3.connect(output)) as copy:
                 original.backup(copy)
         engine = create_engine(f"sqlite:///{output.as_posix()}")
 
