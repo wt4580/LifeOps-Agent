@@ -291,3 +291,14 @@ def test_truncated_planning_stops_without_fallback_or_write(monkeypatch):
     assert result["tool_error"]["code"] == "model_output_incomplete"
     assert planner.call_count == 1
     write.assert_not_called()
+
+
+@pytest.mark.parametrize("raw", ["not json", "[]", '{"needs_plan":true,"steps":[{}]}'])
+def test_invalid_planning_does_not_fallback_to_success(monkeypatch, raw):
+    planner = Mock(return_value=raw)
+    monkeypatch.setattr(graph, "chat_completion", planner)
+    result = graph.run_chat_graph(compiled_graph=graph.build_chat_graph(checkpointer=MemorySaver()),
+                                  session_id="invalid-plan", user_message="record an expense")
+    assert result["tool_error"]["code"] == "model_output_invalid"
+    assert planner.call_count == 1
+    assert result["plan"] == []

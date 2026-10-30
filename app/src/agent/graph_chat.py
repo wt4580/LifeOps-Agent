@@ -505,6 +505,9 @@ def _node_decompose(state: ChatState) -> ChatState:
             )
     except Exception as exc:
         logger.warning("decompose failed error_type=%s", type(exc).__name__)
+        from ..common.domain.model_errors import ModelOutputInvalidError
+        state["tool_error"], state["answer"] = failure_result(
+            ModelOutputInvalidError(), action="planner", effect="conversation", committed={})
         state["plan"] = []
         state["plan_index"] = 0
         state["mode"] = "normal"
@@ -512,8 +515,9 @@ def _node_decompose(state: ChatState) -> ChatState:
             "action": "normal_chat",
             "args": {},
             "assistant_message": "",
-            "trace": {"intent": "fallback", "why": "decompose LLM 失败，降级为普通对话"},
+            "trace": {"intent": "planner_failed", "why": "规划格式无效，停止执行"},
         }
+        _push_delta(state, state["answer"])
     return state
 
 
