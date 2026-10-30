@@ -52,11 +52,32 @@ def _extract_json_object(content: str) -> dict | None:
 
 
 def extract_memory_from_dialogue(dialogue: list[dict]) -> MemoryExtraction | None:
+    # Assistant suggestions and generated summaries are not user testimony.
+    statements = []
+    remaining = 6000
+    for message in reversed(dialogue):
+        if message.get("role") != "user" or not isinstance(message.get("content"), str):
+            continue
+        content = message["content"].strip()
+        if not content:
+            continue
+        if len(content) > remaining:
+            break  # Do not change a statement's meaning by cutting off its negation.
+        statements.append({"role": "user", "content": content})
+        remaining -= len(content)
+        if len(statements) >= 20 or remaining == 0:
+            break
+    statements.reverse()
+    if not statements:
+        return MemoryExtraction(items=[])
     system_prompt = (
         "You extract structured memories from recent dialogue. "
         "Return ONLY valid JSON following schema: "
         '{items:[{kind,title,occurred_at,notes,confidence,insight_type}]}\n\n'
         "## Rules\n"
+        "- Inputs contain only user statements, not verified external facts. "
+        "Never treat hypothetical, quoted, negated, third-party statements or plans as completed user events. "
+        "Short confirmations without their referent are insufficient evidence; skip ambiguous facts.\n"
         "- kind: meeting|deadline|birthday|todo|event|preference|pattern\n"
         "- insight_type=explicit: user clearly stated the fact (confidence=1.0)\n"
         "- insight_type=inferred: you deduced a preference/pattern from implicit hints "
@@ -66,7 +87,7 @@ def extract_memory_from_dialogue(dialogue: list[dict]) -> MemoryExtraction | Non
         "set insight_type=inferred, confidence based on evidence strength.\n"
         "- If nothing to extract, return {items:[]}."
     )
-    messages = [{"role": "system", "content": system_prompt}] + dialogue
+    messages = [{"role": "system", "content": system_prompt}] + statements
     try:
         content = chat_completion(messages, temperature=0.1, runtime_context={"scenario": "memory_extraction"})
         data = _extract_json_object(content)
@@ -80,5 +101,5 @@ def extract_memory_from_dialogue(dialogue: list[dict]) -> MemoryExtraction | Non
         )
         return result
     except (json.JSONDecodeError, ValidationError) as exc:
-        logger.warning("Memory extraction failed dialogue_len=%s err=%s", len(dialogue), exc)
+        logger.warning("Memory extraction failed dialogue_len=%s error_type=%s", len(dialogue), type(exc).__name__)
         return None
