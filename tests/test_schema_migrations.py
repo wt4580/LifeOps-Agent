@@ -113,3 +113,21 @@ def test_knowledge_index_failure_rolls_back_entire_upgrade(database):
             namespace="knowledge", validate=validate_index)
     migrate(database, KnowledgeBase.metadata, [("knowledge", _baseline)],
             namespace="knowledge", validate=validate_index)
+
+
+@pytest.mark.parametrize("damage", ["DROP TABLE lexical_chunk", "DROP TRIGGER lexical_chunk_insert", "UPDATE lexical_index_state SET version=99"])
+def test_initialized_index_damage_never_silently_recreated(database, damage):
+    from app.src.common.config.knowledge_db_config import KnowledgeBase, _baseline
+    from app.src.util.retrieval.sqlite_fts import install_index
+    from app.src.domain.entity import knowledge_entity  # noqa: F401
+    from sqlalchemy.exc import OperationalError
+    migrate(database, KnowledgeBase.metadata, [("knowledge", _baseline)], namespace="knowledge")
+    with database.begin() as conn:
+        conn.exec_driver_sql(damage)
+        before = conn.exec_driver_sql("SELECT type,name,sql FROM sqlite_master ORDER BY name").all()
+    with pytest.raises((SchemaMigrationError, OperationalError)):
+        with database.begin() as conn:
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+            install_index(conn)
+    with database.connect() as conn:
+        assert conn.exec_driver_sql("SELECT type,name,sql FROM sqlite_master ORDER BY name").all() == before

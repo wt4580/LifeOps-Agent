@@ -25,6 +25,11 @@ def ensure_index(engine):
 
 
 def install_index(conn):
+    # An initialized index must be intact before any CREATE IF NOT EXISTS.
+    # Recreating an empty FTS table would lose all previously acknowledged rows.
+    state_exists = conn.execute(text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='lexical_index_state'")).first()
+    if state_exists and conn.execute(text("SELECT 1 FROM lexical_index_state LIMIT 1")).first():
+        validate_index(conn)
     # Retire the previous full-corpus cache invalidation machinery.
     for table in ("documents", "document_chunks"):
         for action in ("insert", "update", "delete"):
