@@ -495,3 +495,19 @@ def test_summary_backlog_load_is_bounded_and_advances_incrementally(business, mo
             assert db.scalar(select(func.count()).select_from(ChatMessage)) == 1000
     finally:
         event.remove(business, "loaded_as_persistent", observe)
+
+
+def test_recent_dialogue_has_stable_order_for_equal_timestamps(business, monkeypatch):
+    from datetime import datetime
+    from app.src.agent import graph_chat
+    monkeypatch.setattr(graph_chat, "SessionLocal", business)
+    with business() as db:
+        for index in range(8):
+            db.add(ChatMessage(session_id="alice", role="user" if index == 7 else "assistant",
+                               content=f"message-{index}", created_at=datetime(2026, 1, 1)))
+        db.add(ChatMessage(session_id="bob", role="user", content="private-bob", created_at=datetime(2026, 1, 1)))
+        db.commit()
+    rows = graph_chat._load_dialogue_with_times("alice", limit=4)
+    assert [row["content"] for row in rows] == ["message-4", "message-5", "message-6"]
+    rows = graph_chat._load_dialogue_with_times("alice", limit=4, exclude_last_user=False)
+    assert [row["content"] for row in rows] == ["message-4", "message-5", "message-6", "message-7"]
