@@ -302,3 +302,30 @@ def test_invalid_planning_does_not_fallback_to_success(monkeypatch, raw):
     assert result["tool_error"]["code"] == "model_output_invalid"
     assert planner.call_count == 1
     assert result["plan"] == []
+
+
+@pytest.mark.parametrize("tail", [
+    {"action": "record_expense", "args": {"amount": "invalid"}},
+    {"action": "unknown_action", "args": {}},
+    {"action": "ask_user_confirm_balance", "args": {}},
+])
+def test_late_invalid_step_prevents_earlier_write(monkeypatch, tail):
+    planner = Mock(return_value=json.dumps({"needs_plan": True, "steps": [
+        {"action": "record_expense", "args": {"amount": 10}}, tail]}))
+    monkeypatch.setattr(graph, "chat_completion", planner)
+    write = Mock(side_effect=AssertionError("must not write"))
+    monkeypatch.setattr(bookkeeping.bookkeeping_service, "record_transaction", write)
+    result = graph.run_chat_graph(compiled_graph=graph.build_chat_graph(checkpointer=MemorySaver()),
+                                  session_id="invalid-late-step", user_message="record two expenses")
+    assert result["tool_error"]["code"] == "model_output_invalid"
+    write.assert_not_called()
+
+
+@pytest.mark.parametrize("steps", [[], None, [{"action": "query_accounts", "args": {}}] * 11])
+def test_invalid_plan_size_is_rejected_without_silent_truncation(monkeypatch, steps):
+    planner = Mock(return_value=json.dumps({"needs_plan": True, "steps": steps}))
+    monkeypatch.setattr(graph, "chat_completion", planner)
+    result = graph.run_chat_graph(compiled_graph=graph.build_chat_graph(checkpointer=MemorySaver()),
+                                  session_id="invalid-plan-size", user_message="process all tasks")
+    assert result["tool_error"]["code"] == "model_output_invalid"
+    assert result["plan"] == []

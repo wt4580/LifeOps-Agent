@@ -29,7 +29,7 @@ from ..common.harness.context import (
 )
 from ..common.harness.interceptors import CallContext, InvalidToolArguments, PolicyViolation, tool_chain
 from ..common.domain.tool_errors import ToolExecutionFailure, ToolResultRejected, failure_result
-from ..domain.tool_registry import TOOLS
+from ..domain.tool_registry import TOOLS, validate_tool_args
 from ..domain.tool_registry import tool_catalog
 
 # LLM 每次可见的最近对话条数，必须与 chat_prune_target 一致以避免盲区
@@ -475,8 +475,19 @@ def _node_decompose(state: ChatState) -> ChatState:
     try:
         data = json.loads(cleaned)
         state["mode"] = data.get("mode", "normal")
-        if data.get("needs_plan") and data.get("steps"):
-            steps = data["steps"][:10]
+        if data.get("needs_plan"):
+            steps = data.get("steps")
+            if not isinstance(steps, list) or not 1 <= len(steps) <= 10:
+                raise ValueError("Invalid plan size")
+            # Validate the entire plan before the first step can commit effects.
+            # Runtime checks still apply after revisions and checkpoint resumes.
+            for step in steps:
+                if not isinstance(step, dict):
+                    raise ValueError("Invalid plan step")
+                action = step.get("action")
+                if action not in TOOLS or not TOOLS[action].model_visible:
+                    raise ValueError("Invalid plan action")
+                step["args"] = validate_tool_args(action, step.get("args", {}))
             state["plan"] = steps
             state["plan_index"] = 0
             # 设置当前步骤为第一个动作
