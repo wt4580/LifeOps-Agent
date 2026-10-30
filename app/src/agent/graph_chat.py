@@ -478,8 +478,8 @@ def _node_decompose(state: ChatState) -> ChatState:
                 "trace": {"intent": "plan_step", "why": first.get("purpose", "多步分解子任务")},
             }
             logger.info(
-                "decompose plan session=%s steps=%d first_action=%s first_purpose=%s",
-                state.get("session_id"), len(steps), first.get("action"), first.get("purpose", ""),
+                "decompose plan steps=%d",
+                len(steps),
             )
         else:
             state["plan"] = []
@@ -491,11 +491,10 @@ def _node_decompose(state: ChatState) -> ChatState:
                 "trace": {"intent": "llm_decide", "why": data.get("reason", "LLM 决策")},
             }
             logger.info(
-                "decompose decide session=%s mode=%s action=%s why=%s",
-                state.get("session_id"), state.get("mode"), data.get("action") or "normal_chat", data.get("reason", ""),
+                "decompose decide completed",
             )
     except Exception as exc:
-        logger.warning("decompose failed session=%s input=%s raw=%s err=%s", state.get("session_id"), user_msg[:40], cleaned, exc)
+        logger.warning("decompose failed error_type=%s", type(exc).__name__)
         state["plan"] = []
         state["plan_index"] = 0
         state["mode"] = "normal"
@@ -931,10 +930,8 @@ def _run_tool_impl(state: ChatState) -> ChatState:
     decision = state.get("decision") or {"action": "normal_chat", "args": {}, "assistant_message": ""}
     action = decision.get("action", "normal_chat")
     args = decision.get("args") or {}
-    trace_why = (state.get("decision") or {}).get("trace", {}).get("why", "")
     logger.info(
-        "run_tool action=%s session=%s mode=%s why=%s args=%s",
-        action, state.get("session_id"), state.get("mode"), trace_why, json.dumps(args, ensure_ascii=False)[:200],
+        "run_tool dispatch started",
     )
 
     if action == "clarify":

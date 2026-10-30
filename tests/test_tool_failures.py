@@ -255,3 +255,15 @@ def test_empty_confirmation_never_creates_success_receipt(business):
     with business() as db:
         assert db.scalar(select(func.count()).select_from(WriteOperation)) == 0
         assert db.scalar(select(func.count()).select_from(TodoItem)) == 0
+
+
+def test_tool_dispatch_logs_exclude_arguments_and_planner_reasons(caplog):
+    import logging
+    secret = "private-account-identity-7294"
+    state = {"session_id": "alice", "user_message": "question", "decision": {
+        "action": "clarify", "args": {"account_name": secret},
+        "assistant_message": "Please clarify", "trace": {"why": secret}}}
+    with caplog.at_level(logging.INFO):
+        graph._run_tool_impl(state)
+    assert "run_tool dispatch started" in caplog.text
+    assert secret not in caplog.text
