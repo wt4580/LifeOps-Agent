@@ -511,3 +511,18 @@ def test_recent_dialogue_has_stable_order_for_equal_timestamps(business, monkeyp
     assert [row["content"] for row in rows] == ["message-4", "message-5", "message-6"]
     rows = graph_chat._load_dialogue_with_times("alice", limit=4, exclude_last_user=False)
     assert [row["content"] for row in rows] == ["message-4", "message-5", "message-6", "message-7"]
+
+
+@pytest.mark.parametrize("summary", ["old task was discussed", "## 关键决定与计划\n- old task was discussed"])
+def test_all_summary_formats_are_marked_historical_not_execution_proof(monkeypatch, summary):
+    from app.src.agent import graph_chat
+    monkeypatch.setattr(graph_chat, "load_markdown_context", lambda **kwargs: "")
+    monkeypatch.setattr(graph_chat, "build_focus_context", lambda session_id: ([], []))
+    monkeypatch.setattr(graph_chat, "_load_dialogue_with_times", lambda *args, **kwargs: [])
+    model = Mock(return_value="answer")
+    monkeypatch.setattr(graph_chat, "chat_completion", model)
+    graph_chat._build_normal_chat_answer({"session_id": "alice", "user_message": "status", "summary": summary}, {})
+    prompt = "\n".join(message["content"] for message in model.call_args.args[0])
+    assert summary in prompt
+    assert "不代表当前状态" in prompt
+    assert "实际完成情况应查询业务记录" in prompt

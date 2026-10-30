@@ -657,9 +657,11 @@ def _build_normal_chat_answer(
         context_parts.append(f"## 用户画像\n{state['profile_context']}")
     if state.get("summary"):
         summary = state["summary"]
-        if not summary.startswith("##"):
-            summary = f"## 对话摘要（历史记录，仅供了解用户背景，不代表当前状态）\n注意：摘要中的事项可能已过期，引用前请核对时间，不要直接当成当前安排。\n{summary}"
-        context_parts.append(summary)
+        context_parts.append(
+            "## 对话摘要（历史记录，仅供了解用户背景，不代表当前状态）\n"
+            "注意：摘要中的事项可能已过期，引用前请核对时间，不要直接当成当前安排。\n"
+            "摘要是压缩记录，不能据此认定操作已经提交；实际完成情况应查询业务记录。\n"
+            + summary)
 
     important_events = state.get("important_events") or []
     if important_events:
