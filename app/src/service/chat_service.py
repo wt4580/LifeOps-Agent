@@ -985,6 +985,9 @@ class ChatService:
                     .where(ChatMessage.session_id == session_id)
                     .where(ChatMessage.id > self._summary_cursor(session_id))
                     .order_by(ChatMessage.id.asc())
+                    # Only the oldest slide plus the retained recent window is
+                    # needed to decide and perform this bounded refresh.
+                    .limit(RECENT_MAX + SLIDE_STEP)
                 )
                 .scalars()
                 .all()

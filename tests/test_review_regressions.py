@@ -466,3 +466,32 @@ def test_partial_summary_coverage_does_not_hide_unprocessed_documents(knowledge,
     rows=[SimpleNamespace(file_path=path) for path in ["matched.txt","other.txt","pending.txt"]]
     results=retrieval._apply_document_summary_filter(rows,"alpha")
     assert [row.file_path for row in results]==["matched.txt","pending.txt"]
+
+
+def test_summary_backlog_load_is_bounded_and_advances_incrementally(business, monkeypatch):
+    from sqlalchemy import event
+    from app.src.service import chat_service as module
+    monkeypatch.setattr(module, "SessionLocal", business)
+    with business() as db:
+        db.add_all(ChatMessage(session_id="alice", role="user", content=str(i)) for i in range(1000))
+        db.commit()
+    loaded = []
+    def observe(session, instance):
+        if isinstance(instance, ChatMessage):
+            loaded.append(instance.id)
+    event.listen(business, "loaded_as_persistent", observe)
+    try:
+        model = Mock(return_value="summary")
+        monkeypatch.setattr(module, "chat_completion", model)
+        service = module.ChatService()
+        asyncio.run(service._maybe_update_summary("alice"))
+        assert len(loaded) <= 60
+        assert service._summary_cursor("alice") == 10
+        loaded.clear()
+        asyncio.run(service._maybe_update_summary("alice"))
+        assert len(loaded) <= 60
+        assert service._summary_cursor("alice") == 20
+        with business() as db:
+            assert db.scalar(select(func.count()).select_from(ChatMessage)) == 1000
+    finally:
+        event.remove(business, "loaded_as_persistent", observe)
