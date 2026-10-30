@@ -372,3 +372,15 @@ def test_aborted_plan_exits_without_advancing_or_retrying():
            "plan":[{"action":"normal_chat"} for _ in range(100)],"plan_index":0,"answer":"stopped"}
     assert graph._node_advance_plan(state)["plan_index"]==0
     assert graph._route_after_advance(state)=="finalize"
+
+
+def test_model_output_is_not_logged_as_preview(monkeypatch, caplog):
+    import logging
+    secret = "private-financial-record-7823"
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=secret), finish_reason="stop")], usage=None)
+    client_for(monkeypatch, response=response)
+    with caplog.at_level(logging.INFO, logger=llm_config.__name__):
+        assert llm_config.chat_completion([{"role": "user", "content": "private-input-9652"}]) == secret
+    assert secret not in caplog.text
+    assert "private-input-9652" not in caplog.text
+    assert f"output_chars={len(secret)}" in caplog.text

@@ -208,15 +208,14 @@ def chat_completion(
 
     cleaned = llm_chain().invoke(call_ctx, request)
     elapsed = time.monotonic() - start
-    preview = (cleaned[:300] + "...") if cleaned and len(cleaned) > 300 else (cleaned or "(empty)")
     if not cleaned:
         logger.warning(
             "LLM 返回仅含不可见字符 finish=%s scenario=%s",
             finish_reason, ctx.get("scenario", "unknown"),
         )
     logger.info(
-        "LLM %s %.2fs %s preview=%s",
-        ctx.get("scenario", "?"), elapsed, finish_reason, preview,
+        "LLM %s %.2fs %s output_chars=%s",
+        ctx.get("scenario", "?"), elapsed, finish_reason, len(cleaned or ""),
     )
 
     return cleaned
