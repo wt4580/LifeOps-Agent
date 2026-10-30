@@ -329,3 +329,17 @@ def test_invalid_plan_size_is_rejected_without_silent_truncation(monkeypatch, st
                                   session_id="invalid-plan-size", user_message="process all tasks")
     assert result["tool_error"]["code"] == "model_output_invalid"
     assert result["plan"] == []
+
+
+@pytest.mark.parametrize("sql", ["DELETE FROM transactions", "SELECT * FROM transactions", "SELECT * FROM transactions WHERE session_id='someone-else'"])
+def test_late_sql_policy_violation_prevents_earlier_write(monkeypatch, sql):
+    planner = Mock(return_value=json.dumps({"needs_plan": True, "steps": [
+        {"action": "record_expense", "args": {"amount": 10}},
+        {"action": "query_database", "args": {"sql": sql}}]}))
+    monkeypatch.setattr(graph, "chat_completion", planner)
+    write = Mock(side_effect=AssertionError("must not write"))
+    monkeypatch.setattr(bookkeeping.bookkeeping_service, "record_transaction", write)
+    result = graph.run_chat_graph(compiled_graph=graph.build_chat_graph(checkpointer=MemorySaver()),
+                                  session_id="sql-plan", user_message="record then query")
+    assert result["tool_error"]["code"] == "model_output_invalid"
+    write.assert_not_called()

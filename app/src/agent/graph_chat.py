@@ -488,6 +488,12 @@ def _node_decompose(state: ChatState) -> ChatState:
                 if action not in TOOLS or not TOOLS[action].model_visible:
                     raise ValueError("Invalid plan action")
                 step["args"] = validate_tool_args(action, step.get("args", {}))
+                from ..common.harness.interceptors import ToolPolicyInterceptor, SessionScopeInterceptor, Decision
+                preflight = CallContext(kind="tool", name=f"preflight:{action}", session_id=session_id,
+                                        payload={"action": action, "args": step["args"]})
+                for policy in (ToolPolicyInterceptor(), SessionScopeInterceptor()):
+                    if policy.before(preflight) == Decision.ABORT:
+                        raise ValueError("Plan violates tool policy")
             state["plan"] = steps
             state["plan_index"] = 0
             # 设置当前步骤为第一个动作
