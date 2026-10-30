@@ -443,17 +443,29 @@ def _node_decompose(state: ChatState) -> ChatState:
         '{"action":"...","args":{...},"mode":"normal|quick","assistant_message":"","needs_plan":false}\n'
         '或 {"action":"...","args":{...},"mode":"normal","needs_plan":true,"steps":[{"action":"...","args":{...},"purpose":"..."}]}'
     )
+    historical_summary = state.get("summary") or ""
     payload = {
         "user_message": user_msg,
         "interrupted_context": state.get("interrupted_context"),
         "session_id": session_id,
         "profile_context": state.get("profile_context", ""),
         "recent_dialogue": _format_dialogue_with_times(dialogue),
+        "historical_summary": {
+            "source": "compressed_conversation_history",
+            "content": historical_summary[:6000],
+            "truncated": len(historical_summary) > 6000,
+            "current_state_verified": False,
+        },
         "available_topics": available_topics or [],
         "past_tasks": load_task_index(session_id),
         "business_db_inventory": db_inventory,
         "tools": tool_catalog(),
     }
+    system += (
+        "\n历史摘要 historical_summary 仅用于找回话题和任务线索，可能过期或压缩失真。"
+        "它不证明操作已提交，也不证明用户当前状态。涉及完成情况、金额、账户、待办状态时，"
+        "先查询当前身份的业务记录；摘要截断或信息不足时查询或澄清，不要补造事实。"
+    )
     from ..common.domain.model_errors import ModelOutputIncompleteError
     try:
         raw = chat_completion(

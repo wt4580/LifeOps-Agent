@@ -357,3 +357,19 @@ def test_single_action_planner_contract_is_explicit(monkeypatch, payload):
                                   session_id="invalid-single", user_message="process a task")
     assert result["tool_error"]["code"] == "model_output_invalid"
     assert planner.call_count == 1
+
+
+@pytest.mark.parametrize("summary", ["old task context", "x" * 7000])
+def test_planner_receives_bounded_historical_summary_with_provenance(monkeypatch, summary):
+    monkeypatch.setattr(graph, "_get_summary", lambda session_id: summary)
+    planner = Mock(return_value=json.dumps({"action": "normal_chat", "args": {}, "mode": "quick", "assistant_message": "answer"}))
+    monkeypatch.setattr(graph, "chat_completion", planner)
+    graph.run_chat_graph(compiled_graph=graph.build_chat_graph(checkpointer=MemorySaver()),
+                         session_id="summary-plan", user_message="what about the previous task")
+    messages = planner.call_args_list[0].args[0]
+    payload = json.loads(messages[1]["content"])
+    history = payload["historical_summary"]
+    assert history["content"] == summary[:6000]
+    assert history["truncated"] == (len(summary) > 6000)
+    assert history["current_state_verified"] is False
+    assert "先查询当前身份的业务记录" in messages[0]["content"]
