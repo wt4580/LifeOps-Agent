@@ -888,7 +888,16 @@ async function executeChatRequest(request) {
       request.completed = true;
       const finalAnswer = finalResult.answer || assistantText || "";
       assistantTurn.collapseThought();
-      if (assistantTurn?.answerDiv) assistantTurn.answerDiv.textContent = `回答：${finalAnswer}`;
+      if (assistantTurn?.answerDiv) {
+        const outcome = finalResult.tool_error?.outcome;
+        const status = finalResult.tool_error ? ({
+          some_operations_committed: "部分操作已提交。请先核对记录，已提交的操作不会自动撤销。",
+          unknown: "写入结果不确定。请先核对记录，不要重复提交相同操作。",
+          not_applied: "当前操作未应用。",
+          not_completed: "本轮任务未完成。",
+        }[outcome] || "本轮执行未成功完成。") : "";
+        assistantTurn.answerDiv.textContent = status ? `${status}\n\n回答：${finalAnswer}` : `回答：${finalAnswer}`;
+      }
       if (assistantTurn?.thoughtDiv) setThoughtLines(assistantTurn.thoughtDiv, buildThoughtLines(finalResult.trace, finalResult));
 
       if (finalResult.tool_error?.invalidated_proposal_id === window.currentProposalId && window.currentProposalId) {

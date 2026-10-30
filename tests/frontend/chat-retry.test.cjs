@@ -302,3 +302,22 @@ test('late response after an identity switch does not display an old proposal', 
   assert.equal(b.context.window.currentProposalId, undefined);
   assert.equal(request.completed, false);
 });
+
+
+for (const [outcome, expected] of [
+  ['some_operations_committed', /部分操作已提交/],
+  ['unknown', /写入结果不确定/],
+  ['not_completed', /本轮任务未完成/],
+]) {
+  test(`structured failure outcome ${outcome} remains visible without replay`, async () => {
+    const b = browser(() => response([{type: 'final', result: {
+      answer: '执行说明', tool_error: {outcome},
+    }}]));
+    const request = b.context.createChatRequest('执行任务');
+    await b.context.executeChatRequest(request);
+    assert.match(request.turn.answerDiv.textContent, expected);
+    assert.equal(b.retry().hidden, true);
+    await b.context.executeChatRequest(request);
+    assert.equal(b.calls.length, 1);
+  });
+}
