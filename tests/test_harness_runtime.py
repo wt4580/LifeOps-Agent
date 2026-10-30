@@ -384,3 +384,25 @@ def test_model_output_is_not_logged_as_preview(monkeypatch, caplog):
     assert secret not in caplog.text
     assert "private-input-9652" not in caplog.text
     assert f"output_chars={len(secret)}" in caplog.text
+
+
+@pytest.mark.parametrize("reason", ["length", "content_filter"])
+def test_incomplete_model_output_is_not_success(monkeypatch, reason):
+    from app.src.common.domain.model_errors import ModelOutputIncompleteError
+    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="partial private answer"), finish_reason=reason)],
+                               usage=SimpleNamespace(prompt_tokens=10, completion_tokens=3, total_tokens=13))
+    client_for(monkeypatch, response=response)
+    with pytest.raises(ModelOutputIncompleteError):
+        llm_config.chat_completion([{"role": "user", "content": "question"}])
+
+
+def test_truncated_stream_closes_and_settles_reported_usage(monkeypatch):
+    from app.src.common.domain.model_errors import ModelOutputIncompleteError
+    stream = Stream([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="partial"), finish_reason="length")],
+                                    usage={"prompt_tokens": 9, "completion_tokens": 3, "total_tokens": 12})])
+    client_for(monkeypatch, response=stream)
+    with turn_context("truncated-stream") as turn:
+        with pytest.raises(ModelOutputIncompleteError):
+            llm_config.chat_completion([{"role": "user", "content": "question"}], on_token=lambda token: None)
+        assert stream.closed
+        assert turn.budget.charged_tokens == 12

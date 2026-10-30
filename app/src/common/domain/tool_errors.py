@@ -5,6 +5,7 @@ import sqlite3
 
 from sqlalchemy.exc import SQLAlchemyError
 from openai import OpenAIError
+from .model_errors import ModelOutputIncompleteError
 
 
 class ToolExecutionFailure(Exception):
@@ -43,6 +44,9 @@ def failure_result(error, *, action, effect, committed, completed_steps=0, trace
     elif isinstance(source, (SQLAlchemyError, sqlite3.Error)):
         code = "storage_unavailable"
         message = "数据存储操作失败，后续步骤已停止。"
+    elif isinstance(source, ModelOutputIncompleteError):
+        code = "model_output_incomplete"
+        message = "模型输出未完整结束，后续步骤已停止，请缩小问题范围后重新发起请求。"
     elif isinstance(source, OpenAIError):
         code = "model_unavailable"
         message = "模型服务未能完成当前步骤，后续步骤已停止。"

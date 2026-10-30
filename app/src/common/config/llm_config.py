@@ -13,6 +13,7 @@ from openai import OpenAI
 from .base_config import settings
 from ..harness.context import budget_bypassed, get_turn_context, ensure_turn_active
 from ..harness.interceptors import CallContext, llm_chain
+from ..domain.model_errors import ModelOutputIncompleteError
 
 
 logger = logging.getLogger(__name__)
@@ -195,6 +196,8 @@ def chat_completion(
                 finish_reason = response.choices[0].finish_reason
                 cleaned = normalize_llm_output(response.choices[0].message.content)
             ensure_turn_active()
+            if finish_reason in {"length", "content_filter"}:
+                raise ModelOutputIncompleteError()
             return cleaned
         finally:
             if turn is not None:
