@@ -41,6 +41,13 @@ def percentile(values, q):
     return values[left] + (values[min(left + 1, len(values) - 1)] - values[left]) * (index - left)
 
 
+def case_fingerprint(selected):
+    """Bind prompts and expected outcomes, independently of implementation code."""
+    payload = json.dumps(sorted(selected, key=lambda case: case["id"]),
+                         sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def stream_events(response):
     response.raise_for_status()
     return [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
@@ -227,6 +234,7 @@ def evaluate(mode, limit=0):
                 "python": sys.version.split()[0],
                 "working_tree_may_be_dirty": True,
                 "corpus_sha256": corpus_hash,
+                "cases_sha256": case_fingerprint(selected),
                 "backend": settings.rag_backend,
             },
             "metrics": {
