@@ -432,6 +432,7 @@ def _build_document_index(*, rebuild: bool = False, reset: bool = False) -> dict
         "reset": reset,
         "backend": backend,
         "vector_attempted": backend in {"langchain", "hybrid"},
+        "indexing_status": "complete",
     }
 
     if backend in {"langchain", "hybrid"}:
@@ -443,8 +444,9 @@ def _build_document_index(*, rebuild: bool = False, reset: bool = False) -> dict
             vec = build_vector_index(root_dir=settings.docs_dir, rebuild=rebuild)
             result.update(vec)
         except Exception as exc:
-            logger.warning("Vector index build failed, keep sqlite index only: %s", exc)
-            result["vector_error"] = str(exc)
+            logger.warning("Vector index build failed, keep sqlite index only error_type=%s", type(exc).__name__)
+            result["indexing_status"] = "degraded"
+            result["vector_error"] = "vector_index_build_failed"
 
     _sync_document_records()
     with KnowledgeSessionLocal() as db:

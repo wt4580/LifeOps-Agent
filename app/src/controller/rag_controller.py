@@ -8,6 +8,7 @@ from ..service.rag_service import rag_service
 from ..domain.dto.rag_dto import IndexRequest, AskRequest
 from ..util.retrieval.retrieval import IndexingBusyError
 from ..util.ingest.limits import IngestionLimitExceeded
+from ..common.config.log_config import logger
 
 router = APIRouter()
 
@@ -27,8 +28,9 @@ def index_documents(req: IndexRequest | None = None):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except IngestionLimitExceeded as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.warning("Knowledge indexing failed error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="索引任务未完整完成，请检查服务日志后重试。") from exc
 
 
 @router.post("/api/ask")

@@ -95,3 +95,36 @@ def test_already_completed_summary_future_does_not_deadlock(monkeypatch):
     monkeypatch.setattr(module, '_SUMMARY_EXECUTOR', Mock(submit=Mock(return_value=completed)))
     module._schedule_document_summaries()
     assert module._SUMMARY_FUTURE is None
+
+def test_index_api_does_not_expose_storage_error(monkeypatch, caplog):
+    from fastapi import HTTPException
+    from app.src.controller import rag_controller
+    secret = 'private-path-and-sql-8312'
+    monkeypatch.setattr(rag_controller.rag_service, 'index_docs', Mock(side_effect=RuntimeError(secret)))
+    with pytest.raises(HTTPException) as caught:
+        rag_controller.index_documents()
+    assert caught.value.status_code == 500
+    assert secret not in str(caught.value.detail) + caplog.text
+    assert 'RuntimeError' in caplog.text
+
+
+def test_vector_failure_reports_degradation_without_raw_exception(monkeypatch, caplog):
+    import sys
+    from types import SimpleNamespace
+    secret = 'private-vector-key-9527'
+    vector = Mock(side_effect=RuntimeError(secret))
+    monkeypatch.setitem(sys.modules, 'app.src.util.retrieval.rag_langchain',
+                        SimpleNamespace(build_vector_index=vector, _load_vector_store=Mock()))
+    monkeypatch.setattr(module.settings, 'rag_backend', 'hybrid')
+    monkeypatch.setattr(module, '_index_documents_sqlite', Mock(return_value=(3, 0)))
+    monkeypatch.setattr(module, '_sync_document_records', Mock())
+    factory = Mock()
+    factory.return_value.__enter__ = Mock(return_value=Mock())
+    factory.return_value.__exit__ = Mock(return_value=False)
+    factory.return_value.__enter__.return_value.execute.return_value.scalar_one.return_value = 0
+    monkeypatch.setattr(module, 'KnowledgeSessionLocal', factory)
+    result = module.index_documents()
+    assert result['inserted'] == 3
+    assert result['indexing_status'] == 'degraded'
+    assert result['vector_error'] == 'vector_index_build_failed'
+    assert secret not in str(result) + caplog.text
