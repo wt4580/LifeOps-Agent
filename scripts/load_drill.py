@@ -93,7 +93,59 @@ def application_client(app, transport):
             raise RuntimeError('Temporary Uvicorn server did not stop')
 
 
-def application_load(root, requests, concurrency, transport="asgi"):
+def overload_case(client, user, cookie, factory):
+    import asyncio
+    from sqlalchemy import func, select
+    from app.src.common.config.base_config import settings
+    from app.src.domain.entity.chat_entity import ChatMessage, ChatRequest, Transaction
+    from app.src.service.chat_service import chat_service
+    entered, release = threading.Event(), threading.Event()
+    original_chat = chat_service.chat
+    original_limit = settings.chat_max_inflight_jobs
+    async def held_chat(*args, **kwargs):
+        entered.set()
+        if not await asyncio.to_thread(release.wait, 15):
+            raise RuntimeError('Overload hold timed out')
+        return await original_chat(*args, **kwargs)
+    headers = {'Cookie': cookie}
+    body = {'session_id': user, 'message': '我花了10元买午饭', 'request_id': 'overload-held'}
+    settings.chat_max_inflight_jobs = 1
+    chat_service.chat = held_chat
+    checks = {}
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            active = executor.submit(lambda: final_response(client.post('/api/chat/stream', json=body, headers=headers)))
+            try:
+                if not entered.wait(10):
+                    raise RuntimeError('Held request did not enter execution')
+                rejected_body = {**body, 'request_id': 'overload-rejected'}
+                response = client.post('/api/chat/stream', json=rejected_body, headers=headers)
+                response.raise_for_status()
+                events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+                checks['retryable_capacity_error_without_final'] = (
+                    len(events) == 1 and events[0].get('code') == 'chat_capacity_exceeded'
+                    and events[0].get('retryable') is True and events[0].get('type') == 'error')
+                with factory() as db:
+                    checks['rejected_request_never_persisted'] = all(
+                        db.scalar(select(func.count()).select_from(entity)) == 0
+                        for entity in (ChatMessage, ChatRequest, Transaction))
+            finally:
+                release.set()
+            completed = active.result(timeout=30)
+        chat_service.chat = original_chat
+        replay = final_response(client.post('/api/chat/stream', json=body, headers=headers))
+        checks['completed_request_replay_matches'] = completed == replay
+        final_response(client.post('/api/chat/stream', json={**body, 'request_id': 'after-overload'}, headers=headers))
+        with factory() as db:
+            checks['capacity_recovers_and_unique_writes_only'] = db.scalar(select(func.count()).select_from(Transaction)) == 2
+        return {'checks': checks, 'passed': all(checks.values())}
+    finally:
+        release.set()
+        chat_service.chat = original_chat
+        settings.chat_max_inflight_jobs = original_limit
+
+
+def application_load(root, requests, concurrency, transport="asgi", overload=False):
     os.environ.update({
         'DEMO_MODE': 'true', 'DEMO_SEED': 'false', 'QWEN_API_KEY': 'unused-offline-load',
         'BACKGROUND_LEARNING_ENABLED': 'false', 'SCHEDULER_ENABLED': 'false', 'RAG_BACKEND': 'bm25',
@@ -121,6 +173,13 @@ def application_load(root, requests, concurrency, transport="asgi"):
                 response = client.post('/api/auth/login', json={'username': user, 'password': 'offline-load-2026'})
                 response.raise_for_status()
                 identities.append((user, f'{COOKIE_NAME}={client.cookies.get(COOKIE_NAME)}'))
+            if overload:
+                report = overload_case(client, *identities[0], SessionLocal)
+                report.update({'mode': 'offline-demo', 'scenario': 'capacity-overload',
+                    'transport': 'loopback-TCP-uvicorn' if transport == 'tcp' else 'in-process-ASGI',
+                    'source_sha256': initial_source, 'source_unchanged': source_fingerprint() == initial_source})
+                report['passed'] = report['passed'] and report['source_unchanged']
+                return report
             def operation(index):
                 user, cookie = identities[index % len(identities)]
                 body = {'session_id': user, 'message': '我花了10元买午饭', 'request_id': f'load-{index}'}
@@ -172,17 +231,18 @@ def main():
     parser.add_argument('--requests', type=int, default=16)
     parser.add_argument('--concurrency', type=int, default=4)
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--overload-check', action='store_true')
     parser.add_argument('--transport', choices=['asgi', 'tcp'], default='asgi')
     parser.add_argument('--data-root', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if not 1 <= args.requests <= 200 or not 1 <= args.concurrency <= 16:
         parser.error('requests must be 1..200 and concurrency 1..16')
     if args.data_root:
-        report = application_load(args.data_root, args.requests, args.concurrency, args.transport)
+        report = application_load(args.data_root, args.requests, args.concurrency, args.transport, args.overload_check)
     else:
         with tempfile.TemporaryDirectory(prefix='lifeops-load-') as temporary:
             result = subprocess.run([sys.executable, '-m', 'scripts.load_drill', '--data-root', temporary,
-                '--requests', str(args.requests), '--concurrency', str(args.concurrency), '--transport', args.transport],
+                '--requests', str(args.requests), '--concurrency', str(args.concurrency), '--transport', args.transport, *(['--overload-check'] if args.overload_check else [])],
                 capture_output=True, text=True, encoding='utf-8', timeout=300,
                 env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
             if result.returncode not in (0, 1) or not result.stdout.strip():

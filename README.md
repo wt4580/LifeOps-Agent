@@ -195,6 +195,8 @@ python -m app.src
 
 SSE 延迟报告另外区分 `first_event`（首个有效事件）、`first_delta`（首个非空正文片段）和 `final`（最终结果），并记录各指标的样本数；没有正文 delta 的响应不计入该指标。TCP 模式逐行接收，ASGI 模式标注为测试客户端缓冲观测，不能用于推断真实首段到达时间。2026-10-31 TCP 8并发、32个操作实测全部通过：三项 P95分别约190毫秒、776毫秒和1.55秒；报告 `artifacts/load-drill-tcp-stream.json`。这些是离线演示结果，不是模型首 token 指标，也不等于包含重放与健康探测的整组操作耗时。
 
+过载验收命令：`python -m scripts.load_drill --transport tcp --overload-check --output artifacts/overload.json`。只在独立演练子进程内把全局容量设为1，并暂时挂起首个请求；核对下一请求收到可重试 `chat_capacity_exceeded` SSE 错误、没有写入聊天消息/请求回执/交易，释放后原请求重放一致且新请求可继续执行。2026-10-31 本地 TCP 演练四项检查全部通过，报告 `artifacts/overload-tcp.json`，源码指纹未变化。这是受控全局容量测试，不覆盖所有真实过载形态或多进程协调。
+
 ### 已有验证证据
 
 2026-10-31 完整离线验收（源码提交 `3ebba8e`）：Windows 本地兼容依赖环境运行统一验证，**586 项单元与回归测试通过、1 项跳过，100/100 条模拟端到端流程、14 个跨进程恢复检查点、静态检查与参考检索评测均通过**，前端另有 **19 项测试通过**。统一报告 `complete=true, passed=true, source_unchanged=true`，源码指纹为 `cb4ac283a99b850f8af2de1a70f8e7f48cb5caaa292498747238ead1f7ea3b88`；报告和日志保存在本地 `artifacts/verification-3ebba8e/`。本轮包含真实 FAISS 本地确定性向量集成，覆盖逐份导入、资源边界、并发准入、摘要一致性、向量版本发布和过期证据拦截；仍有依赖弃用等警告。未更新现有部署，不代表真实模型质量、生产负载或远程 CI 验收。
