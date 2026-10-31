@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from collections.abc import Callable
@@ -266,6 +267,20 @@ def _sync_document_records() -> None:
 
 
 _SUMMARY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="document-summary")
+_SUMMARY_SCHEDULE_LOCK = threading.Lock()
+_SUMMARY_FUTURE = None
+_INDEX_LOCK = threading.Lock()
+
+
+class IndexingBusyError(RuntimeError):
+    """Another index build is already running in this process."""
+
+
+def _schedule_document_summaries():
+    global _SUMMARY_FUTURE
+    with _SUMMARY_SCHEDULE_LOCK:
+        if _SUMMARY_FUTURE is None or _SUMMARY_FUTURE.done():
+            _SUMMARY_FUTURE = _SUMMARY_EXECUTOR.submit(_generate_document_summaries)
 
 
 def _generate_document_summaries() -> None:
@@ -365,6 +380,16 @@ def get_document_outline() -> list[dict]:
 
 
 def index_documents(*, rebuild: bool = False, reset: bool = False) -> dict:
+    """Reject overlapping builds instead of accumulating parsing and writer work."""
+    if not _INDEX_LOCK.acquire(blocking=False):
+        raise IndexingBusyError("知识库正在建立索引，请稍后重试")
+    try:
+        return _build_document_index(rebuild=rebuild, reset=reset)
+    finally:
+        _INDEX_LOCK.release()
+
+
+def _build_document_index(*, rebuild: bool = False, reset: bool = False) -> dict:
     """统一索引入口：先建 SQLite 索引，再按配置可选构建向量索引。
     
     Args:
@@ -403,7 +428,7 @@ def index_documents(*, rebuild: bool = False, reset: bool = False) -> dict:
     with KnowledgeSessionLocal() as db:
         pending_summaries = db.execute(select(func.count()).select_from(Document).where(Document.summary.is_(None))).scalar_one()
     if pending_summaries:
-        _SUMMARY_EXECUTOR.submit(_generate_document_summaries)
+        _schedule_document_summaries()
 
     elapsed = (datetime.now(timezone.utc) - start).total_seconds()
     logger.info(

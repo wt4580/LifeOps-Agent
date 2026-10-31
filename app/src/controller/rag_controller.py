@@ -6,6 +6,8 @@ from ..common.harness.context import turn_context, TurnLimitExceeded
 from ..common.domain.response import success_response
 from ..service.rag_service import rag_service
 from ..domain.dto.rag_dto import IndexRequest, AskRequest
+from ..util.retrieval.retrieval import IndexingBusyError
+from ..util.ingest.limits import IngestionLimitExceeded
 
 router = APIRouter()
 
@@ -21,6 +23,10 @@ def index_documents(req: IndexRequest | None = None):
         reset = (req or IndexRequest()).reset
         result = rag_service.index_docs(reset=reset)
         return success_response(data=result)
+    except IndexingBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except IngestionLimitExceeded as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
