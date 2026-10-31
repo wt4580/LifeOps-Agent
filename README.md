@@ -28,6 +28,7 @@ LifeOps-Agent 将待办、记账、日历和知识库整合到统一的对话入
 | **人机确认** | 待办先生成草案，通过 checkpoint 支持确认、修改和取消；已有账户余额变更须确认 |
 | **知识库问答** | BM25 / 向量 / 混合检索，支持 RRF 融合、可选重排和来源引用 |
 | **个人记忆** | 保留聊天原文，增量生成摘要，按身份隔离画像、事件与学习文件 |
+| **可靠执行** | 请求回执与业务操作双层幂等，支持中断补充、部分写入提示、跨进程结果恢复与队列过载拒绝 |
 | **运行控制** | 独立 Harness 管理时间、调用次数和 token 预算，拦截工具请求并记录审计 |
 | **工具契约** | 统一注册参数 schema、副作用与确认要求，模型工具目录与执行校验同源，参数拒绝后停止后续计划 |
 | **交互与工具** | SSE 流式交互、请求取消、待办、收支、日历、天气与可选本地语音 |
@@ -177,79 +178,72 @@ python -m app.src
 
 ## 测试与评估
 
-### 统一验证与迭代对比
-
-已有测试镜像可运行 `python -m scripts.verify_container --image lifeops-agent:test --output artifacts/container-verification`。入口使用独立无网络容器和可保留报告卷，容器结束后导出报告、日志与退出状态，再清理自建容器和匿名卷；输出目录必须为空。此命令验证指定镜像，不会自动重建，因此应先构建与目标源码对应的镜像。
-
-离线验证统一入口为 `python -m scripts.verify --output artifacts/verification`。它依次执行静态检查、单元测试、模拟 E2E、跨进程恢复、参考检索评测、TCP 并发演练和 TCP 过载恢复演练；单项失败后继续收集其他检查结果，最终以非零状态报告失败。每次运行必须使用空输出目录，避免旧报告混入。各项日志及增量汇总 `verification.json` 会保留，`complete=false` 表示验证尚未完整结束。新增阶段分别输出 `concurrency.json`、`overload.json` 及同名日志，并参与最终通过判定。TCP 演练仅监听容器或本机的回环地址，采用临时数据和离线模式。GitHub Actions 与 Jenkins 已配置此入口，现有整目录归档会保留新增报告；CI 实际运行结果需以对应构建记录为准。
-
-评测迭代可运行 `python -m app.eval.compare artifacts/baseline.json artifacts/candidate.json --output artifacts/comparison.json`，比较两份 E2E 报告的逐案例结果。命令要求模式、模型、语料、检索后端、案例内容指纹及案例 ID 集合一致，输出退步、改善和仍失败的案例；有成功转失败时返回非零退出码。比较仅证明对应案例的结果变化，不代表真实模型统计准确率；案例指纹覆盖问题及预期结果；修改案例含义后应建立新基线，旧版缺少指纹的报告需重新生成。
-
-### 应用内并发演练
-
-运行 `python -m scripts.load_drill --requests 32 --concurrency 8 --output artifacts/load-drill.json`。工具在独立子进程、临时数据库和离线演示模式下运行；每个操作包含记账 SSE、相同请求重放和 readiness 检查，并按用户核对数据库写入数是否等于唯一请求数。报告包含成功/失败数、P50/P95/最大延迟、健康检查延迟和运行前后源码指纹；失败时非零退出。请求数限定1至200，并发数1至16。
-
-2026-10-31 Windows 本地实测：8并发、32个操作全部成功，写入数量与各用户唯一请求数一致，源码未变化；整组操作 P95约2.36秒，readiness最长约51毫秒。报告在本地 `artifacts/load-drill-c8.json`。使用进程内 ASGI 测试客户端，不经过 TCP、反向代理或生产 ASGI 服务器，也不包含真实模型延迟；这些数字用于本地回归比较，不是生产容量承诺或SLO。
-
-增加 `--transport tcp` 可通过随机回环端口和临时 Uvicorn 服务运行同一工作负载，结束后关闭服务；默认 `--transport asgi` 保留进程内模式。2026-10-31 Windows 本地 TCP 实测：8并发、32个操作全部成功，各用户写入数与唯一请求数一致，源码指纹未变化；整组操作 P95约2.90秒，readiness最长约52毫秒。本地报告 `artifacts/load-drill-tcp-c8.json`。该模式验证真实 HTTP 连接与服务器链路，仍采用离线演示响应，不包含真实模型、反向代理、容器资源配额或长时间稳定性，不能据此承诺生产容量。
-
-SSE 延迟报告另外区分 `first_event`（首个有效事件）、`first_delta`（首个非空正文片段）和 `final`（最终结果），并记录各指标的样本数；没有正文 delta 的响应不计入该指标。TCP 模式逐行接收，ASGI 模式标注为测试客户端缓冲观测，不能用于推断真实首段到达时间。2026-10-31 TCP 8并发、32个操作实测全部通过：三项 P95分别约190毫秒、776毫秒和1.55秒；报告 `artifacts/load-drill-tcp-stream.json`。这些是离线演示结果，不是模型首 token 指标，也不等于包含重放与健康探测的整组操作耗时。
-
-过载验收命令：`python -m scripts.load_drill --transport tcp --overload-check --output artifacts/overload.json`。只在独立演练子进程内把全局容量设为1，并暂时挂起首个请求；核对下一请求收到可重试 `chat_capacity_exceeded` SSE 错误、没有写入聊天消息/请求回执/交易，释放后原请求重放一致且新请求可继续执行。2026-10-31 本地 TCP 演练四项检查全部通过，报告 `artifacts/overload-tcp.json`，源码指纹未变化。这是受控全局容量测试，不覆盖所有真实过载形态或多进程协调。
-
-### 已有验证证据
-
-2026-10-31 Linux 七阶段验收（源码 `caa3e96`）：使用已有测试镜像 `lifeops-agent:test-d4678f5`，只读挂载当前源码、禁用外部网络、使用临时数据目录，将报告直接导出到宿主机。**596 项测试通过、1 项跳过、2 条警告；100/100 条模拟流程、14 个恢复检查点、静态检查、检索评测、TCP 并发和过载恢复全部通过**。统一报告 `complete=true, passed=true, source_unchanged=true`，容器退出码0；源码指纹 `0cca8d0d6c5704f66872cdf9b588f402577f225289fe4acd4437cfab9834c45e`。本地报告位于 `artifacts/verification-linux-caa3e96/verification/`；TCP 4并发16个操作全部成功，无重复写入，四项过载检查通过。此轮验证已有镜像依赖下的当前源码，未重建镜像、未更新现有部署、未触发远程 CI；核心镜像不含真实 FAISS 集成依赖，相关质量与生产容量仍需分别验收。
-
-2026-10-31 完整离线验收（源码提交 `3ebba8e`）：Windows 本地兼容依赖环境运行统一验证，**586 项单元与回归测试通过、1 项跳过，100/100 条模拟端到端流程、14 个跨进程恢复检查点、静态检查与参考检索评测均通过**，前端另有 **19 项测试通过**。统一报告 `complete=true, passed=true, source_unchanged=true`，源码指纹为 `cb4ac283a99b850f8af2de1a70f8e7f48cb5caaa292498747238ead1f7ea3b88`；报告和日志保存在本地 `artifacts/verification-3ebba8e/`。本轮包含真实 FAISS 本地确定性向量集成，覆盖逐份导入、资源边界、并发准入、摘要一致性、向量版本发布和过期证据拦截；仍有依赖弃用等警告。未更新现有部署，不代表真实模型质量、生产负载或远程 CI 验收。
-
-2026-10-31 本地真实 FAISS 集成验证：Windows 中文用户路径下使用 `faiss-cpu 1.14.3`、`langchain-community 0.4.2`、`langchain-core 1.4.9`，通过真实索引保存、加载、召回、过期缓存候选拦截、重建及空库发布；连同版本发布故障测试共10项通过。测试使用确定性本地向量，不下载模型、不调用付费接口，不衡量 embedding 语义质量。可选依赖齐备时运行 `python -m pytest tests/test_vector_integration.py tests/test_vector_publication.py -q`；核心依赖环境会跳过真实 FAISS 集成用例。索引二进制通过 Python 文件句柄与 FAISS 回调读写，兼容 Windows 中文路径；pickle 元数据仍要求来自可信本地构建，不应加载外部提供的索引包。
-
-2026-10-31 Windows 离线验证（源码基于 `cd75e08`）：首次完整运行发现一项旧测试仍要求个人事件分类为任意文本，与新增分类校验冲突，报告如实保留失败状态。同步该契约测试后，完整单元与回归测试 **553 项通过、1 项跳过**；静态检查通过。首次运行中的 **100/100 条模拟流程契约、14 个跨进程恢复检查点、参考检索门槛**均通过；前端 **19 项测试通过**。详细报告保留在本地 `artifacts/verification-cd75e08/`，其中完整汇总对应修复前的失败运行，修复后的单元测试另存为 `unit-after-contract-fix.xml` 和日志。使用本地兼容依赖路径；这些结果不代表真实模型质量、生产负载或部署验收。
-
-2026-10-30 Linux 测试镜像补充：源码基于 `d4678f5`，新构建测试镜像 `13ca36b70cd4` 在无外部网络、只读根文件系统下执行统一验证入口，静态检查、单元测试、模拟 E2E、恢复演练与检索评测均执行完成，最终退出码为 0。本轮详细报告位于临时内存文件系统，容器结束后未能导出，因此不新增具体测试数量声明；不等同于远程 CI 构建记录。
-
-2026-10-30 容器验收补充：提交 `d4678f5` 已重新构建 production 镜像（镜像配置 ID `8e1de1fddfd9`），在非 root、只读根文件系统、无外部网络及临时数据目录下通过真实 HTTP/SSE 冒烟，包括登录、待办取消与确认、原确认请求重放只写一次、RAG 引用和 Harness 摘要。因原 PyPI TLS 失败，构建使用项目支持的清华 HTTPS 镜像源。该验证未更新既有部署，不涵盖 kind、负载或真实模型质量。
-
-以下为 **2026-10-27** 的验证快照：
-
-| 验证层级 | 结果 | 覆盖范围 |
-| --- | --- | --- |
-| 单元与回归测试 | **285 项通过** | 编排、业务、认证、隔离、预算与日期处理 |
-| 端到端流程契约 | **100 / 100 通过** | HTTP/SSE、图、checkpoint 与隔离 SQLite |
-| Docker Compose | **冒烟通过** | 就绪、登录、确认/取消、来源引用与执行摘要 |
-| kind | **部署及冒烟通过** | 独立命名空间、单副本、PVC 与实际 HTTP 流程 |
-
-2026-10-29 补充验证：当前源码在 Linux 测试容器中 **454 项单元与回归测试、100/100 条模拟端到端流程契约通过**；前端此前 **16 项测试通过**，跨进程恢复及关联演练 **14 个检查点通过**。覆盖 FTS5、工具参数与执行失败、部分写入结果、失效确认、队列容量、请求幂等、响应保存失败后的恢复、数据恢复、请求关联、监控鉴权和个性化 RAG 的输入边界。本次使用已有测试镜像只读挂载源码，未重建或更新运行中的 Docker / kind 部署。
-
-[查看流程报告](app/eval/reports/e2e-contract.md) · [查看逐例结果与源码指纹](app/eval/reports/e2e-contract.json)
-
-2026-10-30 本地 Windows 完整离线验证（源码基于 8d5e055）：静态检查、488 项测试（另 1 项跳过）、100/100 条模拟流程契约、14 个跨进程恢复检查点及参考检索评测全部通过，统一报告 `complete=true, passed=true`。该轮覆盖日志脱敏、模型截断处理和完整计划预检。使用本地兼容依赖路径运行，未更新 Docker / kind 部署，未测量真实模型质量。
-
-流程契约使用模拟模型，包含 10 类场景各 10 个变体，覆盖确认、取消、修改、多日期、记账、账户变更、引用、权限拦截、预算耗尽和供应商故障。**通过率反映程序契约，不代表真实模型准确率；报告延迟也不代表线上网络或模型性能。**
-
-另有使用[仓库内虚构语料](examples/reference_eval/)和[人工相关性标签](app/eval/reference_cases.json)的 BM25 开发基准，无需 API Key 或外部个人资料：
+### 一条命令复现离线验收
 
 ```bash
-python -m app.eval.run_reference --output artifacts/reference-eval.json
+python -m scripts.verify --output artifacts/verification
 ```
 
-开发集包含 15 个有相关文档的问题、2 个库外问题和 5 份资料；本次结果为文档 Recall@1 **0.90**、Recall@5 **1.00**，两个库外问题均返回空结果。CI 门槛为 Recall@5 至少 0.80 且库外问题无结果。报告记录语料与源码哈希。指标版本 2 将 Recall（相关文档覆盖比例）与 HitRate（是否至少命中一篇）分开，按文件去重；不能与旧版同名 Recall 直接比较。这是合成开发集，不是保留集，也不评估生成答案或真实用户问题质量；向量、混合检索与重排的消融仍待完成。
+统一入口执行七个独立阶段：静态检查、单元与回归测试、模拟 E2E、跨进程恢复、参考检索评测、TCP 并发与过载恢复。单项失败后继续收集其他结果，最终以非零退出码报告失败。输出目录必须为空；`verification.json` 记录源码指纹、阶段命令、耗时和完成状态，各阶段 JSON、JUnit 与日志一并保留。`complete=false` 表示尚未完整执行，不能作为通过凭证。
+
+在新构建的 Linux 测试镜像中复跑：
 
 ```bash
-# 在隔离 Linux 镜像中复跑
 docker build --target test -t lifeops-agent:test .
-docker run --rm lifeops-agent:test
-docker run --rm lifeops-agent:test python -m app.eval.run_e2e
+python -m scripts.verify_container --image lifeops-agent:test --output artifacts/container-verification
 ```
 
-真实模型回归须配置 Key 并显式启用付费调用：
+容器入口禁用外部网络、使用独立临时数据与报告卷，导出结果后清理自建资源。它验证指定镜像，不会自动重建。GitHub Actions 与 Jenkins 调用同一验证入口并归档报告；远程构建状态以实际 CI 记录为准。
+
+### 最新验证范围
+
+以下结果来自 **2026-10-31 本地执行**，每项对应自己的源码版本与环境，不混算为同一轮验收。
+
+| 验证层级 | 结果与范围 | 证据位置 |
+| --- | --- | --- |
+| Linux 七阶段验收 | 源码 `caa3e96`：596 项测试通过、1 项跳过、2 条警告；七阶段全部通过，源码未变化 | 本地 `artifacts/verification-linux-caa3e96/verification/` |
+| 模拟 Agent 流程 | 同轮 100/100；覆盖确认、取消、修改、多日期、记账、账户变更、引用、权限、预算与供应商故障 | 同轮 `e2e.json` |
+| 跨进程恢复 | 同轮 14 个检查点通过，含响应保存失败恢复、回执重放和待确认 checkpoint 恢复 | 同轮 `recovery.json` |
+| TCP 并发与过载 | 同轮 4 并发、16 个操作全部成功；按用户核对唯一写入，四项过载与容量恢复检查通过 | 同轮 `concurrency.json`、`overload.json` |
+| 浏览器请求生命周期 | 源码基于 `3ebba8e`：19 项测试通过，覆盖重试、停止、身份切换和部分写入提示 | 本地 `artifacts/verification-3ebba8e/frontend.log` |
+| 真实 FAISS 集成 | Windows 中文路径下保存、加载、召回、重建、空库发布和过期候选拦截通过；连同发布故障测试共 10 项 | `tests/test_vector_integration.py`、`tests/test_vector_publication.py` |
+
+Linux 验收使用已有镜像 `lifeops-agent:test-d4678f5` 只读挂载当前源码，未重建该镜像或更新部署；统一报告为 `complete=true, passed=true, source_unchanged=true`，源码指纹 `0cca8d0d6c5704f66872cdf9b588f402577f225289fe4acd4437cfab9834c45e`。核心镜像缺少可选 FAISS 依赖，该用例跳过；Windows 真实 FAISS 测试使用确定性本地向量，不下载模型，也不衡量语义质量。
+
+`artifacts/` 是本地生成且被忽略的验收产物，新克隆仓库需运行上述命令生成。仓库内的[流程报告](app/eval/reports/e2e-contract.md)、[逐例结果](app/eval/reports/e2e-contract.json)、[检索报告](app/eval/reports/retrieval.md)和[路由报告](app/eval/reports/task.json)属于历史快照，不能代替当前版本验收。
+
+### 并发与流式体验
 
 ```bash
+# 独立子进程、临时数据库、真实回环 TCP / Uvicorn
+python -m scripts.load_drill --transport tcp --requests 32 --concurrency 8 --output artifacts/load.json
+
+# 占满唯一执行名额，验证拒绝前无落库、重放一致和容量恢复
+python -m scripts.load_drill --transport tcp --overload-check --output artifacts/overload.json
+```
+
+每个并发操作包含记账 SSE、相同请求重放与 readiness 探测；报告按用户核对写入数，记录成功/失败、延迟分布和源码指纹。请求数支持 1–200，并发数支持 1–16；默认 `--transport asgi` 为进程内客户端，TCP 模式监听随机回环端口并在退出时关闭服务。
+
+Windows TCP 8 并发、32 个操作实测全部通过，首个 SSE 事件、首个非空正文 `delta`、最终结果的 P95 分别约 **190 ms、776 ms、1.55 s**；报告位于本地 `artifacts/load-drill-tcp-stream.json`。指标分别记录样本数，没有正文 delta 时不虚构该时间。ASGI 客户端可能缓冲响应，因此该模式不用于判断真实到达延迟。
+
+这些是离线演示结果，不包含真实模型、反向代理、生产资源配额或长时间稳定性，不能作为生产吞吐承诺或 SLO。
+
+### 检索与模型评估
+
+```bash
+# 虚构语料与人工相关性标签，无需 API Key
+python -m app.eval.run_reference --output artifacts/reference.json
+
+# 同案例、同模式与同语料比较，出现成功转失败时非零退出
+python -m app.eval.compare artifacts/baseline.json artifacts/candidate.json --output artifacts/comparison.json
+
+# 真实模型模式会产生费用，必须显式授权
 python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e-real.json
 ```
 
-真实模式运行 80 条流程用例，排除模拟故障与模拟跨用户 SQL 的专用场景。真实模型保留集与组件消融评估仍待补充。原有[检索报告](app/eval/reports/retrieval.md)和[路由报告](app/eval/reports/task.json)依赖外部语料，作为历史记录保留。
+[参考语料](examples/reference_eval/)含 5 份虚构资料，[开发集](app/eval/reference_cases.json)含 15 个有相关资料的问题与 2 个库外问题。已测文档 Recall@1 为 **0.90**、Recall@5 为 **1.00**，两个库外问题均无结果；门槛为 Recall@5 ≥ 0.80 且库外问题无结果。指标按文件去重，版本 2 区分 Recall 与 HitRate；合成开发集不能证明真实用户问题或生成答案质量。
+
+逐例比较要求模式、模型、语料、检索后端、案例内容指纹和案例 ID 集合一致；案例含义改变后需建立新基线。模拟 E2E 验证程序契约；真实模式运行 80 条流程用例，排除模拟故障与模拟跨用户 SQL 场景。真实模型保留集、向量/混合检索消融和生产负载验收仍待完成。
 
 ## 部署与持续集成
 
@@ -261,7 +255,7 @@ python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e
 | Jenkins | [Jenkinsfile](Jenkinsfile) | 构建、检查、测试、报告归档、冒烟与可选 kind 部署 |
 | GitHub Actions | [ci.yml](.github/workflows/ci.yml) | 容器验证与报告归档 |
 
-Docker / kind 已完成本地验证。流水线配置已提供，Jenkins 执行节点仍需接入；可选 ML 镜像目标需单独验证。kind 使用已有 `dev` 集群和独立的 `lifeops-demo` 命名空间；Jenkins 需要具备 Docker CLI 与 daemon 访问权限的 Linux 执行节点。
+Docker / kind 的部署冒烟记录来自较早版本；当前源码的最新验收范围见上表。流水线配置已提供，Jenkins 执行节点仍需接入；可选 ML 镜像目标需单独验证。kind 使用已有 `dev` 集群和独立的 `lifeops-demo` 命名空间；Jenkins 需要具备 Docker CLI 与 daemon 访问权限的 Linux 执行节点。
 
 ## 运行诊断
 
