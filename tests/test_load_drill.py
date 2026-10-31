@@ -25,3 +25,20 @@ def test_load_drill_accepts_exactly_one_successful_final():
     response = SimpleNamespace(raise_for_status=lambda: None,
         text='data: ' + json.dumps({'type': 'final', 'result': {'answer': 'ok'}}))
     assert final_response(response) == {'answer': 'ok'}
+
+def test_tcp_transport_runs_and_closes_owned_server():
+    import httpx
+    from fastapi import FastAPI, Request
+    from scripts.load_drill import application_client
+    app = FastAPI()
+    @app.get('/health/ready')
+    def ready():
+        return {'ready': True}
+    @app.get('/peer')
+    def peer(request: Request):
+        return {'host': request.client.host}
+    with application_client(app, 'tcp') as client:
+        address = str(client.base_url)
+        assert client.get('/peer').json() == {'host': '127.0.0.1'}
+    with pytest.raises((httpx.ConnectError, httpx.ConnectTimeout)):
+        httpx.get(address.rstrip('/') + '/health/ready', timeout=1, trust_env=False)

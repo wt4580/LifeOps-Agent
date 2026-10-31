@@ -1,15 +1,18 @@
-"""Isolated ASGI concurrency drill with real SSE parsing and SQLite write checks.
+"""Isolated concurrency drill with real SSE parsing and SQLite write checks.
 
-No network listener or paid model calls; this is not a production throughput test.
+Optional loopback TCP/Uvicorn transport; no paid model calls.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import logging
 import math
 import os
 from pathlib import Path
+import socket
+import threading
 import subprocess
 import sys
 import tempfile
@@ -31,7 +34,41 @@ def final_response(response):
     return finals[0]
 
 
-def application_load(root, requests, concurrency):
+@contextmanager
+def application_client(app, transport):
+    if transport == 'asgi':
+        from fastapi.testclient import TestClient
+        with TestClient(app, base_url='http://localhost', client=('127.0.0.1', 50100)) as client:
+            yield client
+        return
+    import httpx
+    import uvicorn
+    listener = socket.socket()
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(128)
+    address = f'http://127.0.0.1:{listener.getsockname()[1]}'
+    server = uvicorn.Server(uvicorn.Config(app, log_level='critical', access_log=False,
+        timeout_graceful_shutdown=10))
+    thread = threading.Thread(target=server.run, kwargs={'sockets': [listener]}, daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 30
+        while not server.started:
+            if not thread.is_alive() or time.monotonic() >= deadline:
+                raise RuntimeError('Temporary Uvicorn server failed to start')
+            time.sleep(.05)
+        with httpx.Client(base_url=address, timeout=30, trust_env=False) as client:
+            client.get('/health/ready').raise_for_status()
+            yield client
+    finally:
+        server.should_exit = True
+        thread.join(timeout=15)
+        listener.close()
+        if thread.is_alive():
+            raise RuntimeError('Temporary Uvicorn server did not stop')
+
+
+def application_load(root, requests, concurrency, transport="asgi"):
     os.environ.update({
         'DEMO_MODE': 'true', 'DEMO_SEED': 'false', 'QWEN_API_KEY': 'unused-offline-load',
         'BACKGROUND_LEARNING_ENABLED': 'false', 'SCHEDULER_ENABLED': 'false', 'RAG_BACKEND': 'bm25',
@@ -41,7 +78,6 @@ def application_load(root, requests, concurrency):
         'HARNESS_TRACE_DIR': str(root / 'harness'), 'DOCS_DIR': str(root / 'documents'),
     })
     logging.disable(logging.CRITICAL)
-    from fastapi.testclient import TestClient
     from sqlalchemy import func, select
     from app.src.common.config.app_config import create_app
     from app.src.common.config.db_config import SessionLocal, engine
@@ -53,7 +89,7 @@ def application_load(root, requests, concurrency):
     initial_source = source_fingerprint()
     samples, failures = [], []
     try:
-        with TestClient(create_app(), base_url='http://localhost', client=('127.0.0.1', 50100)) as client:
+        with application_client(create_app(), transport) as client:
             identities = []
             for i in range(min(concurrency, 8)):
                 user = f'load-user-{i}'
@@ -86,7 +122,7 @@ def application_load(root, requests, concurrency):
             expected = {user: sum(i % len(identities) == j for i in range(requests)) for j, (user, _) in enumerate(identities)}
             latencies = [value[0] for value in samples]
             source_unchanged = source_fingerprint() == initial_source
-            return {'mode': 'offline-demo', 'transport': 'in-process-ASGI', 'created_at': datetime.now(timezone.utc).isoformat(),
+            return {'mode': 'offline-demo', 'transport': 'loopback-TCP-uvicorn' if transport == 'tcp' else 'in-process-ASGI', 'created_at': datetime.now(timezone.utc).isoformat(),
                 'source_sha256': initial_source, 'source_unchanged': source_unchanged, 'requests': requests, 'concurrency': concurrency,
                 'successful_operations': len(samples), 'failed_operations': len(failures), 'failure_types': failures,
                 'duration_seconds': duration, 'operations_per_second': len(samples) / duration,
@@ -106,16 +142,17 @@ def main():
     parser.add_argument('--requests', type=int, default=16)
     parser.add_argument('--concurrency', type=int, default=4)
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--transport', choices=['asgi', 'tcp'], default='asgi')
     parser.add_argument('--data-root', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if not 1 <= args.requests <= 200 or not 1 <= args.concurrency <= 16:
         parser.error('requests must be 1..200 and concurrency 1..16')
     if args.data_root:
-        report = application_load(args.data_root, args.requests, args.concurrency)
+        report = application_load(args.data_root, args.requests, args.concurrency, args.transport)
     else:
         with tempfile.TemporaryDirectory(prefix='lifeops-load-') as temporary:
             result = subprocess.run([sys.executable, '-m', 'scripts.load_drill', '--data-root', temporary,
-                '--requests', str(args.requests), '--concurrency', str(args.concurrency)],
+                '--requests', str(args.requests), '--concurrency', str(args.concurrency), '--transport', args.transport],
                 capture_output=True, text=True, encoding='utf-8', timeout=300,
                 env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
             if result.returncode not in (0, 1) or not result.stdout.strip():
