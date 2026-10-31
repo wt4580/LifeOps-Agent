@@ -22,8 +22,10 @@ def test_failed_stage_retains_evidence_and_runs_remaining_checks(tmp_path, monke
     assert not verify(tmp_path)
     report = json.loads((tmp_path / "verification.json").read_text())
     assert report["complete"] and not report["passed"]
-    assert [r["exit_code"] for r in report["stages"]] == [1, 124, 0, 0, 0]
-    assert len(calls) == 5
+    assert [r["exit_code"] for r in report["stages"]] == [1, 124, 0, 0, 0, 0, 0]
+    assert len(calls) == 7
+    assert [r["stage"] for r in report["stages"]][-2:] == ["concurrency", "overload"]
+    assert "tcp" in calls[-2] and "--overload-check" in calls[-1]
     assert all((tmp_path / f"{r['stage']}.log").is_file() for r in report["stages"])
 
 

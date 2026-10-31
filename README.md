@@ -181,7 +181,7 @@ python -m app.src
 
 已有测试镜像可运行 `python -m scripts.verify_container --image lifeops-agent:test --output artifacts/container-verification`。入口使用独立无网络容器和可保留报告卷，容器结束后导出报告、日志与退出状态，再清理自建容器和匿名卷；输出目录必须为空。此命令验证指定镜像，不会自动重建，因此应先构建与目标源码对应的镜像。
 
-离线验证统一入口为 `python -m scripts.verify --output artifacts/verification`。它依次执行静态检查、单元测试、模拟 E2E、跨进程恢复和参考检索评测；单项失败后继续收集其他检查结果，最终以非零状态报告失败。每次运行必须使用空输出目录，避免旧报告混入。各项日志及增量汇总 `verification.json` 会保留，`complete=false` 表示验证尚未完整结束。GitHub Actions 与 Jenkins 已配置此入口；CI 实际运行结果需以对应构建记录为准。
+离线验证统一入口为 `python -m scripts.verify --output artifacts/verification`。它依次执行静态检查、单元测试、模拟 E2E、跨进程恢复、参考检索评测、TCP 并发演练和 TCP 过载恢复演练；单项失败后继续收集其他检查结果，最终以非零状态报告失败。每次运行必须使用空输出目录，避免旧报告混入。各项日志及增量汇总 `verification.json` 会保留，`complete=false` 表示验证尚未完整结束。新增阶段分别输出 `concurrency.json`、`overload.json` 及同名日志，并参与最终通过判定。TCP 演练仅监听容器或本机的回环地址，采用临时数据和离线模式。GitHub Actions 与 Jenkins 已配置此入口，现有整目录归档会保留新增报告；CI 实际运行结果需以对应构建记录为准。
 
 评测迭代可运行 `python -m app.eval.compare artifacts/baseline.json artifacts/candidate.json --output artifacts/comparison.json`，比较两份 E2E 报告的逐案例结果。命令要求模式、模型、语料、检索后端、案例内容指纹及案例 ID 集合一致，输出退步、改善和仍失败的案例；有成功转失败时返回非零退出码。比较仅证明对应案例的结果变化，不代表真实模型统计准确率；案例指纹覆盖问题及预期结果；修改案例含义后应建立新基线，旧版缺少指纹的报告需重新生成。
 

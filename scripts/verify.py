@@ -54,6 +54,10 @@ def verify(output):
         ("e2e", ["app.eval.run_e2e", "--output", str(output / "e2e.json")]),
         ("recovery", ["scripts.recovery_drill", "--output", str(output / "recovery.json")]),
         ("reference", ["app.eval.run_reference", "--output", str(output / "reference.json")]),
+        ("concurrency", ["scripts.load_drill", "--transport", "tcp", "--requests", "16", "--concurrency", "4",
+                         "--output", str(output / "concurrency.json")]),
+        ("overload", ["scripts.load_drill", "--transport", "tcp", "--overload-check", "--concurrency", "1",
+                      "--output", str(output / "overload.json")]),
     ]
     results = []
     source_unchanged = True
