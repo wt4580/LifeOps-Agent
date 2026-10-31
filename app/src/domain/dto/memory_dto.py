@@ -29,33 +29,35 @@ class MemoryExtraction(BaseModel):
 class PersonalEventItem(BaseModel):
     """单条个人事件。"""
 
-    category: str = Field(..., description="diet|activity|research|finance|schedule|health|other")
-    title: str = Field(..., description="事件标题，简短清晰")
+    model_config = ConfigDict(str_strip_whitespace=True, allow_inf_nan=False)
+    category: Literal["diet", "activity", "research", "finance", "schedule", "health", "other"]
+    title: str = Field(min_length=1, max_length=255, description="事件标题，简短清晰")
     event_time: str | None = Field(default=None, description="ISO 时间字符串，可为空")
     amount: float | None = Field(default=None, description="金额或数量")
     amount_unit: str | None = Field(default=None, description="单位，如 元/次/公里")
-    tags: list[str] = Field(default_factory=list, description="标签，如 油腻/高盐/通勤/检索")
+    tags: list[str] = Field(default_factory=list, max_length=20, description="标签，如 油腻/高盐/通勤/检索")
     notes: str | None = Field(default=None, description="补充说明")
-    importance: str = Field(default="low", description="high|low。对用户生活有重大影响的事件标 high（如手术/入职/结婚/大病），日常事件标 low。")
+    importance: Literal["low", "high"] = "low"
 
 
 class PersonalEventExtraction(BaseModel):
     """事件抽取容器。"""
 
-    items: list[PersonalEventItem] = Field(default_factory=list)
+    items: list[PersonalEventItem] = Field(default_factory=list, max_length=20)
 
 
 class ProfileFactPatch(BaseModel):
     """身份画像增量更新结构。"""
 
-    height_cm: float | None = None
-    weight_kg: float | None = None
+    model_config = ConfigDict(str_strip_whitespace=True, allow_inf_nan=False)
+    height_cm: float | None = Field(default=None, gt=0)
+    weight_kg: float | None = Field(default=None, gt=0)
     preferences: list[str] = Field(default_factory=list)
     conditions: list[str] = Field(default_factory=list)
     notes: str | None = None
 
     # 新增字段
-    age: int | None = None
+    age: int | None = Field(default=None, ge=0)
     gender: str | None = None
     occupation: str | None = None
     city: str | None = None

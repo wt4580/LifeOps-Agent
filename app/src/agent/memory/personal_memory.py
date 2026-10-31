@@ -165,6 +165,7 @@ def extract_personal_events(
         "\"title\":\"...\",\"event_time\":\"ISO或null\",\"amount\":数字或null,"
         "\"amount_unit\":\"...或null\",\"tags\":[\"...\"],\"notes\":\"...或null\",\"importance\":\"low|high\"}]}\n"
         "## 规则\n"
+        "- 一次最多抽取20个事件，每个标题1至255字符，每个事件最多20个标签；金额或数量必须为有限数字。\n"
         "- 只抽取已发生的事件（过去时/完成时），不要抽取未来的计划或承诺。\n"
         "- 明确的否定事实也不必抽取（如'没吃饭'不是事件）。\n"
         "- event_time 必须尽量填写；若只知道日期则用 YYYY-MM-DDT00:00:00。\n"

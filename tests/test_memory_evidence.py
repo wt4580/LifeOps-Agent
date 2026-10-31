@@ -94,3 +94,31 @@ def test_invalid_diagnosis_safely_skips_without_logging_content(response, monkey
     monkeypatch.setattr(module, "chat_completion", Mock(return_value=response))
     assert module._diagnose_failure("personal_event_extraction", "error", "output", {}, None) == "insufficient_data"
     assert "private-memory-7834" not in caplog.text
+
+@pytest.mark.parametrize("patch", [
+    {"category": "invented"}, {"importance": "critical"}, {"title": "   "},
+    {"title": "x" * 256}, {"amount": float("nan")}, {"amount": float("inf")},
+    {"tags": ["tag"] * 21},
+])
+def test_personal_event_rejects_invalid_model_values(patch):
+    from app.src.domain.dto.memory_dto import PersonalEventItem
+    with pytest.raises(ValidationError):
+        PersonalEventItem.model_validate({"category": "diet", "title": "event", **patch})
+
+
+def test_personal_event_batch_bound_and_signed_amount():
+    from app.src.domain.dto.memory_dto import PersonalEventItem, PersonalEventExtraction
+    event = PersonalEventItem(category="finance", title="refund", amount=-10)
+    assert event.amount == -10
+    with pytest.raises(ValidationError):
+        PersonalEventExtraction(items=[event] * 21)
+
+
+@pytest.mark.parametrize("patch", [
+    {"height_cm": 0}, {"weight_kg": -1}, {"age": -1},
+    {"height_cm": float("inf")}, {"weight_kg": float("nan")},
+])
+def test_profile_rejects_nonfinite_or_negative_measurements(patch):
+    from app.src.domain.dto.memory_dto import ProfileFactPatch
+    with pytest.raises(ValidationError):
+        ProfileFactPatch.model_validate(patch)
