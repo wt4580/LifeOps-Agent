@@ -149,6 +149,36 @@ def _normalize_event_time(value: str | None) -> str | None:
     return None
 
 
+def _personal_evidence(user_message: str, recent_dialogue: list[dict], now_iso: str) -> dict | None:
+    """Only bounded user testimony can supply personal facts; never slice statements."""
+    current = user_message.strip()
+    if not current or len(current) > 6000:
+        return None
+    remaining = 6000 - len(current)
+    history = []
+    for message in reversed(recent_dialogue):
+        content = message.get("content")
+        if message.get("role") != "user" or not isinstance(content, str):
+            continue
+        content = content.strip()
+        if not content or content == current:
+            continue
+        if len(content) > remaining:
+            break
+        history.append({"role": "user", "content": content})
+        remaining -= len(content)
+        if len(history) >= 6:
+            break
+    return {"now_iso": now_iso, "user_message": current, "recent_dialogue": list(reversed(history))}
+
+
+_PERSONAL_EVIDENCE_RULE = (
+    "\n- user_message 是本轮用户陈述，recent_dialogue 仅供理解指代，不得重复抽取历史事件。"
+    "只提取本轮用户明确陈述的自身事实；引用的指南、假设、第三方经历、建议和模糊附和不构成自身事实。"
+    "证据不足时返回空结果，不得根据常识推断用户做过某事或具有某种画像。\n"
+)
+
+
 def extract_personal_events(
     user_message: str,
     recent_dialogue: list[dict[str, str]],
@@ -176,11 +206,10 @@ def extract_personal_events(
         "- 若本句无可记忆事件，返回 {\"items\":[]}。"
     )
 
-    payload = {
-        "now_iso": now_iso,
-        "user_message": user_message,
-        "recent_dialogue": recent_dialogue[-6:],
-    }
+    system_prompt += _PERSONAL_EVIDENCE_RULE
+    payload = _personal_evidence(user_message, recent_dialogue, now_iso)
+    if payload is None:
+        return PersonalEventExtraction(items=[])
 
     def _parse(text: str) -> PersonalEventExtraction:
         data = json.loads(text)
@@ -242,11 +271,10 @@ def extract_profile_facts(
         "- 如果本句没有画像信息，返回空补丁：{\"height_cm\":null,\"weight_kg\":null,\"preferences\":[],\"conditions\":[],\"notes\":null,\"age\":null,\"gender\":null,\"occupation\":null,\"city\":null,\"diet\":[],\"allergies\":[],\"sleep_schedule\":null,\"exercise_habits\":null,\"work_hours\":null,\"family_status\":null,\"goals\":[]}。\n"
     )
 
-    payload = {
-        "now_iso": now_iso,
-        "user_message": user_message,
-        "recent_dialogue": recent_dialogue[-4:],
-    }
+    system_prompt += _PERSONAL_EVIDENCE_RULE
+    payload = _personal_evidence(user_message, recent_dialogue, now_iso)
+    if payload is None:
+        return ProfileFactPatch()
 
     def _parse(text: str) -> ProfileFactPatch:
         return ProfileFactPatch.model_validate(json.loads(text))

@@ -122,3 +122,43 @@ def test_profile_rejects_nonfinite_or_negative_measurements(patch):
     from app.src.domain.dto.memory_dto import ProfileFactPatch
     with pytest.raises(ValidationError):
         ProfileFactPatch.model_validate(patch)
+
+@pytest.mark.parametrize('function,response', [('extract_personal_events', '{"items":[]}'), ('extract_profile_facts', '{}')])
+def test_personal_fact_extractors_only_receive_user_testimony(monkeypatch, function, response):
+    import json
+    from app.src.agent.memory import personal_memory as module
+    model = Mock(return_value=response)
+    monkeypatch.setattr(module, 'chat_completion', model)
+    getattr(module, function)('我没有吃蛋糕', [
+        {'role': 'assistant', 'content': 'private assistant invented cake event'},
+        {'role': 'system', 'content': 'private generated summary'},
+        {'role': 'tool', 'content': 'private guide recommends cake'},
+        {'role': 'user', 'content': '我昨天吃了米饭'},
+    ], now_iso='2026-06-18T12:00:00')
+    messages = model.call_args.args[0]
+    payload = json.loads(messages[1]['content'])
+    assert payload['user_message'] == '我没有吃蛋糕'
+    assert payload['recent_dialogue'] == [{'role': 'user', 'content': '我昨天吃了米饭'}]
+    assert 'private' not in messages[1]['content']
+
+
+@pytest.mark.parametrize('function', ['extract_personal_events', 'extract_profile_facts'])
+@pytest.mark.parametrize('current', ['', 'x' * 6001])
+def test_empty_or_oversized_personal_statement_skips_without_truncation(monkeypatch, function, current):
+    from app.src.agent.memory import personal_memory as module
+    model = Mock()
+    monkeypatch.setattr(module, 'chat_completion', model)
+    result = getattr(module, function)(current, [{'role': 'user', 'content': 'old event'}], now_iso='2026-06-18T12:00:00')
+    assert result is not None
+    model.assert_not_called()
+
+
+def test_personal_evidence_budget_preserves_whole_current_statement():
+    from app.src.agent.memory.personal_memory import _personal_evidence
+    current = '我没有' + 'x' * 5990
+    payload = _personal_evidence(current, [{'role': 'user', 'content': 'old ' * 100}], 'now')
+    assert payload['user_message'] == current
+    assert payload['recent_dialogue'] == []
+    payload = _personal_evidence('current', [{'role': 'user', 'content': str(i)} for i in range(20)], 'now')
+    assert len(payload['recent_dialogue']) == 6
+    assert payload['recent_dialogue'][-1]['content'] == '19'
