@@ -199,6 +199,8 @@ SSE 延迟报告另外区分 `first_event`（首个有效事件）、`first_delt
 
 ### 已有验证证据
 
+2026-10-31 Linux 七阶段验收（源码 `caa3e96`）：使用已有测试镜像 `lifeops-agent:test-d4678f5`，只读挂载当前源码、禁用外部网络、使用临时数据目录，将报告直接导出到宿主机。**596 项测试通过、1 项跳过、2 条警告；100/100 条模拟流程、14 个恢复检查点、静态检查、检索评测、TCP 并发和过载恢复全部通过**。统一报告 `complete=true, passed=true, source_unchanged=true`，容器退出码0；源码指纹 `0cca8d0d6c5704f66872cdf9b588f402577f225289fe4acd4437cfab9834c45e`。本地报告位于 `artifacts/verification-linux-caa3e96/verification/`；TCP 4并发16个操作全部成功，无重复写入，四项过载检查通过。此轮验证已有镜像依赖下的当前源码，未重建镜像、未更新现有部署、未触发远程 CI；核心镜像不含真实 FAISS 集成依赖，相关质量与生产容量仍需分别验收。
+
 2026-10-31 完整离线验收（源码提交 `3ebba8e`）：Windows 本地兼容依赖环境运行统一验证，**586 项单元与回归测试通过、1 项跳过，100/100 条模拟端到端流程、14 个跨进程恢复检查点、静态检查与参考检索评测均通过**，前端另有 **19 项测试通过**。统一报告 `complete=true, passed=true, source_unchanged=true`，源码指纹为 `cb4ac283a99b850f8af2de1a70f8e7f48cb5caaa292498747238ead1f7ea3b88`；报告和日志保存在本地 `artifacts/verification-3ebba8e/`。本轮包含真实 FAISS 本地确定性向量集成，覆盖逐份导入、资源边界、并发准入、摘要一致性、向量版本发布和过期证据拦截；仍有依赖弃用等警告。未更新现有部署，不代表真实模型质量、生产负载或远程 CI 验收。
 
 2026-10-31 本地真实 FAISS 集成验证：Windows 中文用户路径下使用 `faiss-cpu 1.14.3`、`langchain-community 0.4.2`、`langchain-core 1.4.9`，通过真实索引保存、加载、召回、过期缓存候选拦截、重建及空库发布；连同版本发布故障测试共10项通过。测试使用确定性本地向量，不下载模型、不调用付费接口，不衡量 embedding 语义质量。可选依赖齐备时运行 `python -m pytest tests/test_vector_integration.py tests/test_vector_publication.py -q`；核心依赖环境会跳过真实 FAISS 集成用例。索引二进制通过 Python 文件句柄与 FAISS 回调读写，兼容 Windows 中文路径；pickle 元数据仍要求来自可信本地构建，不应加载外部提供的索引包。
