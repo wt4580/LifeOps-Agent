@@ -162,3 +162,60 @@ def test_personal_evidence_budget_preserves_whole_current_statement():
     payload = _personal_evidence('current', [{'role': 'user', 'content': str(i)} for i in range(20)], 'now')
     assert len(payload['recent_dialogue']) == 6
     assert payload['recent_dialogue'][-1]['content'] == '19'
+
+def test_background_dialogue_is_bounded_by_triggering_message(tmp_path, monkeypatch):
+    from datetime import datetime
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.src.common.config.db_config import Base
+    from app.src.domain.entity.chat_entity import ChatMessage
+    from app.src.service import chat_service as module
+    engine = create_engine(f"sqlite:///{tmp_path / 'dialogue.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(module, 'SessionLocal', factory)
+    stamp = datetime(2026, 6, 18, 12)
+    try:
+        with factory() as db:
+            prior = ChatMessage(session_id='alice', role='user', content='prior', created_at=stamp)
+            db.add(prior)
+            db.flush()
+            current = ChatMessage(session_id='alice', role='user', content='current', created_at=stamp)
+            db.add(current)
+            db.flush()
+            cutoff = current.id
+            db.add_all([ChatMessage(session_id='alice', role='user', content='later', created_at=stamp),
+                        ChatMessage(session_id='bob', role='user', content='private', created_at=stamp)])
+            db.commit()
+        rows = module.ChatService()._load_recent_dialogue('alice', through_message_id=cutoff)
+        assert [r['content'] for r in rows] == ['prior', 'current']
+        assert rows[-1]['created_at'] == '2026-06-18T12:00:00+00:00'
+        assert rows[-1]['message_id'] == cutoff
+    finally:
+        engine.dispose()
+
+
+def test_background_worker_uses_cutoff_and_observation_time(monkeypatch):
+    from types import SimpleNamespace
+    from contextlib import contextmanager
+    from app.src.service import chat_service as module
+    queued = []
+    monkeypatch.setattr(module, '_POST_GRAPH_EXECUTOR', SimpleNamespace(submit=queued.append))
+    monkeypatch.setattr(module, 'run_learn', Mock())
+    @contextmanager
+    def context(*args, **kwargs):
+        yield
+    monkeypatch.setattr(module, 'background_context', context)
+    extract = Mock(side_effect=KeyboardInterrupt())
+    monkeypatch.setattr(module, 'extract_profile_facts', extract)
+    service = module.ChatService()
+    loader = Mock(return_value=[{'role':'user', 'content':'current', 'message_id':42, 'created_at':'2026-06-18T12:00:00+00:00'}])
+    monkeypatch.setattr(service, '_load_recent_dialogue', loader)
+    service._spawn_post_graph('alice','alice','current',{'recent_dialogue':[{'role':'user','content':'stale'}]},'answer',lambda _:None,message_id=42)
+    with pytest.raises(KeyboardInterrupt):
+        queued[0]()
+    loader.assert_called_once_with('alice', limit=12, through_message_id=42)
+    from datetime import datetime
+    expected_time = datetime.fromisoformat('2026-06-18T12:00:00+00:00').astimezone().replace(tzinfo=None).isoformat(timespec='seconds')
+    assert extract.call_args.kwargs['now_iso'] == expected_time
+    assert extract.call_args.args[1][0]['content'] == 'current'

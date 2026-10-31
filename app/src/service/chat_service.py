@@ -5,7 +5,7 @@ import json
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from uuid import uuid4
 from sqlalchemy import select, func, delete
@@ -206,7 +206,7 @@ class ChatService:
                 and not state.get("tool_error") and not state.get("turn_aborted")):
             self._spawn_post_graph(
                 session_id=session_id, memory_owner_id=memory_owner_id, message=message,
-                state=state, answer=answer, progress=lambda _message: None,
+                state=state, answer=answer, progress=lambda _message: None, message_id=message_id,
             )
 
         return result
@@ -295,6 +295,7 @@ class ChatService:
         state: dict,
         answer: str,
         progress: Callable[[str], None],
+        message_id: int | None = None,
     ) -> None:
         """把与主回复无关的后台工作丢到独立线程，避免阻塞 SSE 尾部与下一条消息。
 
@@ -302,8 +303,20 @@ class ChatService:
         因此不会和同一会话下一条消息的图执行互相覆盖。
         """
 
+        observed_at = datetime.now().isoformat(timespec="seconds")
+        dialogue_snapshot = [dict(item) for item in (state.get("recent_dialogue") or [])[-12:]]
+
         async def _run_all() -> None:
-            recent_dialogue = state.get("recent_dialogue") or self._load_recent_dialogue(session_id, limit=12)
+            if message_id is not None:
+                recent_dialogue = self._load_recent_dialogue(session_id, limit=12, through_message_id=message_id)
+            else:
+                recent_dialogue = list(dialogue_snapshot)
+                if not recent_dialogue or recent_dialogue[-1].get("role") != "user" or recent_dialogue[-1].get("content") != message:
+                    recent_dialogue.append({"role": "user", "content": message})
+            evidence_time = next((item["created_at"] for item in recent_dialogue
+                                  if item.get("message_id") == message_id and item.get("created_at")), observed_at)
+            # Message timestamps are stored as naive UTC; extraction uses service-local wall time.
+            evidence_time = datetime.fromisoformat(evidence_time).astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
 
             # 对话后学习：push 信息进 memo/skills/user_summary markdown。
             if state.get("mode") != "quick":
@@ -320,7 +333,7 @@ class ChatService:
             if state.get("mode") != "quick":
                 try:
                     progress("正在提取画像和事件...")
-                    now_iso = datetime.now().isoformat(timespec="seconds")
+                    now_iso = evidence_time
                     profile_patch = extract_profile_facts(message, recent_dialogue, now_iso=now_iso, session_id=session_id)
                     if profile_patch:
                         self._upsert_user_profile(memory_owner_id, profile_patch.model_dump())
@@ -480,14 +493,15 @@ class ChatService:
         except Exception as exc:
             logger.warning("clear stale interrupt failed session=%s error_type=%s", session_id, type(exc).__name__)
 
-    def _load_recent_dialogue(self, session_id: str, limit: int = 12) -> list[dict]:
+    def _load_recent_dialogue(self, session_id: str, limit: int = 12, *, through_message_id: int | None = None) -> list[dict]:
         """读取最近 N 条对话消息。"""
         with SessionLocal() as db:
+            stmt = select(ChatMessage).where(ChatMessage.session_id == session_id)
+            if through_message_id is not None:
+                stmt = stmt.where(ChatMessage.id <= through_message_id)
             rows = (
                 db.execute(
-                    select(ChatMessage)
-                    .where(ChatMessage.session_id == session_id)
-                    .order_by(ChatMessage.created_at.desc())
+                    stmt.order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
                     .limit(limit)
                 )
                 .scalars()
@@ -495,7 +509,8 @@ class ChatService:
             )
         
         rows.reverse()
-        return [{"role": r.role, "content": r.content} for r in rows]
+        return [{"role": r.role, "content": r.content, "message_id": r.id,
+                 "created_at": r.created_at.replace(tzinfo=timezone.utc).isoformat(timespec="seconds")} for r in rows]
     
     def _resolve_memory_owner_id(self, session_id: str) -> str:
         return session_id
