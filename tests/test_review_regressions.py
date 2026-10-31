@@ -148,7 +148,7 @@ def test_index_replaces_rewritten_and_deleted_files(knowledge, tmp_path, monkeyp
     from app.src.domain.entity.knowledge_entity import DocumentChunk
     monkeypatch.setattr(retrieval.settings, "docs_dir", str(tmp_path))
     docs = [Document(path="a.txt", chunks=[TextChunk("old")])]
-    monkeypatch.setattr(retrieval, "scan_documents", lambda _: docs)
+    monkeypatch.setattr(retrieval, "iter_documents", lambda _: docs)
     retrieval._index_documents_sqlite(rebuild=False)
     docs[:] = [Document(path="a.txt", chunks=[TextChunk("new")])]
     retrieval._index_documents_sqlite(rebuild=False)
@@ -526,3 +526,40 @@ def test_all_summary_formats_are_marked_historical_not_execution_proof(monkeypat
     assert summary in prompt
     assert "不代表当前状态" in prompt
     assert "实际完成情况应查询业务记录" in prompt
+
+@pytest.mark.parametrize("rebuild", [False, True])
+def test_streaming_index_flushes_each_document_and_rolls_back_parser_failure(knowledge, tmp_path, monkeypatch, rebuild):
+    from sqlalchemy import event
+    from app.src.util.retrieval import retrieval
+    from app.src.util.ingest.scanner import Document, TextChunk
+    from app.src.domain.entity.knowledge_entity import DocumentChunk
+    monkeypatch.setattr(retrieval.settings, "docs_dir", str(tmp_path))
+    monkeypatch.setattr(retrieval, "iter_documents", lambda _: iter([Document(path="old.txt", chunks=[TextChunk("retained")])]))
+    retrieval._index_documents_sqlite(rebuild=False)
+    flushed = []
+    def observed_flush(session, context):
+        flushed.append(True)
+    event.listen(knowledge.class_, "after_flush", observed_flush)
+    def documents(_):
+        yield Document(path="new.txt", chunks=[TextChunk("new content")])
+        assert flushed, "index must consume and flush the first document before parsing the next"
+        raise RuntimeError("parser failed on second document")
+    monkeypatch.setattr(retrieval, "iter_documents", documents)
+    try:
+        with pytest.raises(RuntimeError, match="parser failed"):
+            retrieval._index_documents_sqlite(rebuild=rebuild)
+        with knowledge() as db:
+            assert db.execute(select(DocumentChunk.file_path, DocumentChunk.chunk_text)).all() == [("old.txt", "retained")]
+    finally:
+        event.remove(knowledge.class_, "after_flush", observed_flush)
+
+
+def test_document_iterator_defers_parsing_until_consumption(tmp_path, monkeypatch):
+    from app.src.util.ingest import scanner
+    (tmp_path / "a.txt").write_text("content", encoding="utf-8")
+    parser = Mock(return_value=[scanner.TextChunk("content")])
+    monkeypatch.setattr(scanner, "_build_txt_chunks", parser)
+    documents = scanner.iter_documents(str(tmp_path))
+    parser.assert_not_called()
+    assert next(documents).chunks[0].text == "content"
+    parser.assert_called_once()

@@ -31,7 +31,7 @@ from ...domain.entity.knowledge_entity import Document, DocumentChunk
 from ...common.config.llm_config import chat_completion
 from ...common.config.base_config import settings
 from ...common.harness.context import background_context, TurnLimitExceeded
-from ..ingest.scanner import scan_documents
+from ..ingest.scanner import iter_documents
 
 
 @dataclass
@@ -124,7 +124,7 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
 
     if not Path(settings.docs_dir).is_dir():
         raise ValueError("知识库目录不存在，保留现有索引")
-    docs = scan_documents(settings.docs_dir)
+    docs = iter_documents(settings.docs_dir)
     inserted = 0
     skipped = 0
 
@@ -134,15 +134,9 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
             deleted = db.query(DocumentChunk).delete()
             logger.info("Rebuild index: cleared documents + document_chunks deleted=%s", deleted)
 
-        paths = {doc.path for doc in docs}
-        if paths:
-            db.query(DocumentChunk).filter(~DocumentChunk.file_path.in_(paths)).delete(synchronize_session=False)
-            db.query(Document).filter(~Document.file_path.in_(paths)).delete(synchronize_session=False)
-        else:
-            db.query(DocumentChunk).delete()
-            db.query(Document).delete()
-
+        paths = set()
         for doc in docs:
+            paths.add(doc.path)
             source_type = _infer_source_type(doc.path)
             doc_topic = _infer_doc_topic(doc.path)
             existing_rows = db.execute(select(DocumentChunk).where(DocumentChunk.file_path == doc.path)).scalars().all()
@@ -180,6 +174,13 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
                     )
                 )
                 inserted += 1
+            db.flush()
+        if paths:
+            db.query(DocumentChunk).filter(~DocumentChunk.file_path.in_(paths)).delete(synchronize_session=False)
+            db.query(Document).filter(~Document.file_path.in_(paths)).delete(synchronize_session=False)
+        else:
+            db.query(DocumentChunk).delete()
+            db.query(Document).delete()
         db.flush()
         db.query(Document).filter(~Document.file_path.in_(select(DocumentChunk.file_path))).delete(synchronize_session=False)
         db.commit()

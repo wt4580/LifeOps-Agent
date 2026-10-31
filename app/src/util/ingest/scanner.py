@@ -266,8 +266,8 @@ def _build_png_chunks(path: str) -> list[TextChunk]:
     return [TextChunk(text=p) for p in parts]
 
 
-def scan_documents(root_dir: str) -> list[Document]:
-    documents: list[Document] = []
+def iter_documents(root_dir: str):
+    """逐份解析文档，避免在内存中保留整个知识库的切片。"""
 
     def fail_on_unreadable_directory(error):
         raise error
@@ -286,6 +286,10 @@ def scan_documents(root_dir: str) -> list[Document]:
             else:
                 continue
 
-            documents.append(Document(path=path, chunks=chunks))
+            yield Document(path=path, chunks=chunks)
 
-    return documents
+
+
+def scan_documents(root_dir: str) -> list[Document]:
+    """兼容需要完整文档列表的调用方。"""
+    return list(iter_documents(root_dir))
