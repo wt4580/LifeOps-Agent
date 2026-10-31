@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import json
+import os
 import pickle
+import re
+from uuid import uuid4
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -288,6 +292,32 @@ def _calc_vector_diff(
     }
 
 
+def _active_vector_directory(root: Path) -> Path:
+    pointer = root / "current.json"
+    if not pointer.exists():
+        return root  # Existing deployments may use the original two-file layout.
+    data = json.loads(pointer.read_text(encoding="utf-8"))
+    generation = data.get("generation") if isinstance(data, dict) else None
+    if not isinstance(generation, str) or not re.fullmatch(r"[0-9a-f]{32}", generation):
+        raise ValueError("Invalid vector generation pointer")
+    directory = root / "generations" / generation
+    if not directory.is_dir():
+        raise ValueError("Missing vector generation")
+    return directory
+
+
+def _publish_vector_generation(root: Path, generation: str) -> None:
+    temporary = root / f"current-{generation}.tmp"
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump({"generation": generation}, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, root / "current.json")
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def build_vector_index(*, root_dir: str | None = None, rebuild: bool = False) -> dict:
     """构建/重建 FAISS 向量索引并持久化到本地目录。
     
@@ -298,21 +328,30 @@ def build_vector_index(*, root_dir: str | None = None, rebuild: bool = False) ->
     docs = _load_documents_from_db()
     vec_dir = Path(settings.rag_vector_dir)
 
-    old_sigs = _collect_old_doc_signatures(vec_dir)
+    old_sigs = _collect_old_doc_signatures(_active_vector_directory(vec_dir))
     new_sigs = _collect_new_doc_signatures(docs)
     diff = _calc_vector_diff(old_sigs, new_sigs)
 
     vec_dir.mkdir(parents=True, exist_ok=True)
+    generation = uuid4().hex
+    staging = vec_dir / "generations" / generation
+    staging.mkdir(parents=True)
 
     if docs:
         _require_langchain()
         from langchain_community.vectorstores import FAISS
 
         vs = FAISS.from_documents(docs, _embeddings())
-        vs.save_local(str(vec_dir))
-    else:
+        vs.save_local(str(staging))
         for filename in ("index.faiss", "index.pkl"):
-            (vec_dir / filename).unlink(missing_ok=True)
+            path = staging / filename
+            if not path.is_file() or path.stat().st_size == 0:
+                raise ValueError("Incomplete vector generation")
+            with path.open("r+b") as handle:
+                os.fsync(handle.fileno())
+    else:
+        (staging / "empty").write_text("empty", encoding="ascii")
+    _publish_vector_generation(vec_dir, generation)
 
     # 清理缓存，防止同进程中旧索引驻留
     _load_vector_store.cache_clear()
@@ -328,8 +367,8 @@ def _load_vector_store():
     _require_langchain()
     from langchain_community.vectorstores import FAISS
 
-    vec_dir = Path(settings.rag_vector_dir)
-    if not vec_dir.exists() or not any(vec_dir.iterdir()):
+    vec_dir = _active_vector_directory(Path(settings.rag_vector_dir))
+    if not vec_dir.exists() or (vec_dir / "empty").is_file() or not any(vec_dir.iterdir()):
         return None
     previous = _collect_old_doc_signatures(vec_dir)
     current = _collect_new_doc_signatures(_load_documents_from_db())
