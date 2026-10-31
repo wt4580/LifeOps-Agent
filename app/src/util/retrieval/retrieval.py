@@ -293,49 +293,49 @@ def _generate_document_summaries() -> None:
         logger.warning("Document summary task failed: %s", type(exc).__name__)
 
 
-def _generate_document_summaries_batch() -> None:
-    """生成缺少的文件摘要并逐份提交；任务预算由外层入口管理。"""
-    with KnowledgeSessionLocal() as db:
-        docs = db.execute(
-            select(Document).where(Document.summary == None)
-            .order_by(Document.id)
-        ).scalars().all()
-        if not docs:
-            return
+def _summary_source(db, path):
+    return db.execute(
+        select(DocumentChunk.chunk_text, DocumentChunk.summary)
+        .where(DocumentChunk.file_path == path).order_by(DocumentChunk.id).limit(5)
+    ).all()
 
-        batch_size = 10
-        total_updated = 0
-        for i in range(0, len(docs), batch_size):
-            for doc in docs[i:i + batch_size]:
-                chunks = db.execute(
-                    select(DocumentChunk.chunk_text, DocumentChunk.summary)
-                    .where(DocumentChunk.file_path == doc.file_path)
-                    .order_by(DocumentChunk.id)
-                    .limit(50)
-                ).all()
-                if not chunks:
+
+def _generate_document_summaries_batch() -> None:
+    """Keep model calls outside transactions and discard superseded summaries."""
+    with KnowledgeSessionLocal() as db:
+        docs = db.execute(select(Document.id, Document.file_path, Document.updated_at)
+            .where(Document.summary.is_(None)).order_by(Document.id).limit(100)).all()
+    total_updated = 0
+    for doc_id, path, revision in docs:
+        with KnowledgeSessionLocal() as db:
+            chunks = _summary_source(db, path)
+        if not chunks:
+            continue
+        snippet = " | ".join((summary or text)[:200] for text, summary in chunks)
+        try:
+            answer = chat_completion(
+                [{"role": "user", "content": (
+                    f"为以下知识文档生成一句话摘要（30字以内）：\n"
+                    f"文件名：{os.path.basename(path)}\n内容片段：{snippet}"
+                )}], temperature=0.0, runtime_context={"scenario": "document_summary"},
+            ).strip()[:120]
+            if not answer:
+                continue
+            with KnowledgeSessionLocal() as db:
+                # Serialize the comparison and write with SQLite writers, never the model call.
+                db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+                current = db.get(Document, doc_id)
+                if (current is None or current.file_path != path or current.updated_at != revision
+                        or current.summary is not None or _summary_source(db, path) != chunks):
                     continue
-                snippet = " | ".join(
-                    (s or t)[:200] for t, s in chunks[:5]
-                )
-                try:
-                    answer = chat_completion(
-                        [{"role": "user", "content": (
-                            f"为以下知识文档生成一句话摘要（30字以内）：\n"
-                            f"文件名：{os.path.basename(doc.file_path)}\n"
-                            f"内容片段：{snippet}"
-                        )}],
-                        temperature=0.0,
-                        runtime_context={"scenario": "document_summary"},
-                    ).strip()[:120]
-                    if answer:
-                        doc.summary = answer
-                        db.commit()
-                        total_updated += 1
-                except Exception as exc:
-                    logger.warning("Document summary failed for %s: %s", doc.file_path, exc)
-        db.commit()
-        logger.info("Generated document summaries total=%s", total_updated)
+                current.summary = answer
+                db.commit()
+                total_updated += 1
+        except TurnLimitExceeded:
+            raise
+        except Exception as exc:
+            logger.warning("Document summary failed error_type=%s", type(exc).__name__)
+    logger.info("Generated document summaries total=%s", total_updated)
 
 
 def get_available_knowledge_topics() -> list[dict]:
