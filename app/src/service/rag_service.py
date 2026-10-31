@@ -29,7 +29,8 @@ class RAGService:
             索引结果统计
         """
         result = index_documents(reset=reset)
-        logger.info("Indexing completed: %s", result)
+        logger.info("Indexing completed inserted=%s skipped=%s status=%s",
+                    result.get("inserted"), result.get("skipped"), result.get("indexing_status"))
         
         return result
     
@@ -42,7 +43,7 @@ class RAGService:
         Returns:
             包含答案和引用的字典
         """
-        logger.info("Processing RAG question: %s", question[:100])
+        logger.info("Processing RAG question chars=%d", len(question))
 
         citations = search_chunks(question, top_k=settings.rag_top_k, session_id=session_id or "")
         answer_text = rag_answer(question, citations, session_id=session_id)
@@ -74,7 +75,7 @@ class RAGService:
         Returns:
             相关片段列表
         """
-        logger.info("Searching knowledge base for: %s", query[:100])
+        logger.info("Searching knowledge base query_chars=%d", len(query))
         
         chunks = search_chunks(query, top_k=top_k)
         

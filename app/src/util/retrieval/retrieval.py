@@ -542,16 +542,16 @@ def _rewrite_query(query: str, session_id: str = "") -> str:
         )
         cleaned = " ".join(text.split())
         if len(cleaned) > 200:
-            logger.warning("rewrite query too long (%d chars), fallback to original: %s", len(cleaned), cleaned[:80])
+            logger.warning("rewrite query too long (%d chars), fallback to original", len(cleaned))
             return query
         words = cleaned.split()
         if len(words) > 20:
-            logger.warning("rewrite query too many words (%d), fallback to original: %s", len(words), cleaned[:80])
+            logger.warning("rewrite query too many words (%d), fallback to original", len(words))
             return query
-        logger.info("rewrite query: %r -> %r", query, cleaned)
+        logger.info("rewrite query input_chars=%d output_chars=%d", len(query), len(cleaned))
         return cleaned
     except Exception as exc:
-        logger.warning("query rewrite failed: %s", exc)
+        logger.warning("query rewrite failed error_type=%s", type(exc).__name__)
         return query
 
 
@@ -730,14 +730,14 @@ def _vector_recall(query: str, top_k: int) -> list[Citation]:
     try:
         from .rag_langchain import vector_recall
     except Exception as exc:
-        logger.warning("langchain backend import failed: %s", exc)
+        logger.warning("langchain backend import failed error_type=%s", type(exc).__name__)
         return []
 
     try:
         hits = vector_recall(query, candidate_k=top_k)
         return _validated_vector_citations(hits)
     except Exception as exc:
-        logger.warning("langchain retrieval failed: %s", exc)
+        logger.warning("langchain retrieval failed error_type=%s", type(exc).__name__)
         return []
 
 
@@ -747,14 +747,14 @@ def _search_langchain(query: str, top_k: int) -> list[Citation]:
     try:
         from .rag_langchain import search_with_rerank
     except Exception as exc:
-        logger.warning("langchain backend import failed: %s", exc)
+        logger.warning("langchain backend import failed error_type=%s", type(exc).__name__)
         return []
 
     try:
         hits = search_with_rerank(query, top_k=top_k, candidate_k=settings.rag_candidate_k)
         return _validated_vector_citations(hits)
     except Exception as exc:
-        logger.warning("langchain retrieval failed: %s", exc)
+        logger.warning("langchain retrieval failed error_type=%s", type(exc).__name__)
         return []
 
 
@@ -795,7 +795,7 @@ def _rerank_fused(query: str, citations: list[Citation], *, top_k: int) -> list[
     try:
         from .rag_langchain import rerank_hits, LCRetrievalHit
     except Exception as exc:
-        logger.warning("langchain backend import failed: %s", exc)
+        logger.warning("langchain backend import failed error_type=%s", type(exc).__name__)
         return citations[:top_k]
 
     hits = [
@@ -817,7 +817,7 @@ def _rerank_fused(query: str, citations: list[Citation], *, top_k: int) -> list[
     try:
         reranked = rerank_hits(query, hits, top_k=top_k)
     except Exception as exc:
-        logger.warning("rerank fused failed: %s", exc)
+        logger.warning("rerank fused failed error_type=%s", type(exc).__name__)
         return citations[:top_k]
 
     by_key: dict[tuple, Citation] = {}
@@ -941,20 +941,20 @@ def search_chunks(query: str, top_k: int = 5, session_id: str = "") -> list[Cita
         # Stage 3: cross-encoder 重排融合候选，取最终 top_k
         merged = _rerank_fused(query, fused, top_k=top_k)
         logger.info(
-            "Search backend=hybrid merged=%s (bm25=%s vector=%s rewritten=%r)",
+            "Search backend=hybrid merged=%s (bm25=%s vector=%s rewritten_chars=%d)",
             len(merged),
             len(bm25_hits),
             len(vector_hits),
-            rewritten,
+            len(rewritten),
         )
         return merged
 
     merged = _merge_rank(bm25_hits, top_k=top_k)
     logger.info(
-        "Search backend=bm25 merged=%s (bm25=%s rewritten=%r)",
+        "Search backend=bm25 merged=%s (bm25=%s rewritten_chars=%d)",
         len(merged),
         len(bm25_hits),
-        rewritten,
+        len(rewritten),
     )
     return merged
 

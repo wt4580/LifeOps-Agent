@@ -67,21 +67,18 @@ def _pick_model_source(*, local_path: str | None, remote_model: str, model_label
     if local_path:
         p = Path(local_path)
         if p.exists():
-            logger.info("Model source [%s]=local path=%s", model_label, str(p))
+            logger.info("Model source [%s]=local", model_label)
             return "local", str(p)
         logger.warning(
-            "Local model path not found for %s path=%s; fallback to remote model=%s",
-            model_label,
-            local_path,
-            remote_model,
+            "Local model path not found for %s; fallback to remote", model_label,
         )
 
     cache_path = _find_in_hf_cache(remote_model)
     if cache_path:
-        logger.info("Model source [%s]=hf-cache path=%s", model_label, cache_path)
+        logger.info("Model source [%s]=hf-cache", model_label)
         return "local", cache_path
 
-    logger.info("Model source [%s]=remote model=%s", model_label, remote_model)
+    logger.info("Model source [%s]=remote", model_label)
     return "remote", remote_model
 
 
@@ -126,12 +123,9 @@ def _embeddings():
     except Exception as exc:
         if source == "local":
             logger.warning(
-                "Failed to load local embedding model path=%s err=%s; fallback to remote model=%s",
-                model_name,
-                exc,
-                settings.rag_embed_model,
+                "Failed to load local embedding model error_type=%s; fallback to remote", type(exc).__name__,
             )
-            logger.info("Model source [embedding]=remote model=%s", settings.rag_embed_model)
+            logger.info("Model source [embedding]=remote")
             return HuggingFaceEmbeddings(model_name=settings.rag_embed_model)
         raise
 
@@ -228,7 +222,7 @@ def _collect_old_doc_signatures(vec_dir: Path) -> list[tuple[tuple[str, int | No
         with pkl_path.open("rb") as f:
             obj = pickle.load(f)
     except Exception as exc:
-        logger.warning("Failed to load previous vector index metadata path=%s err=%s", pkl_path, exc)
+        logger.warning("Failed to load previous vector index metadata error_type=%s", type(exc).__name__)
         return []
 
     docstore = None
@@ -399,10 +393,9 @@ def _load_vector_store():
 def _log_rerank_results(channel: str, query: str, hits: list[LCRetrievalHit]) -> None:
     """记录检索/重排后的候选结果，便于排查为何某些 chunk 排前。"""
     for i, h in enumerate(hits, start=1):
-        snippet = (h.snippet or "").strip().replace("\n", " ")[:80]
         logger.info(
-            "rerank[%s] rank=%d reason=%s score=%.4f path=%s page=%s chunk=%s snippet=%s",
-            channel, i, h.reason, h.score, h.path, h.page, h.chunk_id, snippet,
+            "rerank[%s] rank=%d score=%.4f snippet_chars=%d",
+            channel, i, h.score, len(h.snippet or ""),
         )
 
 
