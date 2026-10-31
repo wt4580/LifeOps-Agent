@@ -27,7 +27,7 @@ def test_vector_publication_preserves_previous_generation_on_failure(tmp_path, m
         if failure != 'missing':
             (path / 'index.pkl').write_bytes(b'new-metadata')
     store = Mock()
-    store.save_local.side_effect = save
+    monkeypatch.setattr(module, "_save_vector_store", lambda store, directory: save(directory))
     monkeypatch.setitem(sys.modules, 'langchain_community.vectorstores', SimpleNamespace(FAISS=Mock(from_documents=Mock(return_value=store))))
     if failure == 'publish':
         monkeypatch.setattr(module.os, 'replace', Mock(side_effect=OSError('interrupted publication')))
@@ -70,6 +70,7 @@ def test_loader_uses_one_published_generation(tmp_path, monkeypatch):
     (directory / 'index.pkl').write_bytes(b'metadata')
     (tmp_path / 'current.json').write_text(json.dumps({'generation': generation}))
     loader = Mock(return_value='loaded-generation')
+    monkeypatch.setattr(module, '_read_vector_store', loader)
     monkeypatch.setattr(module.settings, 'rag_vector_dir', str(tmp_path))
     monkeypatch.setattr(module, '_require_langchain', Mock())
     monkeypatch.setattr(module, '_embeddings', Mock())
@@ -80,6 +81,6 @@ def test_loader_uses_one_published_generation(tmp_path, monkeypatch):
     module._load_vector_store.cache_clear()
     try:
         assert module._load_vector_store() == 'loaded-generation'
-        assert loader.call_args.args[0] == str(directory)
+        assert loader.call_args.args[0] == directory
     finally:
         module._load_vector_store.cache_clear()

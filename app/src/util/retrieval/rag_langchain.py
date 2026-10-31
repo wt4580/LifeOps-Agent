@@ -318,6 +318,26 @@ def _publish_vector_generation(root: Path, generation: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _save_vector_store(store, directory: Path) -> None:
+    """Use Python paths; FAISS native path I/O cannot handle Unicode on Windows."""
+    import faiss
+    with (directory / "index.faiss").open("wb") as handle:
+        faiss.write_index(store.index, faiss.PyCallbackIOWriter(handle.write))
+    with (directory / "index.pkl").open("wb") as handle:
+        pickle.dump((store.docstore, store.index_to_docstore_id), handle)
+
+
+def _read_vector_store(directory: Path):
+    import faiss
+    from langchain_community.vectorstores import FAISS
+    with (directory / "index.faiss").open("rb") as handle:
+        index = faiss.read_index(faiss.PyCallbackIOReader(handle.read))
+    # Only load locally generated, trusted metadata, as in the prior FAISS loader.
+    with (directory / "index.pkl").open("rb") as handle:
+        docstore, mapping = pickle.load(handle)
+    return FAISS(_embeddings(), index, docstore, mapping)
+
+
 def build_vector_index(*, root_dir: str | None = None, rebuild: bool = False) -> dict:
     """构建/重建 FAISS 向量索引并持久化到本地目录。
     
@@ -342,7 +362,7 @@ def build_vector_index(*, root_dir: str | None = None, rebuild: bool = False) ->
         from langchain_community.vectorstores import FAISS
 
         vs = FAISS.from_documents(docs, _embeddings())
-        vs.save_local(str(staging))
+        _save_vector_store(vs, staging)
         for filename in ("index.faiss", "index.pkl"):
             path = staging / filename
             if not path.is_file() or path.stat().st_size == 0:
@@ -365,8 +385,6 @@ def build_vector_index(*, root_dir: str | None = None, rebuild: bool = False) ->
 def _load_vector_store():
     """加载本地 FAISS 索引（带缓存）。"""
     _require_langchain()
-    from langchain_community.vectorstores import FAISS
-
     vec_dir = _active_vector_directory(Path(settings.rag_vector_dir))
     if not vec_dir.exists() or (vec_dir / "empty").is_file() or not any(vec_dir.iterdir()):
         return None
@@ -375,11 +393,7 @@ def _load_vector_store():
     if _calc_vector_diff(previous, current)["vector_changed"]:
         logger.warning("Vector index differs from current documents; use SQLite retrieval until rebuilt")
         return None
-    return FAISS.load_local(
-        str(vec_dir),
-        _embeddings(),
-        allow_dangerous_deserialization=True,
-    )
+    return _read_vector_store(vec_dir)
 
 
 def _log_rerank_results(channel: str, query: str, hits: list[LCRetrievalHit]) -> None:
