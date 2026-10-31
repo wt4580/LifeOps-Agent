@@ -60,14 +60,14 @@ def _llm_extract(
             try:
                 parsed = parse(text)
                 logger.info(
-                    "extract ok context=%s attempt=%d result=%s",
-                    diagnose_context, attempt + 1, json.dumps(parsed, ensure_ascii=False, default=str)[:300],
+                    "extract ok context=%s attempt=%d output_chars=%d",
+                    diagnose_context, attempt + 1, len(text),
                 )
                 return parsed
             except (json.JSONDecodeError, ValidationError) as exc:
                 logger.warning(
                     "FAIL %s attempt=%d/%d err=%s",
-                    diagnose_context, attempt + 1, _MAX_EXTRACT_RETRIES + 1, exc,
+                    diagnose_context, attempt + 1, _MAX_EXTRACT_RETRIES + 1, type(exc).__name__,
                 )
                 if attempt == _MAX_EXTRACT_RETRIES:
                     return None
@@ -128,14 +128,14 @@ def _diagnose_failure(context: str, error: str, llm_output: str, payload: dict, 
         temperature=0.0,
         runtime_context={"scenario": "diagnose_extract_failure", "session_id": session_id},
     ).strip()
-    result: str
     try:
-        result = json.loads(diag).get("reason", "insufficient_data")
-        return result
-    except (json.JSONDecodeError, ValidationError):
-        diag_preview = (diag[:120] + "...") if len(diag) > 120 else diag
-        logger.warning("diagnose unparseable ctx=%s raw=%s", context, diag_preview)
-        return "insufficient_data"
+        parsed = json.loads(diag)
+        if isinstance(parsed, dict) and parsed.get("reason") in ("insufficient_data", "transient_error"):
+            return parsed["reason"]
+    except json.JSONDecodeError:
+        pass
+    logger.warning("diagnose invalid ctx=%s output_chars=%d", context, len(diag))
+    return "insufficient_data"
 
 
 def _normalize_event_time(value: str | None) -> str | None:

@@ -72,3 +72,25 @@ def test_candidate_api_preserves_uncertainty_and_identity(tmp_path, monkeypatch)
         assert rows[0]["created_at"]
     finally:
         engine.dispose()
+
+@pytest.mark.parametrize("response", [
+    '{"items":[{"category":"diet","title":"private-memory-7834"}]}',
+    '{"items":[{"category":"diet","title":"event","amount":"private-memory-7834"}]}',
+])
+def test_personal_memory_logs_exclude_extracted_content(response, monkeypatch, caplog):
+    import logging
+    from app.src.agent.memory import personal_memory as module
+    monkeypatch.setattr(module, "chat_completion", Mock(side_effect=[response, "private-memory-7834"]))
+    with caplog.at_level(logging.INFO):
+        module.extract_personal_events("private-user-input-7925", [], now_iso="2026-06-18T12:00:00")
+    assert "private-memory-7834" not in caplog.text
+    assert "private-user-input-7925" not in caplog.text
+    assert "context=personal_event_extraction" in caplog.text or "personal_event_extraction" in caplog.text
+
+
+@pytest.mark.parametrize("response", ['[]', 'null', '42', '{"reason":"private-memory-7834"}', 'private-memory-7834'])
+def test_invalid_diagnosis_safely_skips_without_logging_content(response, monkeypatch, caplog):
+    from app.src.agent.memory import personal_memory as module
+    monkeypatch.setattr(module, "chat_completion", Mock(return_value=response))
+    assert module._diagnose_failure("personal_event_extraction", "error", "output", {}, None) == "insufficient_data"
+    assert "private-memory-7834" not in caplog.text
