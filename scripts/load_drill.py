@@ -26,12 +26,37 @@ def percentile(values, quantile):
 def final_response(response):
     response.raise_for_status()
     events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+    return validate_events(events)
+
+
+def validate_events(events):
     finals = [event['result'] for event in events if event.get('type') == 'final']
     if len(finals) != 1 or any(event.get('type') == 'error' for event in events):
         raise ValueError('SSE did not complete successfully')
     if finals[0].get('tool_error'):
         raise ValueError('Agent operation failed')
     return finals[0]
+
+
+def streamed_response(client, body, headers):
+    started = time.perf_counter()
+    events = []
+    first_event = first_delta = final_at = None
+    with client.stream('POST', '/api/chat/stream', json=body, headers=headers) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if not line.startswith('data: '):
+                continue
+            elapsed = time.perf_counter() - started
+            event = json.loads(line[6:])
+            events.append(event)
+            if first_event is None:
+                first_event = elapsed
+            if first_delta is None and event.get('type') == 'delta' and event.get('delta'):
+                first_delta = elapsed
+            if event.get('type') == 'final':
+                final_at = elapsed
+    return validate_events(events), {'first_event': first_event, 'first_delta': first_delta, 'final': final_at}
 
 
 @contextmanager
@@ -101,13 +126,13 @@ def application_load(root, requests, concurrency, transport="asgi"):
                 body = {'session_id': user, 'message': '我花了10元买午饭', 'request_id': f'load-{index}'}
                 headers = {'Cookie': cookie}
                 started = time.perf_counter()
-                original = final_response(client.post('/api/chat/stream', json=body, headers=headers))
+                original, stream_timing = streamed_response(client, body, headers)
                 replay = final_response(client.post('/api/chat/stream', json=body, headers=headers))
                 if original != replay:
                     raise ValueError('Replay differs from original')
                 health_started = time.perf_counter()
                 client.get('/health/ready').raise_for_status()
-                return (time.perf_counter() - started, time.perf_counter() - health_started)
+                return (time.perf_counter() - started, time.perf_counter() - health_started, stream_timing)
             started = time.perf_counter()
             with ThreadPoolExecutor(max_workers=concurrency) as executor:
                 futures = [executor.submit(operation, i) for i in range(requests)]
@@ -129,6 +154,11 @@ def application_load(root, requests, concurrency, transport="asgi"):
                 'operation_includes': ['SSE expense request', 'identical request replay', 'readiness probe'],
                 'latency_seconds': {'p50': percentile(latencies, .5), 'p95': percentile(latencies, .95), 'max': max(latencies, default=None)},
                 'readiness_max_seconds': max((value[1] for value in samples), default=None),
+                'stream_timing_observation': 'network-arrival' if transport == 'tcp' else 'ASGI-testclient-buffered',
+                'stream_latency_seconds': {name: {
+                    'observed_count': len(values), 'p50': percentile(values, .5), 'p95': percentile(values, .95)
+                } for name in ('first_event', 'first_delta', 'final')
+                  for values in [[sample[2][name] for sample in samples if sample[2][name] is not None]]},
                 'writes_match_unique_requests_per_identity': counts == expected,
                 'passed': source_unchanged and not failures and len(samples) == requests and counts == expected}
     finally:
