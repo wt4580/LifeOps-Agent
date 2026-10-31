@@ -138,15 +138,15 @@ def _diagnose_failure(context: str, error: str, llm_output: str, payload: dict, 
         return "insufficient_data"
 
 
-def _normalize_event_time_or_now(value: str | None, now_iso: str) -> str:
-    """确保事件时间可用：无时间或非法时间时回退为 now_iso。"""
+def _normalize_event_time(value: str | None) -> str | None:
+    """保留未知发生时间，不能用记录时间代替发生时间。"""
 
     if value:
         try:
             return datetime.fromisoformat(value).isoformat(timespec="seconds")
         except ValueError:
             pass
-    return now_iso
+    return None
 
 
 def extract_personal_events(
@@ -156,7 +156,7 @@ def extract_personal_events(
     now_iso: str,
     session_id: str | None = None,
 ) -> PersonalEventExtraction | None:
-    """从用户输入（可参考最近对话）提取结构化个人事件，并补齐事件时间。"""
+    """从用户输入（可参考最近对话）提取结构化个人事件，并保留事件时间的不确定性。"""
 
     system_prompt = (
         "你是个人生活事件抽取器。请从用户消息中抽取已发生的事实事件，返回严格 JSON。\n"
@@ -168,7 +168,7 @@ def extract_personal_events(
         "- 只抽取已发生的事件（过去时/完成时），不要抽取未来的计划或承诺。\n"
         "- 明确的否定事实也不必抽取（如'没吃饭'不是事件）。\n"
         "- event_time 必须尽量填写；若只知道日期则用 YYYY-MM-DDT00:00:00。\n"
-        "- 若用户未给具体时间，允许输出 null，服务端会回填当前时间。\n"
+        "- 仅当用户明确给出日期或相对时间时，才根据 now_iso 解析；发生时间不明确时输出 null，不得以当前时间代替。\n"
         "- 饮食类尽量标注 tags（如 油腻/高糖/高盐/蛋白质）。\n"
         "- 未来计划、待办、提醒等请留空，不要在 life event 中记录。\n"
         "- importance: 对用户生活有重大影响（手术/入职/结婚/大病/搬新居）标 high，日常事件标 low。\n"
@@ -185,7 +185,7 @@ def extract_personal_events(
         data = json.loads(text)
         extraction = PersonalEventExtraction.model_validate(data)
         fixed_items = [
-            item.model_copy(update={"event_time": _normalize_event_time_or_now(item.event_time, now_iso)})
+            item.model_copy(update={"event_time": _normalize_event_time(item.event_time)})
             for item in extraction.items
         ]
         return PersonalEventExtraction(items=fixed_items)

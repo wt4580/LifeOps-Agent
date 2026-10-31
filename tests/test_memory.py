@@ -7,7 +7,7 @@ import pytest
 from app.src.agent.memory.memory_extractor import extract_memory_from_dialogue, _extract_json_object
 from app.src.agent.memory.personal_memory import (
     ProactiveAdviceDecision,
-    _normalize_event_time_or_now,
+    _normalize_event_time,
     decide_proactive_advice,
     extract_personal_events,
     extract_profile_facts,
@@ -20,23 +20,20 @@ from app.src.domain.dto.memory_dto import (
 
 class TestNormalizeEventTime:
     def test_valid_time(self):
-        result = _normalize_event_time_or_now("2026-06-18T10:00:00", "2026-06-18T12:00:00")
+        result = _normalize_event_time("2026-06-18T10:00:00")
         assert result == "2026-06-18T10:00:00"
 
-    def test_invalid_time_falls_back(self):
-        now = "2026-06-18T12:00:00"
-        result = _normalize_event_time_or_now("not-a-time", now)
-        assert result == now
+    def test_invalid_time_remains_unknown(self):
+        result = _normalize_event_time("not-a-time")
+        assert result is None
 
-    def test_none_falls_back(self):
-        now = "2026-06-18T12:00:00"
-        result = _normalize_event_time_or_now(None, now)
-        assert result == now
+    def test_none_remains_unknown(self):
+        result = _normalize_event_time(None)
+        assert result is None
 
-    def test_empty_string_falls_back(self):
-        now = "2026-06-18T12:00:00"
-        result = _normalize_event_time_or_now("", now)
-        assert result == now
+    def test_empty_string_remains_unknown(self):
+        result = _normalize_event_time("")
+        assert result is None
 
 
 class TestExtractPersonalEvents:
@@ -261,3 +258,46 @@ class TestExtractJsonObject:
     def test_empty_returns_none(self):
         assert _extract_json_object("") is None
         assert _extract_json_object(None) is None
+
+@pytest.mark.parametrize("event_time", [None, "not-a-time", ""])
+def test_extraction_preserves_unknown_occurrence_time(event_time):
+    import json
+    with patch("app.src.agent.memory.personal_memory.chat_completion", return_value=json.dumps({
+        "items": [{"category": "diet", "title": "以前吃过火锅", "event_time": event_time}]
+    })):
+        result = extract_personal_events("以前吃过火锅", [], now_iso="2026-06-18T12:00:00")
+    assert result.items[0].event_time is None
+
+
+def test_event_windows_use_occurrence_time_not_recording_time(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.src.common.config.db_config import Base
+    from app.src.domain.entity.chat_entity import LifeEvent
+    from app.src.service import chat_service as module
+    engine = create_engine(f"sqlite:///{(tmp_path / 'events.db').as_posix()}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    monkeypatch.setattr(module, "SessionLocal", factory)
+    now = datetime(2026, 6, 18, 12)
+    try:
+        with factory() as db:
+            db.add_all([LifeEvent(session_id=owner, category="diet", title=title,
+                importance="high", event_time=when, created_at=now)
+                for owner, title, when in [
+                    ("alice", "unknown", None),
+                    ("alice", "old", now - timedelta(days=60)),
+                    ("alice", "recent", now - timedelta(hours=1)),
+                    ("alice", "future", now + timedelta(days=1)),
+                    ("bob", "private", now - timedelta(hours=1)),
+                ]])
+            db.commit()
+        service = module.ChatService()
+        rows, _, _ = service._load_life_events_in_window("alice", 24, now)
+        assert [row["title"] for row in rows] == ["recent"]
+        assert [row["title"] for row in service._load_important_events("alice", now)] == ["recent"]
+        with factory() as db:
+            assert db.query(LifeEvent).filter_by(title="unknown").one().event_time is None
+    finally:
+        engine.dispose()

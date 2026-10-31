@@ -665,9 +665,9 @@ class ChatService:
                 db.execute(
                     select(LifeEvent)
                     .where(LifeEvent.session_id == session_id)
-                    .where(func.coalesce(LifeEvent.event_time, LifeEvent.created_at) >= window_start)
-                    .where(func.coalesce(LifeEvent.event_time, LifeEvent.created_at) <= now_dt)
-                    .order_by(func.coalesce(LifeEvent.event_time, LifeEvent.created_at).asc())
+                    .where(LifeEvent.event_time >= window_start)
+                    .where(LifeEvent.event_time <= now_dt)
+                    .order_by(LifeEvent.event_time.asc())
                 )
                 .scalars()
                 .all()
@@ -685,7 +685,7 @@ class ChatService:
                 "title": r.title,
                 "event_time": r.event_time.isoformat() if r.event_time else None,
                 "recorded_at": r.created_at.isoformat() if r.created_at else None,
-                "effective_time": (r.event_time or r.created_at).isoformat() if (r.event_time or r.created_at) else None,
+                "effective_time": r.event_time.isoformat() if r.event_time else None,
                 "amount": r.amount,
                 "amount_unit": r.amount_unit,
                 "tags": tags,
@@ -709,8 +709,9 @@ class ChatService:
                     select(LifeEvent)
                     .where(LifeEvent.session_id == session_id)
                     .where(LifeEvent.importance == "high")
-                    .where(func.coalesce(LifeEvent.event_time, LifeEvent.created_at) >= cutoff)
-                    .order_by(func.coalesce(LifeEvent.event_time, LifeEvent.created_at).desc())
+                    .where(LifeEvent.event_time >= cutoff)
+                    .where(LifeEvent.event_time <= now_dt)
+                    .order_by(LifeEvent.event_time.desc())
                 )
                 .scalars()
                 .all()
