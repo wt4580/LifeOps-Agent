@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     demo_username: str = "demo"
     demo_password: str = "lifeops-demo-2026"
     background_learning_enabled: bool = True
+    post_graph_max_pending: int = Field(default=32, ge=1)
     scheduler_enabled: bool = True
 
     @model_validator(mode="after")

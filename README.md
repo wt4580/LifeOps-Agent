@@ -259,6 +259,8 @@ Docker / kind 的部署冒烟记录来自较早版本；当前源码的最新验
 
 ## 运行诊断
 
+图后画像抽取、记忆学习与摘要属于可选后台增强，当前使用单线程按提交顺序处理。`POST_GRAPH_MAX_PENDING` 限制每进程运行中与等待中的总数（默认32，至少1，修改后重启）；满载时跳过该轮增强，主对话与已持久化的聊天原文保留。后台队列不持久化，跳过或进程退出后的任务不会自动补偿；依赖长期记忆的场景应监控拒绝指标，而不能把增强任务视为可靠业务写入。
+
 每个 HTTP 请求返回服务端生成的 `X-Trace-ID`，结构化请求日志记录该标识、路由模板、状态码和完整响应耗时（包含 SSE 流和排队时间）。Agent 审计与 `harness_summary` 同时携带 HTTP 标识、`turn_id` 和哈希化的请求回执键。重试有新的 HTTP 标识，但复用原回执；缓存回答里的执行轨迹仍属于最初那次执行。
 
 设置独立的 `OPS_METRICS_TOKEN` 后，可通过 Bearer 认证读取 Prometheus 文本格式指标；默认未配置时 `/metrics` 返回 404。Compose 会从同名环境变量传入令牌。普通用户登录 Cookie 不授予监控权限。
@@ -275,6 +277,7 @@ curl -H "Authorization: Bearer $OPS_METRICS_TOKEN" http://127.0.0.1:5001/metrics
 | `lifeops_chat_jobs_total` / `lifeops_agent_turns_total` | 区分请求处理完成、取消、工具拒绝、预算耗尽与执行失败 |
 | `lifeops_agent_calls_total` / `lifeops_agent_call_duration_seconds` | 工具与模型调用状态、耗时分布 |
 | `lifeops_agent_charged_tokens_total` | 区分供应商报告的 token 与缺失 usage 时的预算预留量 |
+| `lifeops_background_admission_total` | 可选后台任务的接受、容量拒绝和执行器提交失败次数 |
 | `lifeops_request_recovery_total` | 结果暂存恢复、checkpoint 恢复、拒绝重放以及暂存或清理故障 |
 
 指标是单进程内存聚合，重启会归零，需由外部采集器持久化；HTTP 200 不代表 SSE 中的 Agent 任务成功，应同时观察任务和 turn 指标。标签不包含用户名、会话 ID、问题、工具参数或任意 URL，持久化审计仍写入 `HARNESS_TRACE_DIR`。

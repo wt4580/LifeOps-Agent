@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Any, Callable
@@ -31,8 +32,10 @@ from ..util.retrieval.retrieval import index_documents
 from ..common.config.log_config import logger
 from .session_queue import JOB_END, JOB_STOPPED, ChatCapacityExceeded, cancel_and_wait, submit_chat_job
 from ..common.domain.request_errors import ChatRequestRejected
+from ..common.telemetry import metrics
 
 _POST_GRAPH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="postgraph")
+_POST_GRAPH_SLOTS = threading.BoundedSemaphore(settings.post_graph_max_pending)
 
 
 class ChatService:
@@ -388,8 +391,21 @@ class ChatService:
                 logger.info("post_graph budget reached session=%s", session_id)
             except Exception as exc:
                 logger.warning("post_graph worker failed session=%s error_type=%s", session_id, type(exc).__name__)
+            finally:
+                _POST_GRAPH_SLOTS.release()
 
-        _POST_GRAPH_EXECUTOR.submit(_worker)
+        if not _POST_GRAPH_SLOTS.acquire(blocking=False):
+            metrics.increment("lifeops_background_admission_total", status="rejected_capacity")
+            logger.warning("post_graph optional learning skipped: background capacity reached")
+            return
+        try:
+            _POST_GRAPH_EXECUTOR.submit(_worker)
+        except Exception as exc:
+            _POST_GRAPH_SLOTS.release()
+            metrics.increment("lifeops_background_admission_total", status="rejected_executor")
+            logger.warning("post_graph submission failed error_type=%s", type(exc).__name__)
+            return
+        metrics.increment("lifeops_background_admission_total", status="accepted")
 
     async def chat_stream(self, message: str, session_id: str | None = None, *, proposal_id: str | None = None, request_id: str | None = None):
         """流式聊天：同一 session 的并发请求会排队串行执行。
