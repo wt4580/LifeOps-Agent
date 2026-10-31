@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pypdf import PdfReader
+from ...common.config.base_config import settings
+from .limits import check_file_size, IngestionLimitExceeded
 
 
 @dataclass
@@ -29,7 +31,11 @@ def extract_pdf(path: str) -> list[PageText]:
     """
 
     # 创建 PDF 读取器。pypdf 会解析文件结构并暴露 pages 列表。
+    check_file_size(path)
     reader = PdfReader(path)
+    if len(reader.pages) > settings.ingest_max_pdf_pages:
+        raise IngestionLimitExceeded("Document exceeds INGEST_MAX_PDF_PAGES")
+    text_chars = 0
 
     # 用于累积每一页的提取结果。
     pages: list[PageText] = []
@@ -39,6 +45,9 @@ def extract_pdf(path: str) -> list[PageText]:
         # extract_text() 可能返回 None（例如扫描版 PDF 或该页无可提取文字）。
         # 这里统一兜底为空字符串，避免后续代码处理 None 分支。
         text = page.extract_text() or ""
+        text_chars += len(text)
+        if text_chars > settings.ingest_max_text_chars:
+            raise IngestionLimitExceeded("Document exceeds INGEST_MAX_TEXT_CHARS")
 
         # 把“页码 + 文本”封装成结构化对象，加入结果列表。
         pages.append(PageText(page=idx, text=text))

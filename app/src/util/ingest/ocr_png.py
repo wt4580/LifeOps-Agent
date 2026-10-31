@@ -27,6 +27,7 @@ from PIL import Image, ImageEnhance, ImageFilter
 import pytesseract
 
 from ...common.config.base_config import settings
+from .limits import check_file_size, check_text_size, IngestionLimitExceeded
 
 
 def _preprocess(img: Image.Image) -> Image.Image:
@@ -91,10 +92,13 @@ def extract_png(path: str) -> str:
         pytesseract.pytesseract.tesseract_cmd = settings.tesseract_cmd
 
     # 打开原始图片。
-    image = Image.open(path)
+    check_file_size(path)
+    with Image.open(path) as source:
+        if source.width * source.height > settings.ingest_max_image_pixels:
+            raise IngestionLimitExceeded("Image exceeds INGEST_MAX_IMAGE_PIXELS")
+        image = _preprocess(source)
 
     # 先做预处理，再交给 OCR。
-    image = _preprocess(image)
 
     # 组装 Tesseract 配置参数：
     # - oem: OCR 引擎模式
@@ -120,4 +124,8 @@ def extract_png(path: str) -> str:
 
     # 调用 Tesseract 识别并返回文本。
     # lang 可配置为中英混合（chi_sim+eng）。
-    return pytesseract.image_to_string(image, lang=settings.ocr_lang, config=config)
+    try:
+        return check_text_size(pytesseract.image_to_string(
+            image, lang=settings.ocr_lang, config=config, timeout=settings.ingest_ocr_timeout_seconds))
+    finally:
+        image.close()

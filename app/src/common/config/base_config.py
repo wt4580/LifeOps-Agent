@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # 文档与系统级配置
     # -------------------------
     docs_dir: str = r"E:\work\agent\docu"
+    ingest_max_file_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
+    ingest_max_text_chars: int = Field(default=2_000_000, gt=0)
+    ingest_max_pdf_pages: int = Field(default=500, gt=0)
+    ingest_max_image_pixels: int = Field(default=4_000_000, gt=0)
+    ingest_ocr_timeout_seconds: int = Field(default=60, gt=0)
     tesseract_cmd: str | None = None
     log_level: str = "INFO"
 
