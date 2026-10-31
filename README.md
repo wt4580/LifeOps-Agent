@@ -161,7 +161,7 @@ python -m pip install -r requirements-core.txt
 Copy-Item app/src/common/env/.env.example app/src/common/env/.env
 ```
 
-知识库索引同一进程一次只允许一个构建任务；重叠请求返回 HTTP 409，文档超限返回 HTTP 422。后台摘要任务运行或等待期间不重复排队；此期间新导入且尚未处理的文档可在下次索引时补摘要。并发保护适用于当前单进程部署，多进程部署仍需共享任务协调。
+知识库索引同一进程一次只允许一个构建任务；重叠请求返回 HTTP 409，文档超限返回 HTTP 422。后台摘要任务运行或等待期间的重复调度会合并成一次后续扫描，当前任务结束后自动补跑；每轮仍受后台预算和最多100份候选文档限制，超出预算的剩余摘要延期至后续索引。摘要写回前核对文档版本与输入切片，丢弃已过时的生成结果。并发保护适用于当前单进程部署，多进程部署仍需共享任务协调。
 
 知识库导入逐份解析文档。可通过环境变量设置单文件边界：`INGEST_MAX_FILE_BYTES`（默认 20 MiB）、`INGEST_MAX_TEXT_CHARS`（200 万字符）、`INGEST_MAX_PDF_PAGES`（500 页）、`INGEST_MAX_IMAGE_PIXELS`（400 万原图像素，预处理会放大两倍）及 `INGEST_OCR_TIMEOUT_SECONDS`（60 秒）。以上值必须大于零；超限拒绝文档并回滚该批 SQLite 导入，避免静默截断内容。限制不等同于解析进程的硬内存或 CPU 配额，复杂 PDF 仍可能在单页解析内部消耗较多资源。
 

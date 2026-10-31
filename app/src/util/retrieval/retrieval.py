@@ -269,6 +269,7 @@ def _sync_document_records() -> None:
 _SUMMARY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="document-summary")
 _SUMMARY_SCHEDULE_LOCK = threading.Lock()
 _SUMMARY_FUTURE = None
+_SUMMARY_PENDING = False
 _INDEX_LOCK = threading.Lock()
 
 
@@ -277,10 +278,31 @@ class IndexingBusyError(RuntimeError):
 
 
 def _schedule_document_summaries():
-    global _SUMMARY_FUTURE
+    global _SUMMARY_FUTURE, _SUMMARY_PENDING
     with _SUMMARY_SCHEDULE_LOCK:
-        if _SUMMARY_FUTURE is None or _SUMMARY_FUTURE.done():
-            _SUMMARY_FUTURE = _SUMMARY_EXECUTOR.submit(_generate_document_summaries)
+        if _SUMMARY_FUTURE is not None and not _SUMMARY_FUTURE.done():
+            _SUMMARY_PENDING = True
+            return
+        future = _SUMMARY_EXECUTOR.submit(_generate_document_summaries)
+        _SUMMARY_FUTURE = future
+        _SUMMARY_PENDING = False
+    # A completed Future invokes callbacks inline; register outside the lock.
+    future.add_done_callback(_document_summaries_finished)
+
+
+def _document_summaries_finished(future):
+    global _SUMMARY_FUTURE, _SUMMARY_PENDING
+    with _SUMMARY_SCHEDULE_LOCK:
+        if _SUMMARY_FUTURE is not future:
+            return
+        pending = _SUMMARY_PENDING
+        _SUMMARY_FUTURE = None
+        _SUMMARY_PENDING = False
+    if pending:
+        try:
+            _schedule_document_summaries()
+        except RuntimeError as exc:
+            logger.warning("Document summary reschedule failed error_type=%s", type(exc).__name__)
 
 
 def _generate_document_summaries() -> None:

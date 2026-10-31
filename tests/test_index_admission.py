@@ -40,12 +40,15 @@ def test_duplicate_summary_jobs_do_not_queue(monkeypatch):
     executor.submit.side_effect = [first, second]
     monkeypatch.setattr(module, '_SUMMARY_EXECUTOR', executor)
     monkeypatch.setattr(module, '_SUMMARY_FUTURE', None)
+    monkeypatch.setattr(module, '_SUMMARY_PENDING', False)
     for _ in range(100):
         module._schedule_document_summaries()
     assert executor.submit.call_count == 1
     first.set_result(None)
-    module._schedule_document_summaries()
     assert executor.submit.call_count == 2
+    second.set_result(None)
+    assert executor.submit.call_count == 2
+    assert module._SUMMARY_FUTURE is None
 
 
 @pytest.mark.parametrize('error,status', [(module.IndexingBusyError('busy'),409), (IngestionLimitExceeded('limit'),422)])
@@ -56,3 +59,39 @@ def test_index_api_reports_busy(error, status, monkeypatch):
     with pytest.raises(HTTPException) as caught:
         rag_controller.index_documents()
     assert caught.value.status_code == status
+
+def test_running_summary_requests_coalesce_into_one_followup(monkeypatch):
+    entered, release, followup = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+    def worker():
+        calls.append(True)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(5)
+        else:
+            followup.set()
+    monkeypatch.setattr(module, '_SUMMARY_FUTURE', None)
+    monkeypatch.setattr(module, '_SUMMARY_PENDING', False)
+    monkeypatch.setattr(module, '_generate_document_summaries', worker)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        monkeypatch.setattr(module, '_SUMMARY_EXECUTOR', executor)
+        module._schedule_document_summaries()
+        assert entered.wait(5)
+        try:
+            for _ in range(100):
+                module._schedule_document_summaries()
+        finally:
+            release.set()
+        assert followup.wait(5)
+    assert len(calls) == 2
+    assert module._SUMMARY_FUTURE is None
+
+
+def test_already_completed_summary_future_does_not_deadlock(monkeypatch):
+    completed = Future()
+    completed.set_result(None)
+    monkeypatch.setattr(module, '_SUMMARY_FUTURE', None)
+    monkeypatch.setattr(module, '_SUMMARY_PENDING', False)
+    monkeypatch.setattr(module, '_SUMMARY_EXECUTOR', Mock(submit=Mock(return_value=completed)))
+    module._schedule_document_summaries()
+    assert module._SUMMARY_FUTURE is None
