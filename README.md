@@ -185,6 +185,12 @@ python -m app.src
 
 评测迭代可运行 `python -m app.eval.compare artifacts/baseline.json artifacts/candidate.json --output artifacts/comparison.json`，比较两份 E2E 报告的逐案例结果。命令要求模式、模型、语料、检索后端、案例内容指纹及案例 ID 集合一致，输出退步、改善和仍失败的案例；有成功转失败时返回非零退出码。比较仅证明对应案例的结果变化，不代表真实模型统计准确率；案例指纹覆盖问题及预期结果；修改案例含义后应建立新基线，旧版缺少指纹的报告需重新生成。
 
+### 应用内并发演练
+
+运行 `python -m scripts.load_drill --requests 32 --concurrency 8 --output artifacts/load-drill.json`。工具在独立子进程、临时数据库和离线演示模式下运行；每个操作包含记账 SSE、相同请求重放和 readiness 检查，并按用户核对数据库写入数是否等于唯一请求数。报告包含成功/失败数、P50/P95/最大延迟、健康检查延迟和运行前后源码指纹；失败时非零退出。请求数限定1至200，并发数1至16。
+
+2026-10-31 Windows 本地实测：8并发、32个操作全部成功，写入数量与各用户唯一请求数一致，源码未变化；整组操作 P95约2.36秒，readiness最长约51毫秒。报告在本地 `artifacts/load-drill-c8.json`。使用进程内 ASGI 测试客户端，不经过 TCP、反向代理或生产 ASGI 服务器，也不包含真实模型延迟；这些数字用于本地回归比较，不是生产容量承诺或SLO。
+
 ### 已有验证证据
 
 2026-10-31 完整离线验收（源码提交 `3ebba8e`）：Windows 本地兼容依赖环境运行统一验证，**586 项单元与回归测试通过、1 项跳过，100/100 条模拟端到端流程、14 个跨进程恢复检查点、静态检查与参考检索评测均通过**，前端另有 **19 项测试通过**。统一报告 `complete=true, passed=true, source_unchanged=true`，源码指纹为 `cb4ac283a99b850f8af2de1a70f8e7f48cb5caaa292498747238ead1f7ea3b88`；报告和日志保存在本地 `artifacts/verification-3ebba8e/`。本轮包含真实 FAISS 本地确定性向量集成，覆盖逐份导入、资源边界、并发准入、摘要一致性、向量版本发布和过期证据拦截；仍有依赖弃用等警告。未更新现有部署，不代表真实模型质量、生产负载或远程 CI 验收。
