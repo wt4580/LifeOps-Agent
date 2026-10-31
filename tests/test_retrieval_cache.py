@@ -178,3 +178,38 @@ def test_hybrid_still_uses_rewritten_vector_query(monkeypatch):
     monkeypatch.setattr(r, "_rerank_fused", lambda *args, **kwargs: [])
     r.search_chunks("question")
     assert [call.args[0] for call in vector.call_args_list] == ["question", "expanded"]
+
+@pytest.mark.parametrize('entry', ['recall', 'rerank'])
+def test_vector_candidates_must_match_current_sqlite_evidence(knowledge, monkeypatch, entry):
+    import sys
+    from types import SimpleNamespace
+    _, factory = knowledge
+    ident = add(factory, 'current text', path='a.txt', source_type='guide')
+    def hit(chunk_id=ident, path='a.txt', snippet='current text', page=None):
+        return SimpleNamespace(chunk_id=chunk_id, path=path, snippet=snippet, page=page,
+            score=0.8, reason='vector', source_type='personal_log', doc_topic='stale',
+            section_title='stale', section_path='stale')
+    hits = [hit(snippet='deleted old text'), hit(chunk_id=ident+99), hit(path='other.txt'),
+            hit(page=99), hit(chunk_id=None), hit(chunk_id=str(ident)), hit()]
+    backend = SimpleNamespace(vector_recall=Mock(return_value=hits), search_with_rerank=Mock(return_value=hits))
+    monkeypatch.setitem(sys.modules, 'app.src.util.retrieval.rag_langchain', backend)
+    result = r._vector_recall('query', 10) if entry == 'recall' else r._search_langchain('query', 10)
+    assert len(result) == 1
+    assert result[0].snippet == 'current text'
+    assert result[0].source_type == 'guide'
+    assert result[0].doc_topic is None
+    assert result[0].section_title is None
+
+
+def test_stale_vector_only_results_fall_back_to_current_lexical_index(knowledge, monkeypatch):
+    import sys
+    from types import SimpleNamespace
+    _, factory = knowledge
+    ident = add(factory, 'current protein recommendation', path='a.txt')
+    hit = SimpleNamespace(chunk_id=ident, path='a.txt', page=None, snippet='deleted recommendation')
+    monkeypatch.setattr(r.settings, 'rag_backend', 'langchain')
+    monkeypatch.setitem(sys.modules, 'app.src.util.retrieval.rag_langchain',
+        SimpleNamespace(search_with_rerank=Mock(return_value=[hit])))
+    results = r.search_chunks('protein', top_k=3)
+    assert len(results) == 1
+    assert results[0].snippet == 'current protein recommendation'

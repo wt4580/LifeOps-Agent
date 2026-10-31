@@ -735,7 +735,7 @@ def _vector_recall(query: str, top_k: int) -> list[Citation]:
 
     try:
         hits = vector_recall(query, candidate_k=top_k)
-        return [_lc_hit_to_citation(h) for h in hits]
+        return _validated_vector_citations(hits)
     except Exception as exc:
         logger.warning("langchain retrieval failed: %s", exc)
         return []
@@ -752,10 +752,33 @@ def _search_langchain(query: str, top_k: int) -> list[Citation]:
 
     try:
         hits = search_with_rerank(query, top_k=top_k, candidate_k=settings.rag_candidate_k)
-        return [_lc_hit_to_citation(h) for h in hits]
+        return _validated_vector_citations(hits)
     except Exception as exc:
         logger.warning("langchain retrieval failed: %s", exc)
         return []
+
+
+def _validated_vector_citations(hits) -> list[Citation]:
+    """Treat persisted vector hits as candidates, verify against live SQLite evidence."""
+    ids = {h.chunk_id for h in hits if type(h.chunk_id) is int and h.chunk_id > 0}
+    if not ids:
+        return []
+    with KnowledgeSessionLocal() as db:
+        rows = db.execute(select(DocumentChunk).where(DocumentChunk.id.in_(ids))).scalars().all()
+        current = {row.id: row for row in rows}
+        valid = []
+        for hit in hits:
+            row = current.get(hit.chunk_id) if type(hit.chunk_id) is int else None
+            if (row is None or row.file_path != hit.path or row.page != hit.page
+                    or (row.chunk_text or "").strip() != (hit.snippet or "").strip()):
+                continue
+            citation = _lc_hit_to_citation(hit)
+            citation.source_type = row.source_type
+            citation.doc_topic = row.doc_topic
+            citation.section_title = row.section_title
+            citation.section_path = row.section_path
+            valid.append(citation)
+    return valid
 
 
 def _rerank_fused(query: str, citations: list[Citation], *, top_k: int) -> list[Citation]:
