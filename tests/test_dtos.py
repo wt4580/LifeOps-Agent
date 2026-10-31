@@ -115,9 +115,13 @@ class TestPersonalEventItem:
         assert item.amount is None
         assert item.tags == []
 
-    def test_category_is_free_text(self):
-        item = PersonalEventItem(category="随便", title="x")
-        assert item.category == "随便"
+    def test_category_rejects_unknown_values(self):
+        with pytest.raises(ValidationError):
+            PersonalEventItem(category="随便", title="x")
+
+    @pytest.mark.parametrize("category", ["diet", "activity", "research", "finance", "schedule", "health", "other"])
+    def test_supported_categories(self, category):
+        assert PersonalEventItem(category=category, title="x").category == category
 
 
 class TestProfileFactPatch:
