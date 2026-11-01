@@ -199,7 +199,7 @@ python -m scripts.verify_container --image lifeops-agent:test --output artifacts
 
 2026-11-01 当前源码 `6b20053` 的补充验收：Windows 真实回环 TCP 8并发、32个操作全部成功，各用户唯一请求与写入数一致；四项过载恢复检查通过。两轮源码指纹相同且未变化，报告为本地 `artifacts/load-current-6b20053.json` 与 `artifacts/overload-current-6b20053.json`。首段正文与最终结果 P95约653毫秒、1.49秒，仅衡量离线演示链路。本轮同时通过40项前端脚本测试，包含索引/问答响应、身份隔离、中文输入法和退出失败反馈；日志为 `artifacts/frontend-current-6b20053.log`。未重新执行完整七阶段验收。
 
-2026-11-01 生命周期改动后的 Windows 完整后端回归（源码 `a3fda80`）：627 项通过、1 项跳过，日志含1478条警告。覆盖后台容量与停机管理、启动失败清理及资源发布保护；本次仅重新执行完整 pytest，未复跑七阶段验收。JUnit 与日志保存在本地 `artifacts/lifecycle-full-unit.xml`、`artifacts/lifecycle-full-unit.log`，不替代下表各项原有证据。
+2026-11-01 当前源码 `d2edb4e` 完整回归：Windows 后端 **661 项通过、1 项跳过**，含1478条依赖弃用等警告；前端脚本 **43 项通过**，语法检查通过。覆盖查询输入边界、HTTP拒绝前无执行、后台生命周期和前端异步身份隔离。报告保存在本地 `artifacts/current-d2edb4e-unit.xml`、`artifacts/current-d2edb4e-unit.log`、`artifacts/current-d2edb4e-frontend.log`。本次未复跑完整七阶段验收，不替代下表各项原有证据。
 
 以下结果来自 **2026-10-31 本地执行**，每项对应自己的源码版本与环境，不混算为同一轮验收。
 
@@ -209,7 +209,7 @@ python -m scripts.verify_container --image lifeops-agent:test --output artifacts
 | 模拟 Agent 流程 | 同轮 100/100；覆盖确认、取消、修改、多日期、记账、账户变更、引用、权限、预算与供应商故障 | 同轮 `e2e.json` |
 | 跨进程恢复 | 同轮 14 个检查点通过，含响应保存失败恢复、回执重放和待确认 checkpoint 恢复 | 同轮 `recovery.json` |
 | TCP 并发与过载 | 同轮 4 并发、16 个操作全部成功；按用户核对唯一写入，四项过载与容量恢复检查通过 | 同轮 `concurrency.json`、`overload.json` |
-| 浏览器请求生命周期 | 源码基于 `3ebba8e`：19 项测试通过，覆盖重试、停止、身份切换和部分写入提示 | 本地 `artifacts/verification-3ebba8e/frontend.log` |
+| 浏览器请求生命周期 | 源码 `d2edb4e`：43 项测试通过，覆盖重试、停止、身份隔离、索引/问答、输入法和存储容错 | 本地 `artifacts/current-d2edb4e-frontend.log` |
 | 真实 FAISS 集成 | Windows 中文路径下保存、加载、召回、重建、空库发布和过期候选拦截通过；连同发布故障测试共 10 项 | `tests/test_vector_integration.py`、`tests/test_vector_publication.py` |
 
 Linux 验收使用已有镜像 `lifeops-agent:test-d4678f5` 只读挂载当前源码，未重建该镜像或更新部署；统一报告为 `complete=true, passed=true, source_unchanged=true`，源码指纹 `0cca8d0d6c5704f66872cdf9b588f402577f225289fe4acd4437cfab9834c45e`。核心镜像缺少可选 FAISS 依赖，该用例跳过；Windows 真实 FAISS 测试使用确定性本地向量，不下载模型，也不衡量语义质量。
