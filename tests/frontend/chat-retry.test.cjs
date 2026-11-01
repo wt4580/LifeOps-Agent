@@ -620,3 +620,13 @@ for (const [status, expected] of [[503, /查询繁忙/], [401, /登录已失效/
     assert.doesNotMatch(b.element('ask-answer').textContent, /private internal error/);
   });
 }
+
+
+test('citation display includes section provenance as plain text', () => {
+  const b = browser(() => {});
+  b.context.renderCitations([{ path: 'guide.txt', page: 2, snippet: 'body', score: 40,
+    section_path: 'Chapter > <script>Section</script>' }]);
+  const citation = b.element('ask-citations').children[0];
+  assert.match(citation.children[0].textContent, /Chapter > <script>Section<\/script>/);
+  assert.equal(citation.children[0].children.length, 0);
+});

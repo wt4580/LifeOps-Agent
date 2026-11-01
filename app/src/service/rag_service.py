@@ -60,6 +60,9 @@ class RAGService:
                     "reason": c.reason,
                     "source_type": c.source_type,
                     "doc_topic": c.doc_topic,
+                "chunk_id": getattr(c, "chunk_id", None),
+                "section_title": getattr(c, "section_title", None),
+                "section_path": getattr(c, "section_path", None),
                 }
                 for c in citations
             ],

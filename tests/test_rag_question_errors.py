@@ -90,3 +90,16 @@ def test_http_question_overload_preserves_retry_header_and_recovers(monkeypatch)
         assert response.json()['result']['answer'] == 'current answer'
         assert response.json()['result']['trace']['steps'][0]['output']['status'] == 'success'
     model.assert_called_once_with(question='question', session_id='alice')
+
+
+def test_question_response_preserves_chunk_section_provenance(monkeypatch):
+    from app.src.service import rag_service
+    from app.src.util.retrieval.retrieval import Citation
+    cite = Citation(path='guide.txt', page=2, snippet='body', score=40, chunk_id=17,
+                    section_title='Section', section_path='Chapter > Section')
+    monkeypatch.setattr(rag_service, 'search_chunks', Mock(return_value=[cite]))
+    monkeypatch.setattr(rag_service, 'rag_answer', Mock(return_value='answer'))
+    result = rag_service.RAGService().ask_question('question', 'alice')
+    assert result['citations'][0]['chunk_id'] == 17
+    assert result['citations'][0]['section_path'] == 'Chapter > Section'
+    assert result['citations'][0]['section_title'] == 'Section'

@@ -248,7 +248,9 @@ function renderCitations(citations) {
     const summ = document.createElement("summary");
     const page = cite.page ? ` · 第 ${cite.page} 页` : "";
     const relLabel = { strong: "强相关", weak: "弱相关", low: "低参考" }[cite.relatedness || "low"] || "低参考";
-    summ.textContent = `${cite.path}${page}（相关度: ${Math.round(cite.score || 0)} · ${relLabel}）`;
+    const section = cite.section_path || cite.section_title;
+    const sectionLabel = section ? ` · ${section}` : "";
+    summ.textContent = `${cite.path}${page}${sectionLabel}（相关度: ${Math.round(cite.score || 0)} · ${relLabel}）`;
     const body = document.createElement("div");
     body.className = "citation-body";
     body.textContent = cite.snippet || "(无正文)";
