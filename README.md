@@ -208,7 +208,7 @@ python -m scripts.verify_container --image lifeops-agent:test --output artifacts
 | 验证层级 | 结果与范围 | 证据位置 |
 | --- | --- | --- |
 | 当前 production 镜像 | 2026-11-01 源码 `f88c3da` 新构建；非root、只读、无网络、临时数据下8项HTTP/SSE冒烟通过，含确认重放仅写一次 | 本地 `artifacts/production-f88c3da-*` |
-| Linux 七阶段验收 | 源码 `caa3e96`：596 项测试通过、1 项跳过、2 条警告；七阶段全部通过，源码未变化 | 本地 `artifacts/verification-linux-caa3e96/verification/` |
+| Linux 七阶段验收 | 2026-11-01 源码 `3d6e9d0` 新构建test镜像：672项通过、1项跳过、6条警告；七阶段全部通过，源码未变化 | 本地 `artifacts/image-verification-3d6e9d0/` |
 | 模拟 Agent 流程 | 同轮 100/100；覆盖确认、取消、修改、多日期、记账、账户变更、引用、权限、预算与供应商故障 | 同轮 `e2e.json` |
 | 跨进程恢复 | 同轮 14 个检查点通过，含响应保存失败恢复、回执重放和待确认 checkpoint 恢复 | 同轮 `recovery.json` |
 | TCP 并发与过载 | 同轮 4 并发、16 个操作全部成功；按用户核对唯一写入，四项过载与容量恢复检查通过 | 同轮 `concurrency.json`、`overload.json` |
@@ -220,6 +220,8 @@ Linux 验收使用已有镜像 `lifeops-agent:test-d4678f5` 只读挂载当前�
 `artifacts/` 是本地生成且被忽略的验收产物，新克隆仓库需运行上述命令生成。仓库内的[流程报告](app/eval/reports/e2e-contract.md)、[逐例结果](app/eval/reports/e2e-contract.json)、[检索报告](app/eval/reports/retrieval.md)和[路由报告](app/eval/reports/task.json)属于历史快照，不能代替当前版本验收。
 
 production 验收镜像为 `lifeops-agent:acceptance-f88c3da`，实际镜像标识 `sha256:1a44cc41d61c310de63dd99f5e8acd51fc5ac0874f8baf9cab6bb0554bb4ffcc`。构建使用清华 HTTPS PyPI 源，运行用户为 `lifeops`；临时容器已清理，未修改既有部署或数据卷。本轮为真实 HTTP/SSE 冒烟，不代替完整七阶段、浏览器、kind 或真实模型验收。
+
+当前test镜像验收标识为 `sha256:f7808f61f0f2e0bfbd02f1e9a5be0590427467d9972dd9e030dba2f59eef670f`，完整报告 `complete=true, passed=true, source_unchanged=true`，容器退出码0，报告导出后临时容器与匿名卷已清理。本轮直接执行镜像内源码；test目标继承了运行时HTTP健康探针，批处理测试期间没有常驻5000端口，因此容器Health记录为unhealthy，此项不用于判定测试进程或production健康，探针配置仍需修正。
 
 ### 并发与流式体验
 
