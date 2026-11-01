@@ -630,3 +630,13 @@ test('citation display includes section provenance as plain text', () => {
   assert.match(citation.children[0].textContent, /Chapter > <script>Section<\/script>/);
   assert.equal(citation.children[0].children.length, 0);
 });
+
+
+test('guide citation is visibly reference material rather than verified personal history', () => {
+  const b = browser(() => {});
+  b.context.renderCitations([{ path: 'diet-guide.txt', snippet: 'recommendation', score: 80, doc_topic: 'guideline' }]);
+  const summary = b.element('ask-citations').children[0].children[0];
+  assert.match(summary.textContent, /参考资料 · 指南/);
+  assert.match(summary.title, /文件名推断/);
+  assert.match(summary.title, /不代表用户行为已经核实/);
+});

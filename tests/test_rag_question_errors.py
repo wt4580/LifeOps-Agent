@@ -100,6 +100,7 @@ def test_question_response_preserves_chunk_section_provenance(monkeypatch):
     monkeypatch.setattr(rag_service, 'search_chunks', Mock(return_value=[cite]))
     monkeypatch.setattr(rag_service, 'rag_answer', Mock(return_value='answer'))
     result = rag_service.RAGService().ask_question('question', 'alice')
+    assert result['citations'][0]['evidence_role'] == 'reference_material'
     assert result['citations'][0]['chunk_id'] == 17
     assert result['citations'][0]['section_path'] == 'Chapter > Section'
     assert result['citations'][0]['section_title'] == 'Section'

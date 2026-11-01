@@ -250,7 +250,10 @@ function renderCitations(citations) {
     const relLabel = { strong: "强相关", weak: "弱相关", low: "低参考" }[cite.relatedness || "low"] || "低参考";
     const section = cite.section_path || cite.section_title;
     const sectionLabel = section ? ` · ${section}` : "";
-    summ.textContent = `${cite.path}${page}${sectionLabel}（相关度: ${Math.round(cite.score || 0)} · ${relLabel}）`;
+    const topicLabel = { guideline: "指南", recipe: "食谱", personal_log: "记录类资料", resume: "简历", paper: "研究资料" }[cite.doc_topic];
+    const sourceLabel = topicLabel ? `参考资料 · ${topicLabel}` : "参考资料";
+    summ.title = "主题标签由文件名推断，资料引用不代表用户行为已经核实。";
+    summ.textContent = `${cite.path}${page}${sectionLabel} · ${sourceLabel}（相关度: ${Math.round(cite.score || 0)} · ${relLabel}）`;
     const body = document.createElement("div");
     body.className = "citation-body";
     body.textContent = cite.snippet || "(无正文)";
