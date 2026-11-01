@@ -587,3 +587,21 @@ def test_document_metadata_refreshes_tags_without_changing_unchanged_revision(kn
         doc = db.scalar(select(Document))
         assert doc.source_type == 'personal_log' and doc.topics == 'health'
         assert doc.updated_at != revision
+
+def test_index_preserves_repeated_text_in_distinct_sections_and_refreshes_headings(knowledge, tmp_path, monkeypatch):
+    from app.src.util.retrieval import retrieval
+    from app.src.util.ingest.scanner import Document, TextChunk
+    from app.src.domain.entity.knowledge_entity import DocumentChunk
+    monkeypatch.setattr(retrieval.settings, 'docs_dir', str(tmp_path))
+    chunks = [TextChunk('repeated body', section_title=title, section_path=title, section_rank=1) for title in ['first', 'second']]
+    monkeypatch.setattr(retrieval, 'iter_documents', lambda _: iter([Document(path='a.txt', chunks=chunks)]))
+    inserted, _ = retrieval._index_documents_sqlite(rebuild=False)
+    assert inserted == 2
+    assert retrieval._index_documents_sqlite(rebuild=False) == (0, 2)
+    chunks[0].section_title = 'renamed'
+    chunks[0].section_path = 'renamed'
+    assert retrieval._index_documents_sqlite(rebuild=False)[0] == 2
+    with knowledge() as db:
+        rows = db.scalars(select(DocumentChunk).order_by(DocumentChunk.id)).all()
+        assert [row.section_title for row in rows] == ['renamed', 'second']
+        assert [row.chunk_text for row in rows] == ['repeated body', 'repeated body']

@@ -120,6 +120,10 @@ def _infer_doc_topic(path: str) -> str:
     return "other"
 
 
+def _section_signature(chunk):
+    return (chunk.section_title, chunk.heading_level, chunk.section_path, chunk.section_rank, bool(chunk.is_table))
+
+
 def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
     """执行 SQLite 侧的文本索引构建（路径+页码+文本哈希去重）。"""
 
@@ -140,10 +144,10 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
             paths.add(doc.path)
             source_type = _infer_source_type(doc.path)
             doc_topic = _infer_doc_topic(doc.path)
-            existing_rows = db.execute(select(DocumentChunk).where(DocumentChunk.file_path == doc.path)).scalars().all()
-            old_signatures = [(r.page, r.chunk_hash) for r in existing_rows]
-            new_signatures = list(dict.fromkeys((chunk.page, _hash_text(chunk.text)) for chunk in doc.chunks))
-            if old_signatures == new_signatures:
+            existing_rows = db.execute(select(DocumentChunk).where(DocumentChunk.file_path == doc.path).order_by(DocumentChunk.id)).scalars().all()
+            old_signatures = [(r.page, r.chunk_hash, *_section_signature(r)) for r in existing_rows]
+            new_signatures = list(dict.fromkeys((chunk.page, _hash_text(chunk.text), *_section_signature(chunk)) for chunk in doc.chunks))
+            if old_signatures == new_signatures and all(r.source_type == source_type and r.doc_topic == doc_topic for r in existing_rows):
                 skipped += len(new_signatures)
                 continue
             db.query(DocumentChunk).filter(DocumentChunk.file_path == doc.path).delete(synchronize_session=False)
@@ -154,7 +158,7 @@ def _index_documents_sqlite(*, rebuild: bool) -> tuple[int, int]:
             seen = set()
             for chunk in doc.chunks:
                 chunk_hash = _hash_text(chunk.text)
-                signature = (chunk.page, chunk_hash)
+                signature = (chunk.page, chunk_hash, *_section_signature(chunk))
                 if signature in seen:
                     skipped += 1
                     continue
