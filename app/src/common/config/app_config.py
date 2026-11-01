@@ -93,53 +93,48 @@ async def init_resources():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """应用生命周期管理"""
-    # 启动时执行
+    """Unwind acquired resources on both startup failure and normal shutdown."""
+    from .base_config import settings
+    from ...service.scheduler import start_scheduler, stop_scheduler
+    from ...service.session_queue import start_chat_jobs, shutdown_chat_jobs
+    from ...service.chat_service import start_post_graph_jobs, shutdown_post_graph_jobs
+    from ...util.retrieval.retrieval import start_document_summary_jobs, shutdown_document_summary_jobs
+
+    async def close_resources():
+        global resource_stack, checkpointer
+        stack = resource_stack
+        resource_stack = None
+        try:
+            if stack is not None:
+                await stack.aclose()
+        finally:
+            checkpointer = None
+            set_chat_graph(None)
+
     logger.info("LifeOps-Agent starting...")
     try:
-        await init_resources()
-        from .base_config import settings
-        from ...service.chat_service import start_post_graph_jobs
-        from ...util.retrieval.retrieval import start_document_summary_jobs
-        start_post_graph_jobs()
-        start_document_summary_jobs()
-        if settings.demo_mode and settings.demo_seed:
-            from ...demo.seed import seed_demo
-            await asyncio.to_thread(seed_demo)
-
-        # 启动后台定时任务（APScheduler）
-        from ...service.scheduler import start_scheduler
-        if settings.scheduler_enabled and not settings.demo_mode:
-            start_scheduler()
-
-        from ...service.session_queue import start_chat_jobs
-        start_chat_jobs()
-
-        logger.info("LifeOps-Agent started successfully")
-    except Exception as e:
-        logger.error(f"Application startup failed: {e}")
+        async with AsyncExitStack() as cleanup:
+            await init_resources()
+            cleanup.push_async_callback(close_resources)
+            cleanup.push_async_callback(asyncio.to_thread, shutdown_document_summary_jobs)
+            cleanup.push_async_callback(asyncio.to_thread, shutdown_post_graph_jobs)
+            cleanup.push_async_callback(shutdown_chat_jobs, settings.chat_shutdown_grace_seconds)
+            cleanup.callback(stop_scheduler)
+            start_post_graph_jobs()
+            start_document_summary_jobs()
+            if settings.demo_mode and settings.demo_seed:
+                from ...demo.seed import seed_demo
+                await asyncio.to_thread(seed_demo)
+            if settings.scheduler_enabled and not settings.demo_mode:
+                start_scheduler()
+            start_chat_jobs()
+            logger.info("LifeOps-Agent started successfully")
+            yield
+    except Exception as exc:
+        logger.error("Application lifecycle failed error_type=%s", type(exc).__name__)
         raise
-    
-    try:
-        yield
     finally:
-        # 关闭时执行
-        global resource_stack
-
-        from ...service.scheduler import stop_scheduler
-        stop_scheduler()
-
-        from ...service.session_queue import shutdown_chat_jobs
-        await shutdown_chat_jobs(settings.chat_shutdown_grace_seconds)
-        from ...service.chat_service import shutdown_post_graph_jobs
-        from ...util.retrieval.retrieval import shutdown_document_summary_jobs
-        await asyncio.to_thread(shutdown_post_graph_jobs)
-        await asyncio.to_thread(shutdown_document_summary_jobs)
-
-        if resource_stack is not None:
-            await resource_stack.aclose()
-            resource_stack = None
-        logger.info("LifeOps-Agent shutting down...")
+        logger.info("LifeOps-Agent lifecycle ended")
 
 
 # --------------------------------------------------------------------------------------
