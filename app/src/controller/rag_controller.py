@@ -1,6 +1,9 @@
 """RAG控制器 - 处理知识库相关的HTTP请求"""
 
 from fastapi import APIRouter, HTTPException, Request
+from threading import BoundedSemaphore
+from ..common.config.base_config import settings
+from ..common.telemetry import metrics
 from ..common.harness.context import turn_context, TurnLimitExceeded
 
 from ..common.domain.response import success_response
@@ -11,6 +14,7 @@ from ..util.ingest.limits import IngestionLimitExceeded
 from ..common.config.log_config import logger
 
 router = APIRouter()
+_ASK_SLOTS = BoundedSemaphore(settings.rag_max_concurrent_requests)
 
 
 @router.post("/api/index")
@@ -40,6 +44,9 @@ def ask_question(req: AskRequest, request: Request):
     Args:
         req: 包含用户问题的请求
     """
+    if not _ASK_SLOTS.acquire(blocking=False):
+        metrics.increment("lifeops_rag_rejections_total", reason="capacity")
+        raise HTTPException(status_code=503, detail="知识库查询繁忙，请稍后重试。", headers={"Retry-After": "1"})
     try:
         with turn_context(request.state.username, register=False, operation="rag_ask") as turn:
             try:
@@ -54,3 +61,5 @@ def ask_question(req: AskRequest, request: Request):
     except Exception as exc:
         logger.warning("Knowledge question failed error_type=%s", type(exc).__name__)
         raise HTTPException(status_code=500, detail="知识库查询未完成，请稍后重试。") from exc
+    finally:
+        _ASK_SLOTS.release()

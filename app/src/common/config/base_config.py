@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     # - hybrid: bm25 + 向量融合（推荐逐步灰度）
     rag_backend: str = Field(default="bm25", alias="RAG_BACKEND")
     rag_top_k: int = Field(default=5, alias="RAG_TOP_K")
+    rag_max_concurrent_requests: int = Field(default=4, ge=1)
     rag_candidate_k: int = Field(default=24, alias="RAG_CANDIDATE_K")
     rag_vector_dir: str = Field(default="data/vector/faiss", alias="RAG_VECTOR_DIR")
     rag_embed_model: str = Field(default="BAAI/bge-small-zh-v1.5", alias="RAG_EMBED_MODEL")
