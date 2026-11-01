@@ -70,18 +70,27 @@ async def init_resources():
     """初始化应用所需资源"""
     global checkpointer, resource_stack
 
+    if resource_stack is not None:
+        raise RuntimeError("Application resources are already initialized")
+
     init_db()
     init_knowledge_db()
     logger.info("Database initialized (business + knowledge)")
 
     stack = AsyncExitStack()
     try:
-        checkpointer = await stack.enter_async_context(create_checkpointer())
-        set_chat_graph(build_chat_graph(checkpointer=checkpointer))
-    except Exception:
-        await stack.aclose()
+        candidate = await stack.enter_async_context(create_checkpointer())
+        graph = build_chat_graph(checkpointer=candidate)
+        set_chat_graph(graph)
+    except BaseException:
+        try:
+            await stack.aclose()
+        finally:
+            checkpointer = None
+            set_chat_graph(None)
         raise
 
+    checkpointer = candidate
     resource_stack = stack
     
     logger.info("LangGraph initialized")

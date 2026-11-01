@@ -40,3 +40,43 @@ def test_startup_failure_unwinds_all_acquired_resources(monkeypatch, caplog, cle
     module.set_chat_graph.assert_called_once_with(None)
     assert 'private-startup-content' not in caplog.text
     assert 'private-cleanup-content' not in caplog.text
+
+@pytest.mark.parametrize('close_failure', [False, True])
+def test_graph_initialization_failure_closes_checkpoint_and_clears_references(monkeypatch, close_failure):
+    from contextlib import asynccontextmanager
+    from app.src.common.config import app_config as module
+    closed = []
+    checkpoint = object()
+    @asynccontextmanager
+    async def checkpoint_context():
+        try:
+            yield checkpoint
+        finally:
+            closed.append(True)
+            if close_failure:
+                raise RuntimeError('close failed')
+    monkeypatch.setattr(module, 'resource_stack', None)
+    monkeypatch.setattr(module, 'checkpointer', None)
+    monkeypatch.setattr(module, 'init_db', Mock())
+    monkeypatch.setattr(module, 'init_knowledge_db', Mock())
+    monkeypatch.setattr(module, 'create_checkpointer', checkpoint_context)
+    monkeypatch.setattr(module, 'build_chat_graph', Mock(side_effect=RuntimeError('compile failed')))
+    setter = Mock()
+    monkeypatch.setattr(module, 'set_chat_graph', setter)
+    with pytest.raises(RuntimeError):
+        asyncio.run(module.init_resources())
+    assert closed == [True]
+    assert module.checkpointer is None and module.resource_stack is None
+    setter.assert_called_once_with(None)
+
+
+def test_duplicate_initialization_rejected_before_touching_databases(monkeypatch):
+    from app.src.common.config import app_config as module
+    existing = object()
+    monkeypatch.setattr(module, 'resource_stack', existing)
+    initialize = Mock()
+    monkeypatch.setattr(module, 'init_db', initialize)
+    with pytest.raises(RuntimeError, match='already initialized'):
+        asyncio.run(module.init_resources())
+    initialize.assert_not_called()
+    assert module.resource_stack is existing
