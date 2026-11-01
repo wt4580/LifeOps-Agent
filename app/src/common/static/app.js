@@ -35,6 +35,7 @@ const appSection = document.getElementById("app-section");
 
 let sessionId = localStorage.getItem("lifeops_session_id") || "";
 let identityRevision = 0;
+let todoLoadSequence = 0;
 const pendingChatRequests = new Map();
 
 function pendingStorageKey(owner) {
@@ -678,6 +679,7 @@ if (logoutBtn) {
     chatLog.innerHTML = "";
     if (indexOutput) indexOutput.textContent = "";
     if (askAnswer) askAnswer.textContent = "";
+    if (todosOutput) todosOutput.innerHTML = "";
     renderCitations([]);
     localStorage.removeItem("lifeops_session_id");
     identityRevision++;
@@ -1275,13 +1277,20 @@ function renderGroupedTodos(pending) {
 }
 
 async function loadTodos(url) {
+  if (!sessionId) return;
+  const owner = sessionId;
+  const revision = identityRevision;
+  const sequence = ++todoLoadSequence;
+  const current = () => owner === sessionId && revision === identityRevision && sequence === todoLoadSequence;
   try {
     // 添加session_id参数
     const separator = url.includes('?') ? '&' : '?';
-    const urlWithSession = `${url}${separator}session_id=${encodeURIComponent(sessionId)}`;
+    const urlWithSession = `${url}${separator}session_id=${encodeURIComponent(owner)}`;
     
     const res = await fetch(urlWithSession);
     const data = await res.json();
+    if (!current()) return;
+    if (!res.ok || data.success === false) throw new Error("待办加载未完成，请重试。");
 
     const result = data.result || data.data || {};
     if (url.includes("/api/todos/today")) {
@@ -1301,7 +1310,7 @@ async function loadTodos(url) {
       renderTodoItems(todos, { emptyText: "7日内暂无未完成待办" });
     }
   } catch (error) {
-    todosOutput.textContent = `加载失败: ${error.message}`;
+    if (current() && todosOutput) todosOutput.textContent = "待办加载失败，请检查登录状态或网络后重试。";
   }
 }
 

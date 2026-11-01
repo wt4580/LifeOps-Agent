@@ -41,7 +41,7 @@ class Element {
   focus() {}
 }
 
-function browser(fetchChat, storage = new Map(), fetchIndex = null, fetchAsk = null, fetchMe = null) {
+function browser(fetchChat, storage = new Map(), fetchIndex = null, fetchAsk = null, fetchMe = null, fetchTodos = null) {
   const elements = new Map();
   const documentListeners = {};
   const element = id => {
@@ -66,6 +66,7 @@ function browser(fetchChat, storage = new Map(), fetchIndex = null, fetchAsk = n
     AbortController, TextDecoder,
     alert() {}, confirm: () => true, console: { log() {}, error() {} },
     fetch: async (url, options) => {
+      if (url.startsWith('/api/todos/') && fetchTodos) return fetchTodos(url);
       if (url === '/api/auth/me' && fetchMe) return fetchMe();
       if (url === '/api/ask' && fetchAsk) return fetchAsk(JSON.parse(options.body));
       if (url === '/api/index' && fetchIndex) return fetchIndex(JSON.parse(options.body));
@@ -504,4 +505,29 @@ test('temporary startup authentication failure retains identity and shows recove
   assert.equal(vm.runInContext('sessionId', b.context), 'alice');
   assert.match(b.element('login-error').textContent, /暂时无法验证/);
   assert.equal(b.element('app-section').style.display, 'none');
+});
+
+
+test('late todo response cannot expose another identity data', async () => {
+  let release;
+  const b = browser(() => {}, new Map(), null, null, null, () => new Promise(resolve => { release = resolve; }));
+  const pending = b.context.loadTodos('/api/todos/today');
+  vm.runInContext('sessionId = "bob"; identityRevision++', b.context);
+  b.element('todos-output').textContent = 'new identity';
+  release({ ok: true, json: async () => ({ result: { pending: [], completed: [] } }) });
+  await pending;
+  assert.equal(b.element('todos-output').textContent, 'new identity');
+});
+
+test('late todo tab response does not replace the newest selected view', async () => {
+  const responses = [];
+  const b = browser(() => {}, new Map(), null, null, null, () => new Promise(resolve => responses.push(resolve)));
+  const first = b.context.loadTodos('/api/todos/today');
+  const second = b.context.loadTodos('/api/todos/all');
+  const response = { ok: true, json: async () => ({ result: { pending: [], completed: [] } }) };
+  responses[1](response);
+  await second;
+  responses[0](response);
+  await first;
+  assert.equal(vm.runInContext('currentTodoView', b.context), 'all');
 });
