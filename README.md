@@ -197,6 +197,8 @@ python -m scripts.verify_container --image lifeops-agent:test --output artifacts
 
 ### 最新验证范围
 
+2026-11-01 生命周期改动后的 Windows 完整后端回归（源码 `a3fda80`）：627 项通过、1 项跳过，日志含1478条警告。覆盖后台容量与停机管理、启动失败清理及资源发布保护；本次仅重新执行完整 pytest，未复跑七阶段验收。JUnit 与日志保存在本地 `artifacts/lifecycle-full-unit.xml`、`artifacts/lifecycle-full-unit.log`，不替代下表各项原有证据。
+
 以下结果来自 **2026-10-31 本地执行**，每项对应自己的源码版本与环境，不混算为同一轮验收。
 
 | 验证层级 | 结果与范围 | 证据位置 |
