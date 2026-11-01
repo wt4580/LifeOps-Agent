@@ -99,6 +99,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         await init_resources()
         from .base_config import settings
+        from ...service.chat_service import start_post_graph_jobs
+        from ...util.retrieval.retrieval import start_document_summary_jobs
+        start_post_graph_jobs()
+        start_document_summary_jobs()
         if settings.demo_mode and settings.demo_seed:
             from ...demo.seed import seed_demo
             await asyncio.to_thread(seed_demo)
@@ -127,6 +131,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         from ...service.session_queue import shutdown_chat_jobs
         await shutdown_chat_jobs(settings.chat_shutdown_grace_seconds)
+        from ...service.chat_service import shutdown_post_graph_jobs
+        from ...util.retrieval.retrieval import shutdown_document_summary_jobs
+        await asyncio.to_thread(shutdown_post_graph_jobs)
+        await asyncio.to_thread(shutdown_document_summary_jobs)
 
         if resource_stack is not None:
             await resource_stack.aclose()

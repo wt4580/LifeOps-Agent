@@ -270,6 +270,7 @@ _SUMMARY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="docume
 _SUMMARY_SCHEDULE_LOCK = threading.Lock()
 _SUMMARY_FUTURE = None
 _SUMMARY_PENDING = False
+_SUMMARY_ACCEPTING = True
 _INDEX_LOCK = threading.Lock()
 
 
@@ -277,9 +278,30 @@ class IndexingBusyError(RuntimeError):
     """Another index build is already running in this process."""
 
 
+def start_document_summary_jobs():
+    global _SUMMARY_EXECUTOR, _SUMMARY_ACCEPTING, _SUMMARY_FUTURE, _SUMMARY_PENDING
+    with _SUMMARY_SCHEDULE_LOCK:
+        if not _SUMMARY_ACCEPTING:
+            _SUMMARY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="document-summary")
+            _SUMMARY_FUTURE = None
+            _SUMMARY_PENDING = False
+            _SUMMARY_ACCEPTING = True
+
+
+def shutdown_document_summary_jobs():
+    global _SUMMARY_ACCEPTING, _SUMMARY_PENDING
+    with _SUMMARY_SCHEDULE_LOCK:
+        _SUMMARY_ACCEPTING = False
+        _SUMMARY_PENDING = False
+        executor = _SUMMARY_EXECUTOR
+    executor.shutdown(wait=True, cancel_futures=True)
+
+
 def _schedule_document_summaries():
     global _SUMMARY_FUTURE, _SUMMARY_PENDING
     with _SUMMARY_SCHEDULE_LOCK:
+        if not _SUMMARY_ACCEPTING:
+            return
         if _SUMMARY_FUTURE is not None and not _SUMMARY_FUTURE.done():
             _SUMMARY_PENDING = True
             return

@@ -36,6 +36,25 @@ from ..common.telemetry import metrics
 
 _POST_GRAPH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="postgraph")
 _POST_GRAPH_SLOTS = threading.BoundedSemaphore(settings.post_graph_max_pending)
+_POST_GRAPH_LOCK = threading.Lock()
+_POST_GRAPH_ACCEPTING = True
+
+
+def start_post_graph_jobs():
+    global _POST_GRAPH_EXECUTOR, _POST_GRAPH_SLOTS, _POST_GRAPH_ACCEPTING
+    with _POST_GRAPH_LOCK:
+        if not _POST_GRAPH_ACCEPTING:
+            _POST_GRAPH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="postgraph")
+            _POST_GRAPH_SLOTS = threading.BoundedSemaphore(settings.post_graph_max_pending)
+            _POST_GRAPH_ACCEPTING = True
+
+
+def shutdown_post_graph_jobs():
+    global _POST_GRAPH_ACCEPTING
+    with _POST_GRAPH_LOCK:
+        _POST_GRAPH_ACCEPTING = False
+        executor = _POST_GRAPH_EXECUTOR
+    executor.shutdown(wait=True, cancel_futures=True)
 
 
 class ChatService:
@@ -304,6 +323,7 @@ class ChatService:
         """
 
         observed_at = datetime.now().isoformat(timespec="seconds")
+        slots = _POST_GRAPH_SLOTS
         dialogue_snapshot = [dict(item) for item in (state.get("recent_dialogue") or [])[-12:]]
 
         async def _run_all() -> None:
@@ -405,19 +425,30 @@ class ChatService:
             except Exception as exc:
                 logger.warning("post_graph worker failed session=%s error_type=%s", session_id, type(exc).__name__)
             finally:
-                _POST_GRAPH_SLOTS.release()
+                slots.release()
 
-        if not _POST_GRAPH_SLOTS.acquire(blocking=False):
-            metrics.increment("lifeops_background_admission_total", status="rejected_capacity")
-            logger.warning("post_graph optional learning skipped: background capacity reached")
-            return
-        try:
-            _POST_GRAPH_EXECUTOR.submit(_worker)
-        except Exception as exc:
-            _POST_GRAPH_SLOTS.release()
-            metrics.increment("lifeops_background_admission_total", status="rejected_executor")
-            logger.warning("post_graph submission failed error_type=%s", type(exc).__name__)
-            return
+        def finished(future):
+            if future.cancelled():
+                slots.release()
+                metrics.increment("lifeops_background_admission_total", status="cancelled_shutdown")
+
+        with _POST_GRAPH_LOCK:
+            if not _POST_GRAPH_ACCEPTING:
+                metrics.increment("lifeops_background_admission_total", status="rejected_shutdown")
+                return
+            if not slots.acquire(blocking=False):
+                metrics.increment("lifeops_background_admission_total", status="rejected_capacity")
+                logger.warning("post_graph optional learning skipped: background capacity reached")
+                return
+            try:
+                future = _POST_GRAPH_EXECUTOR.submit(_worker)
+                if future is not None:
+                    future.add_done_callback(finished)
+            except Exception as exc:
+                slots.release()
+                metrics.increment("lifeops_background_admission_total", status="rejected_executor")
+                logger.warning("post_graph submission failed error_type=%s", type(exc).__name__)
+                return
         metrics.increment("lifeops_background_admission_total", status="accepted")
 
     async def chat_stream(self, message: str, session_id: str | None = None, *, proposal_id: str | None = None, request_id: str | None = None):
