@@ -34,6 +34,7 @@ const logoutBtn = document.getElementById("logout-btn");
 const appSection = document.getElementById("app-section");
 
 let sessionId = localStorage.getItem("lifeops_session_id") || "";
+let identityRevision = 0;
 const pendingChatRequests = new Map();
 
 function pendingStorageKey(owner) {
@@ -601,6 +602,7 @@ async function handleLogin() {
       throw new Error(typeof error.detail === "string" ? error.detail : "登录失败，请检查密码（至少8位）");
     }
     const data = await res.json();
+    identityRevision++;
     sessionId = data.session_id;
     document.getElementById("login-password").value = "";
     document.getElementById("login-error").textContent = "";
@@ -625,6 +627,7 @@ if (sessionId) {
     const user = response.ok ? await response.json() : null;
     if (!user || user.session_id !== sessionId) {
       localStorage.removeItem("lifeops_session_id");
+      identityRevision++;
       sessionId = "";
       appSection.style.display = "none";
       loginSection.style.display = "";
@@ -663,7 +666,9 @@ if (logoutBtn) {
     }
     hideProposal();
     chatLog.innerHTML = "";
+    if (indexOutput) indexOutput.textContent = "";
     localStorage.removeItem("lifeops_session_id");
+    identityRevision++;
     sessionId = "";
     appSection.style.display = "none";
     loginSection.style.display = "";
@@ -1323,6 +1328,8 @@ let indexing = false;
   async function runIndex(reset = false) {
     if (indexing || !indexOutput) return;
     if (reset && !confirm("确定要重建知识库索引吗？")) return;
+    const owner = sessionId;
+    const revision = identityRevision;
     indexing = true;
     if (indexRun) indexRun.disabled = true;
     if (indexReset) indexReset.disabled = true;
@@ -1333,6 +1340,7 @@ let indexing = false;
         body: JSON.stringify({ reset }),
       });
       const data = await res.json();
+      if (owner !== sessionId || revision !== identityRevision) return;
       if (!res.ok || data.success === false) {
         const messages = {
           409: "已有索引任务正在运行，请等待后重试。",
@@ -1350,6 +1358,7 @@ let indexing = false;
       const summary = result.summary_generation === "background" ? "文档摘要将在后台继续生成。" : "";
       indexOutput.textContent = `${status} 新增片段：${result.inserted ?? 0}，未变化片段：${result.skipped ?? 0}。${summary}`;
     } catch (_) {
+      if (owner !== sessionId || revision !== identityRevision) return;
       indexOutput.textContent = "连接中断或响应异常，无法确认索引结果。请先核对状态，再手动重试。";
     } finally {
       indexing = false;

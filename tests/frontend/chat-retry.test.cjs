@@ -368,3 +368,32 @@ test('index degradation is visible and connection failure never retries automati
   assert.match(b.element('index-output').textContent, /无法确认/);
   assert.equal(b.element('index-reset').disabled, false);
 });
+
+test('late indexing response cannot overwrite another identity screen', async () => {
+  let release;
+  const b = browser(() => {}, new Map(), async () => {
+    await new Promise(resolve => { release = resolve; });
+    return { ok: true, json: async () => ({ result: { inserted: 99 } }) };
+  });
+  const pending = b.context.runIndex();
+  vm.runInContext('sessionId = "bob"', b.context);
+  b.element('index-output').textContent = 'new identity';
+  release();
+  await pending;
+  assert.equal(b.element('index-output').textContent, 'new identity');
+  assert.equal(b.element('index-run').disabled, false);
+});
+
+test('indexing response is discarded after a login revision changes', async () => {
+  let release;
+  const b = browser(() => {}, new Map(), async () => {
+    await new Promise(resolve => { release = resolve; });
+    throw new TypeError('old connection');
+  });
+  const pending = b.context.runIndex();
+  vm.runInContext('identityRevision++', b.context);
+  b.element('index-output').textContent = '';
+  release();
+  await pending;
+  assert.equal(b.element('index-output').textContent, '');
+});
