@@ -22,8 +22,8 @@
       <h1 class="login-title">LifeOps</h1>
       <p class="login-subtitle">生活管理助手</p>
       <div class="login-form">
-        <input id="login-input" type="text" class="login-input" placeholder="输入你的名字" maxlength="50" autofocus />
-        <input id="login-password" type="password" class="login-input" placeholder="密码（首次使用时设置，至少8位）" minlength="8" maxlength="128" autocomplete="current-password" />
+        <input id="login-input" aria-label="用户名" autocomplete="username" aria-describedby="login-error" type="text" class="login-input" placeholder="输入你的名字" maxlength="50" autofocus />
+        <input id="login-password" aria-label="密码" aria-describedby="login-error" type="password" class="login-input" placeholder="密码（首次使用时设置，至少8位）" minlength="8" maxlength="128" autocomplete="current-password" />
         <button id="login-btn" class="btn-primary login-btn">进入</button>
         <p id="login-error" role="alert"></p>
       </div>
@@ -166,7 +166,7 @@
               重置索引
             </button>
           </div>
-          <pre id="index-output" class="mini-panel"></pre>
+          <pre id="index-output" class="mini-panel" role="status" aria-live="polite" aria-atomic="true"></pre>
         </div>
 
         <div id="tab-ask" class="tab-content">
@@ -177,15 +177,15 @@
             aria-label="知识库问答输入"
           ></textarea>
           <button id="ask-send" class="btn-secondary full-width">查询</button>
-          <div id="ask-answer" class="answer-box hidden"></div>
-          <div id="ask-citations" class="citations-box"></div>
+          <div id="ask-answer" class="answer-box hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+          <div id="ask-citations" class="citations-box" aria-label="知识库来源引用"></div>
         </div>
       </section>
     </aside>
 
   </div>
 
-  <script src="/static/app.js?v=14"></script>
+  <script src="/static/app.js?v=15"></script>
   <script>
     // 移动端侧边面板切换逻辑
     (function() {
