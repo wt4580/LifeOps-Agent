@@ -41,7 +41,7 @@ class Element {
   focus() {}
 }
 
-function browser(fetchChat, storage = new Map()) {
+function browser(fetchChat, storage = new Map(), fetchIndex = null) {
   const elements = new Map();
   const element = id => {
     if (!elements.has(id)) elements.set(id, new Element());
@@ -65,6 +65,7 @@ function browser(fetchChat, storage = new Map()) {
     AbortController, TextDecoder,
     alert() {}, confirm: () => true, console: { log() {}, error() {} },
     fetch: async (url, options) => {
+      if (url === '/api/index' && fetchIndex) return fetchIndex(JSON.parse(options.body));
       if (url === '/api/chat/stream') {
         const payload = JSON.parse(options.body);
         calls.push(payload);
@@ -321,3 +322,49 @@ for (const [outcome, expected] of [
     assert.equal(b.calls.length, 1);
   });
 }
+
+
+test('index submission is single-flight and restores both buttons', async () => {
+  let release;
+  let calls = 0;
+  const b = browser(() => {}, new Map(), async () => {
+    calls++;
+    await new Promise(resolve => { release = resolve; });
+    return { ok: true, json: async () => ({ success: true, result: { inserted: 2, skipped: 1 } }) };
+  });
+  const pending = b.context.runIndex();
+  assert.equal(b.element('index-run').disabled, true);
+  assert.equal(b.element('index-reset').disabled, true);
+  await b.context.runIndex(true);
+  assert.equal(calls, 1);
+  release();
+  await pending;
+  assert.equal(b.element('index-run').disabled, false);
+  assert.equal(b.element('index-reset').disabled, false);
+  assert.match(b.element('index-output').textContent, /新增片段：2/);
+});
+
+for (const [status, expected] of [[409, /正在运行/], [422, /超过导入限制/], [401, /重新登录/], [500, /未完整完成/]]) {
+  test(`index HTTP ${status} displays a failure and permits manual retry`, async () => {
+    const b = browser(() => {}, new Map(), async () => ({ ok: false, status, json: async () => ({ detail: 'internal detail' }) }));
+    await b.context.runIndex();
+    assert.match(b.element('index-output').textContent, expected);
+    assert.doesNotMatch(b.element('index-output').textContent, /internal detail/);
+    assert.equal(b.element('index-run').disabled, false);
+  });
+}
+
+test('index degradation is visible and connection failure never retries automatically', async () => {
+  let calls = 0;
+  const b = browser(() => {}, new Map(), async () => {
+    if (++calls === 1) return { ok: true, json: async () => ({ result: { indexing_status: 'degraded', summary_generation: 'background' } }) };
+    throw new TypeError('offline');
+  });
+  await b.context.runIndex();
+  assert.match(b.element('index-output').textContent, /部分完成/);
+  assert.match(b.element('index-output').textContent, /后台继续/);
+  await b.context.runIndex();
+  assert.equal(calls, 2);
+  assert.match(b.element('index-output').textContent, /无法确认/);
+  assert.equal(b.element('index-reset').disabled, false);
+});
