@@ -435,3 +435,29 @@ test('late knowledge answer is discarded after identity change', async () => {
   await pending;
   assert.equal(b.element('ask-answer').textContent, '');
 });
+
+
+test('oversized chat input is retained without sending or adding bubbles', async () => {
+  const b = browser(() => { throw new Error('must not send'); });
+  const text = 'x'.repeat(1001);
+  b.element('chat-input').value = text;
+  await b.context.sendChatMessage();
+  assert.equal(b.calls.length, 0);
+  assert.equal(b.element('chat-input').value, text);
+  assert.equal(b.element('chat-log').children.length, 0);
+});
+
+test('knowledge length limit counts Unicode characters and blocks only oversize input', async () => {
+  let calls = 0;
+  const b = browser(() => {}, new Map(), null, async () => {
+    calls++;
+    return { ok: true, json: async () => ({ result: { answer: 'ok' } }) };
+  });
+  b.element('ask-input').value = '😀'.repeat(1000);
+  await b.context.askKnowledge();
+  assert.equal(calls, 1);
+  b.element('ask-input').value = '😀'.repeat(1001);
+  await b.context.askKnowledge();
+  assert.equal(calls, 1);
+  assert.match(b.element('ask-answer').textContent, /1000/);
+});

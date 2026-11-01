@@ -698,6 +698,10 @@ function abortActiveStream() {
 async function sendChatMessage() {
   const message = chatInput.value.trim();
   if (!message) return;
+  if (Array.from(message).length > 1000) {
+    alert("正文不能超过1000个字符，请缩短后发送。");
+    return;
+  }
   chatInput.value = "";
   return executeChatRequest(createChatRequest(message));
 }
@@ -1376,6 +1380,14 @@ async function askKnowledge() {
   const question = askInput.value.trim();
   if (!question) return;
   const sequence = ++askSequence;
+  if (Array.from(question).length > 1000) {
+    if (askAnswer) {
+      askAnswer.classList.remove("hidden");
+      askAnswer.textContent = "问题不能超过1000个字符，请缩短后查询。";
+    }
+    renderCitations([]);
+    return;
+  }
   const owner = sessionId;
   const revision = identityRevision;
   const current = () => sequence === askSequence && owner === sessionId && revision === identityRevision;
