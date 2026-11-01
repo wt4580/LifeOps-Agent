@@ -586,12 +586,16 @@ function requestAnim(stage) {
 // ========================================
 // 登录
 // ========================================
+let loginPending = false;
 async function handleLogin() {
+  if (loginPending) return;
   const username = loginInput.value.trim();
   if (!username) {
     loginInput.focus();
     return;
   }
+  loginPending = true;
+  if (loginBtn) loginBtn.disabled = true;
   try {
     const res = await fetch("/api/auth/login", {
       method: "POST",
@@ -603,6 +607,7 @@ async function handleLogin() {
       throw new Error(typeof error.detail === "string" ? error.detail : "登录失败，请检查密码（至少8位）");
     }
     const data = await res.json();
+    if (typeof data.session_id !== "string" || !data.session_id.trim()) throw new Error("登录响应异常，请重试。");
     identityRevision++;
     sessionId = data.session_id;
     document.getElementById("login-password").value = "";
@@ -616,6 +621,9 @@ async function handleLogin() {
   } catch (err) {
     document.getElementById("login-error").textContent = err.message;
     console.error("Login error:", err);
+  } finally {
+    loginPending = false;
+    if (loginBtn) loginBtn.disabled = false;
   }
 }
 

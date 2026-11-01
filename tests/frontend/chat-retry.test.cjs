@@ -552,3 +552,37 @@ for (const outcome of ['success', 'http-failure', 'network-failure']) {
     else assert.match(b.element('login-error').textContent, /未能确认服务器退出/);
   });
 }
+
+
+test('login is single-flight and restores submission after completion', async () => {
+  const b = browser(() => {});
+  let release, calls = 0;
+  const original = b.context.fetch;
+  b.context.fetch = async (url, options) => {
+    if (url !== '/api/auth/login') return original(url, options);
+    calls++;
+    await new Promise(resolve => { release = resolve; });
+    return { ok: true, json: async () => ({ session_id: 'alice' }) };
+  };
+  b.element('login-input').value = 'alice';
+  const pending = b.context.handleLogin();
+  assert.equal(b.element('login-btn').disabled, true);
+  await b.context.handleLogin();
+  assert.equal(calls, 1);
+  release();
+  await pending;
+  assert.equal(b.element('login-btn').disabled, false);
+  assert.equal(vm.runInContext('sessionId', b.context), 'alice');
+});
+
+test('malformed login response preserves identity and permits retry', async () => {
+  const b = browser(() => {});
+  const original = b.context.fetch;
+  b.context.fetch = async (url, options) => url === '/api/auth/login'
+    ? { ok: true, json: async () => ({}) } : original(url, options);
+  b.element('login-input').value = 'bob';
+  await b.context.handleLogin();
+  assert.equal(vm.runInContext('sessionId', b.context), 'alice');
+  assert.equal(b.element('login-btn').disabled, false);
+  assert.match(b.element('login-error').textContent, /响应异常/);
+});
