@@ -213,3 +213,24 @@ def test_stale_vector_only_results_fall_back_to_current_lexical_index(knowledge,
     results = r.search_chunks('protein', top_k=3)
     assert len(results) == 1
     assert results[0].snippet == 'current protein recommendation'
+
+@pytest.mark.parametrize('merge', [r._merge_rank, r._rrf_fuse])
+def test_fusion_preserves_distinct_chunk_identity(merge):
+    first = r.Citation(path='a.txt', page=None, snippet='same text', score=40, chunk_id=1, section_path='first')
+    second = r.Citation(path='a.txt', page=None, snippet='same text', score=45, chunk_id=2, section_path='second')
+    duplicate = r.Citation(path='a.txt', page=None, snippet='same text', score=50, chunk_id=1, section_path='first')
+    result = merge([first, second], [duplicate], top_k=5)
+    assert {hit.chunk_id for hit in result} == {1, 2}
+    assert len(result) == 2
+
+
+def test_rerank_restores_correct_section_for_identical_text(monkeypatch):
+    from app.src.util.retrieval import rag_langchain
+    monkeypatch.setattr(r.settings, 'rag_use_rerank', True)
+    def rerank(query, hits, top_k):
+        return list(reversed(hits))
+    monkeypatch.setattr(rag_langchain, 'rerank_hits', rerank)
+    citations = [r.Citation(path='a.txt', page=None, snippet='same text', score=40, chunk_id=i, section_path=str(i)) for i in [1, 2]]
+    result = r._rerank_fused('query', citations, top_k=2)
+    assert [hit.chunk_id for hit in result] == [2, 1]
+    assert [hit.section_path for hit in result] == ['2', '1']

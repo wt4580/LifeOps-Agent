@@ -685,13 +685,21 @@ def _bm25_recall(rows: list[DocumentChunk], query: str, top_k: int, reason: str)
     return citations[:top_k]
 
 
+def _citation_key(citation):
+    chunk_id = getattr(citation, "chunk_id", None)
+    if chunk_id is not None:
+        return ("chunk", citation.path, citation.page, chunk_id)
+    return ("text", citation.path, citation.page, citation.snippet,
+            getattr(citation, "section_path", None), getattr(citation, "section_title", None))
+
+
 def _merge_rank(*lists: list[Citation], top_k: int) -> list[Citation]:
     """简单融合：按 key 去重，保留得分更高的 Citation。"""
 
-    merged: dict[tuple[str, int | None, str], Citation] = {}
+    merged: dict[tuple, Citation] = {}
     for l in lists:
         for c in l:
-            key = (c.path, c.page, c.snippet)
+            key = _citation_key(c)
             existing = merged.get(key)
             if existing is None or c.score > existing.score:
                 merged[key] = c
@@ -714,11 +722,11 @@ def _rrf_fuse(*lists: list[Citation], top_k: int, k: int = 60) -> list[Citation]
     同一 chunk 在“向量(query)”与“向量(rewritten)”两路都命中时会被合理累计，
     因为它来自两次不同查询的独立检索，而非同一查询的多份拷贝重复计票。
     """
-    rrf: dict[tuple[str, int | None, str], float] = {}
-    best: dict[tuple[str, int | None, str], Citation] = {}
+    rrf: dict[tuple, float] = {}
+    best: dict[tuple, Citation] = {}
     for l in lists:
         for rank, c in enumerate(l, start=1):
-            key = (c.path, c.page, c.snippet)
+            key = _citation_key(c)
             rrf[key] = rrf.get(key, 0.0) + 1.0 / (k + rank)
             if key not in best or c.score > best[key].score:
                 best[key] = c
@@ -848,11 +856,11 @@ def _rerank_fused(query: str, citations: list[Citation], *, top_k: int) -> list[
 
     by_key: dict[tuple, Citation] = {}
     for c in citations:
-        by_key[(c.path, c.page, c.snippet)] = c
+        by_key[_citation_key(c)] = c
 
     out: list[Citation] = []
     for h in reranked:
-        c = by_key.get((h.path, h.page, h.snippet))
+        c = by_key.get(_citation_key(h))
         if c is None:
             continue
         c.score = _norm_vector(h.score)
