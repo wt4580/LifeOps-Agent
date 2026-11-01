@@ -221,7 +221,7 @@ Linux 验收使用已有镜像 `lifeops-agent:test-d4678f5` 只读挂载当前�
 
 production 验收镜像为 `lifeops-agent:acceptance-f88c3da`，实际镜像标识 `sha256:1a44cc41d61c310de63dd99f5e8acd51fc5ac0874f8baf9cab6bb0554bb4ffcc`。构建使用清华 HTTPS PyPI 源，运行用户为 `lifeops`；临时容器已清理，未修改既有部署或数据卷。本轮为真实 HTTP/SSE 冒烟，不代替完整七阶段、浏览器、kind 或真实模型验收。
 
-当前test镜像验收标识为 `sha256:f7808f61f0f2e0bfbd02f1e9a5be0590427467d9972dd9e030dba2f59eef670f`，完整报告 `complete=true, passed=true, source_unchanged=true`，容器退出码0，报告导出后临时容器与匿名卷已清理。本轮直接执行镜像内源码；test目标继承了运行时HTTP健康探针，批处理测试期间没有常驻5000端口，因此容器Health记录为unhealthy，此项不用于判定测试进程或production健康，探针配置仍需修正。
+当前test镜像验收标识为 `sha256:f7808f61f0f2e0bfbd02f1e9a5be0590427467d9972dd9e030dba2f59eef670f`，完整报告 `complete=true, passed=true, source_unchanged=true`，容器退出码0，报告导出后临时容器与匿名卷已清理。本轮直接执行镜像内源码；test目标继承了运行时HTTP健康探针，批处理测试期间没有常驻5000端口，因此容器Health记录为unhealthy，此项不用于判定测试进程或production健康，后续已在test目标显式设置 `HEALTHCHECK NONE`，重新构建后检查实际镜像元数据确认生效；production仍保留readiness探针。探针修正后的镜像本轮仅完成构建与元数据验证，未重新跑七阶段。
 
 ### 并发与流式体验
 

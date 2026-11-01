@@ -28,6 +28,7 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=30s --retries=3 \
 CMD ["python", "-m", "app.src"]
 
 FROM runtime AS test
+HEALTHCHECK NONE
 ARG PIP_INDEX_URL=https://pypi.org/simple
 ENV RUFF_CACHE_DIR=/tmp/ruff PYTEST_ADDOPTS="-o cache_dir=/tmp/pytest-cache"
 USER root
