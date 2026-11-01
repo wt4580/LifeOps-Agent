@@ -241,7 +241,10 @@ python -m app.eval.run_reference --output artifacts/reference.json
 # 同案例、同模式与同语料比较，出现成功转失败时非零退出
 python -m app.eval.compare artifacts/baseline.json artifacts/candidate.json --output artifacts/comparison.json
 
-# 真实模型模式会产生费用，必须显式授权
+# 先预览8类场景的小规模计划，不启动应用、不调用模型
+python -m app.eval.run_e2e --mode real --plan-only --limit 8 --output artifacts/real-plan.json
+
+# 实际真实模型模式会产生费用，必须显式授权
 python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e-real.json
 ```
 

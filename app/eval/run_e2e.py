@@ -271,10 +271,29 @@ def main():
     parser.add_argument("--mode", choices=["contract", "real"], default="contract")
     parser.add_argument("--allow-paid-calls", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument("--output", type=Path, default=Path("artifacts/e2e.json"))
+    parser.add_argument("--plan-only", action="store_true", help="Export selected cases without initializing the application or calling a provider")
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.limit < 0:
         parser.error("--limit must be nonnegative")
+    if args.plan_only:
+        selected = [case for case in cases() if args.mode == "contract" or not case.get("contract_only")]
+        if args.limit:
+            selected = selected[:args.limit]
+        groups = defaultdict(int)
+        for case in selected:
+            groups[case["group"]] += 1
+        report = {"plan_only": True, "mode": args.mode, "provider_calls_executed": 0,
+                  "model_quality_measured": False, "cost_estimate_available": False,
+                  "execution_requires_paid_opt_in": args.mode == "real",
+                  "n_cases": len(selected), "n_messages": sum(len(case["messages"]) for case in selected),
+                  "groups": dict(groups), "cases_sha256": case_fingerprint(selected), "cases": selected}
+        output = args.output or Path("artifacts/e2e-plan.json")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps({key: value for key, value in report.items() if key != "cases"}, ensure_ascii=False))
+        return 0
+    args.output = args.output or Path("artifacts/e2e.json")
     if args.mode == "real" and not args.allow_paid_calls:
         parser.error("Real mode can incur API charges; explicitly pass --allow-paid-calls")
     logging.basicConfig(level=logging.ERROR)
