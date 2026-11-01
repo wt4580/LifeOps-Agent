@@ -531,3 +531,24 @@ test('late todo tab response does not replace the newest selected view', async (
   await first;
   assert.equal(vm.runInContext('currentTodoView', b.context), 'all');
 });
+
+
+for (const outcome of ['success', 'http-failure', 'network-failure']) {
+  test(`logout ${outcome} clears local views and accurately reports confirmation`, async () => {
+    const b = browser(() => {});
+    const originalFetch = b.context.fetch;
+    b.context.fetch = async (url, options) => {
+      if (url !== '/api/auth/logout') return originalFetch(url, options);
+      if (outcome === 'network-failure') throw new TypeError('offline');
+      return { ok: outcome === 'success' };
+    };
+    b.element('ask-answer').textContent = 'private answer';
+    b.element('index-output').textContent = 'private status';
+    await b.element('logout-btn').click();
+    assert.equal(vm.runInContext('sessionId', b.context), '');
+    assert.equal(b.element('ask-answer').textContent, '');
+    assert.equal(b.element('index-output').textContent, '');
+    if (outcome === 'success') assert.equal(b.element('login-error').textContent, '');
+    else assert.match(b.element('login-error').textContent, /未能确认服务器退出/);
+  });
+}

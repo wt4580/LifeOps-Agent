@@ -664,7 +664,11 @@ if (loginInput) {
 }
 if (logoutBtn) {
   logoutBtn.addEventListener("click", async () => {
-    try { await fetch("/api/auth/logout", { method: "POST" }); } catch (_) { /* local logout */ }
+    let logoutConfirmed = false;
+    try {
+      const response = await fetch("/api/auth/logout", { method: "POST" });
+      logoutConfirmed = response.ok;
+    } catch (_) { /* Local data is still cleared below. */ }
     try { sessionStorage.removeItem(pendingStorageKey(sessionId)); } catch (_) { /* unavailable */ }
     for (const [id, request] of pendingChatRequests) {
       if (request.payload.session_id === sessionId) {
@@ -687,6 +691,8 @@ if (logoutBtn) {
     appSection.style.display = "none";
     loginSection.style.display = "";
     loginInput.value = "";
+    document.getElementById("login-error").textContent = logoutConfirmed ? ""
+      : "本地内容已清除，但未能确认服务器退出。请恢复网络后重新登录并退出。";
     loginInput.focus();
   });
 }
