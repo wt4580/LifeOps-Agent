@@ -234,3 +234,19 @@ def test_rerank_restores_correct_section_for_identical_text(monkeypatch):
     result = r._rerank_fused('query', citations, top_k=2)
     assert [hit.chunk_id for hit in result] == [2, 1]
     assert [hit.section_path for hit in result] == ['2', '1']
+
+def test_repeated_sections_remain_independently_citable_end_to_end(knowledge, tmp_path, monkeypatch):
+    monkeypatch.setattr(r.settings, 'docs_dir', str(tmp_path))
+    source = tmp_path / 'sections.txt'
+    body = 'protein guidance with shared evidence for a balanced meal.'
+    source.write_text(f'FIRST SECTION\n{body}\nSECOND SECTION\n{body}\n', encoding='utf-8')
+    assert r._index_documents_sqlite(rebuild=False)[0] == 2
+    hits = r.search_chunks('protein', top_k=5)
+    assert len(hits) == 2
+    assert {hit.section_title for hit in hits} == {'FIRST SECTION', 'SECOND SECTION'}
+    assert len({hit.chunk_id for hit in hits}) == 2
+    assert {hit.snippet.strip() for hit in hits} == {body}
+    source.write_text(f'RENAMED SECTION\n{body}\nSECOND SECTION\n{body}\n', encoding='utf-8')
+    r._index_documents_sqlite(rebuild=False)
+    hits = r.search_chunks('protein', top_k=5)
+    assert {hit.section_title for hit in hits} == {'RENAMED SECTION', 'SECOND SECTION'}
