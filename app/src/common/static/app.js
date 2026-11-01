@@ -1319,42 +1319,47 @@ if (todosAll) {
 // ========================================
 // 索引功能
 // ========================================
-if (indexRun) {
-  indexRun.addEventListener("click", async () => {
+let indexing = false;
+  async function runIndex(reset = false) {
+    if (indexing || !indexOutput) return;
+    if (reset && !confirm("确定要重建知识库索引吗？")) return;
+    indexing = true;
+    if (indexRun) indexRun.disabled = true;
+    if (indexReset) indexReset.disabled = true;
+    indexOutput.textContent = "正在建立索引，请等待，可能需要数分钟…";
     try {
-      const res = await fetch("/api/index", { method: "POST" });
-      const data = await res.json();
-      indexOutput.textContent = JSON.stringify(data, null, 2);
-    } catch (error) {
-      indexOutput.textContent = `错误: ${error.message}`;
-    }
-  });
-}
-
-if (indexReset) {
-  indexReset.addEventListener("click", async () => {
-    if (!confirm("确定要重置索引吗？将清空所有存量数据后全量重录。")) return;
-    const startTime = new Date();
-    try {
-      indexOutput.textContent = `重置中...（开始时间: ${startTime.toLocaleTimeString()}，可能需数分钟）`;
       const res = await fetch("/api/index", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reset: true }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reset }),
       });
-      const elapsed = ((new Date() - startTime) / 1000).toFixed(1);
       const data = await res.json();
-      data.elapsed_seconds = parseFloat(elapsed);
-      indexOutput.textContent = JSON.stringify(data, null, 2);
-    } catch (error) {
-      indexOutput.textContent = `错误（耗时 ${((new Date() - startTime) / 1000).toFixed(1)}s）: ${error.message}`;
+      if (!res.ok || data.success === false) {
+        const messages = {
+          409: "已有索引任务正在运行，请等待后重试。",
+          422: "文档超过导入限制，请检查文件大小、页数或图片尺寸。",
+          401: "登录已失效，请重新登录。",
+        };
+        indexOutput.textContent = messages[res.status] || "索引未完整完成，请检查日志并核对现有索引后重试。";
+        return;
+      }
+      const result = data.result;
+      if (!result || typeof result !== "object") throw new Error("Invalid response");
+      const status = result.indexing_status === "degraded"
+        ? "部分完成：词法索引可用，向量索引失败，请修复后重建。"
+        : "索引建立完成。";
+      const summary = result.summary_generation === "background" ? "文档摘要将在后台继续生成。" : "";
+      indexOutput.textContent = `${status} 新增片段：${result.inserted ?? 0}，未变化片段：${result.skipped ?? 0}。${summary}`;
+    } catch (_) {
+      indexOutput.textContent = "连接中断或响应异常，无法确认索引结果。请先核对状态，再手动重试。";
+    } finally {
+      indexing = false;
+      if (indexRun) indexRun.disabled = false;
+      if (indexReset) indexReset.disabled = false;
     }
-  });
-}
+  }
+  if (indexRun) indexRun.addEventListener("click", () => runIndex());
+  if (indexReset) indexReset.addEventListener("click", () => runIndex(true));
 
-// ========================================
-// 知识库问答
-// ========================================
 if (askSend) {
   askSend.addEventListener("click", async () => {
     const question = askInput.value.trim();
