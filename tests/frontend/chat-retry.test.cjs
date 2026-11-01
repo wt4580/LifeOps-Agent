@@ -41,7 +41,7 @@ class Element {
   focus() {}
 }
 
-function browser(fetchChat, storage = new Map(), fetchIndex = null, fetchAsk = null) {
+function browser(fetchChat, storage = new Map(), fetchIndex = null, fetchAsk = null, fetchMe = null) {
   const elements = new Map();
   const documentListeners = {};
   const element = id => {
@@ -54,7 +54,7 @@ function browser(fetchChat, storage = new Map(), fetchIndex = null, fetchAsk = n
     document: { getElementById: element, createElement: () => new Element(),
       querySelectorAll: () => [], querySelector: () => null, addEventListener(name, callback) { documentListeners[name] = callback; } },
     window: { addEventListener() {} },
-    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    localStorage: { getItem: () => fetchMe ? "alice" : null, setItem() {}, removeItem() {} },
     sessionStorage: {
       getItem: key => storage.get(key) ?? null,
       setItem: (key, value) => storage.set(key, value),
@@ -66,6 +66,7 @@ function browser(fetchChat, storage = new Map(), fetchIndex = null, fetchAsk = n
     AbortController, TextDecoder,
     alert() {}, confirm: () => true, console: { log() {}, error() {} },
     fetch: async (url, options) => {
+      if (url === '/api/auth/me' && fetchMe) return fetchMe();
       if (url === '/api/ask' && fetchAsk) return fetchAsk(JSON.parse(options.body));
       if (url === '/api/index' && fetchIndex) return fetchIndex(JSON.parse(options.body));
       if (url === '/api/chat/stream') {
@@ -485,4 +486,22 @@ test('IME Enter does not submit chat or knowledge queries', () => {
   b.element('ask-input').listeners.keydown(enter);
   assert.equal(chatClicks, 1);
   assert.equal(askClicks, 1);
+});
+
+
+test('stale startup authentication response cannot clear a newer login', async () => {
+  let release;
+  const b = browser(() => {}, new Map(), null, null, () => new Promise(resolve => { release = resolve; }));
+  vm.runInContext('sessionId = "bob"; identityRevision++', b.context);
+  release({ ok: false, status: 401 });
+  await new Promise(setImmediate);
+  assert.equal(vm.runInContext('sessionId', b.context), 'bob');
+});
+
+test('temporary startup authentication failure retains identity and shows recovery', async () => {
+  const b = browser(() => {}, new Map(), null, null, async () => { throw new TypeError('network'); });
+  await new Promise(setImmediate);
+  assert.equal(vm.runInContext('sessionId', b.context), 'alice');
+  assert.match(b.element('login-error').textContent, /暂时无法验证/);
+  assert.equal(b.element('app-section').style.display, 'none');
 });

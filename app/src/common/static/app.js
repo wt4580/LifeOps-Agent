@@ -619,12 +619,16 @@ async function handleLogin() {
 }
 
 if (sessionId) {
+  const verifyingSession = sessionId;
+  const verifyingRevision = identityRevision;
   loginSection.style.display = "none";
   appSection.style.display = "";
   requestAnim("idle");
   loadTodos("/api/todos/upcoming?days=7");
   fetch("/api/auth/me").then(async (response) => {
+    if (!response.ok && response.status !== 401) throw new Error("Session check unavailable");
     const user = response.ok ? await response.json() : null;
+    if (sessionId !== verifyingSession || identityRevision !== verifyingRevision) return;
     if (!user || user.session_id !== sessionId) {
       localStorage.removeItem("lifeops_session_id");
       identityRevision++;
@@ -634,6 +638,11 @@ if (sessionId) {
     } else {
       restorePendingRequests(sessionId);
     }
+  }).catch(() => {
+    if (sessionId !== verifyingSession || identityRevision !== verifyingRevision) return;
+    appSection.style.display = "none";
+    loginSection.style.display = "";
+    document.getElementById("login-error").textContent = "暂时无法验证登录状态，请检查网络后重新登录。";
   });
 } else {
   loginSection.style.display = "";
