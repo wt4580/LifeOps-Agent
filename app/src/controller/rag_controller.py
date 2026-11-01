@@ -47,8 +47,10 @@ def ask_question(req: AskRequest, request: Request):
             except TurnLimitExceeded:
                 turn.finish("budget_exceeded")
                 result = {"answer": "本次检索已达到运行预算，请缩小问题范围后继续。", "citations": []}
-            turn.finish("success")
+            else:
+                turn.finish("success")
             result["trace"] = {"steps": [{"type": "postprocess", "name": "harness_summary", "output": turn.summary()}]}
         return success_response(data=result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.warning("Knowledge question failed error_type=%s", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="知识库查询未完成，请稍后重试。") from exc
