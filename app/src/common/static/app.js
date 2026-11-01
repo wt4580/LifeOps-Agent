@@ -645,6 +645,7 @@ if (loginBtn) {
 }
 if (loginInput) {
   loginInput.addEventListener("keydown", (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Enter") {
       e.preventDefault();
       handleLogin();
@@ -680,6 +681,7 @@ if (logoutBtn) {
 }
 
 document.getElementById("login-password").addEventListener("keydown", (event) => {
+  if (event.isComposing || event.keyCode === 229) return;
   if (event.key === "Enter") handleLogin();
 });
 
@@ -971,6 +973,7 @@ if (chatSend) {
 }
 
 document.addEventListener("keydown", function(e) {
+  if (e.isComposing || e.keyCode === 229) return;
   if (e.key === "Enter" && !e.shiftKey && document.activeElement === chatInput) {
     e.preventDefault();
     if (chatSend) chatSend.click();
@@ -1416,6 +1419,7 @@ if (askSend) askSend.addEventListener("click", askKnowledge);
 
 if (askInput) {
   askInput.addEventListener("keydown", (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (askSend) askSend.click();

@@ -43,6 +43,7 @@ class Element {
 
 function browser(fetchChat, storage = new Map(), fetchIndex = null, fetchAsk = null) {
   const elements = new Map();
+  const documentListeners = {};
   const element = id => {
     if (!elements.has(id)) elements.set(id, new Element());
     return elements.get(id);
@@ -51,7 +52,7 @@ function browser(fetchChat, storage = new Map(), fetchIndex = null, fetchAsk = n
   const calls = [];
   const context = vm.createContext({
     document: { getElementById: element, createElement: () => new Element(),
-      querySelectorAll: () => [], querySelector: () => null, addEventListener() {} },
+      querySelectorAll: () => [], querySelector: () => null, addEventListener(name, callback) { documentListeners[name] = callback; } },
     window: { addEventListener() {} },
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     sessionStorage: {
@@ -78,7 +79,7 @@ function browser(fetchChat, storage = new Map(), fetchIndex = null, fetchAsk = n
   const source = readFileSync(path.resolve(__dirname, '../../app/src/common/static/app.js'), 'utf8');
   vm.runInContext(source, context);
   vm.runInContext('sessionId = "alice"', context);
-  return { context, calls, element, retry: () => element('chat-log').querySelector('.assistant-retry-btn') };
+  return { context, calls, element, documentListeners, retry: () => element('chat-log').querySelector('.assistant-retry-btn') };
 }
 
 function response(events, { broken = false, separator = '\n\n' } = {}) {
@@ -460,4 +461,28 @@ test('knowledge length limit counts Unicode characters and blocks only oversize 
   await b.context.askKnowledge();
   assert.equal(calls, 1);
   assert.match(b.element('ask-answer').textContent, /1000/);
+});
+
+
+test('IME Enter does not submit chat or knowledge queries', () => {
+  const b = browser(() => {});
+  let chatClicks = 0, askClicks = 0, prevented = 0;
+  b.element('chat-send').listeners.click = () => chatClicks++;
+  b.element('ask-send').listeners.click = () => askClicks++;
+  b.context.document.activeElement = b.element('chat-input');
+  for (const flags of [{ isComposing: true }, { keyCode: 229 }]) {
+    const event = { key: 'Enter', shiftKey: false, preventDefault() { prevented++; }, ...flags };
+    b.documentListeners.keydown(event);
+    b.element('ask-input').listeners.keydown(event);
+    b.element('login-input').listeners.keydown(event);
+    b.element('login-password').listeners.keydown(event);
+  }
+  assert.equal(chatClicks, 0);
+  assert.equal(askClicks, 0);
+  assert.equal(prevented, 0);
+  const enter = { key: 'Enter', shiftKey: false, preventDefault() {} };
+  b.documentListeners.keydown(enter);
+  b.element('ask-input').listeners.keydown(enter);
+  assert.equal(chatClicks, 1);
+  assert.equal(askClicks, 1);
 });
