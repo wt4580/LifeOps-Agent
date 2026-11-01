@@ -563,3 +563,27 @@ def test_document_iterator_defers_parsing_until_consumption(tmp_path, monkeypatc
     parser.assert_not_called()
     assert next(documents).chunks[0].text == "content"
     parser.assert_called_once()
+
+def test_document_metadata_refreshes_tags_without_changing_unchanged_revision(knowledge):
+    from app.src.util.retrieval import retrieval
+    from app.src.domain.entity.knowledge_entity import Document, DocumentChunk
+    with knowledge() as db:
+        db.add(DocumentChunk(file_path='a.txt', chunk_text='content', chunk_hash='hash', source_type='guide', doc_topic='diet'))
+        db.commit()
+    retrieval._sync_document_records()
+    with knowledge() as db:
+        doc = db.scalar(select(Document))
+        revision = doc.updated_at
+        assert doc.source_type == 'guide' and doc.topics == 'diet'
+    retrieval._sync_document_records()
+    with knowledge() as db:
+        assert db.scalar(select(Document)).updated_at == revision
+        chunk = db.scalar(select(DocumentChunk))
+        chunk.source_type = 'personal_log'
+        chunk.doc_topic = 'health'
+        db.commit()
+    retrieval._sync_document_records()
+    with knowledge() as db:
+        doc = db.scalar(select(Document))
+        assert doc.source_type == 'personal_log' and doc.topics == 'health'
+        assert doc.updated_at != revision

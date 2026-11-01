@@ -226,16 +226,13 @@ def _sync_document_records() -> None:
         file_rows = db.execute(
             select(
                 DocumentChunk.file_path,
-                DocumentChunk.source_type,
-                DocumentChunk.doc_topic,
-                DocumentChunk.section_title,
-                DocumentChunk.heading_level,
-                DocumentChunk.section_path,
+                func.min(DocumentChunk.source_type),
+                func.min(DocumentChunk.doc_topic),
                 func.count(DocumentChunk.id),
-            ).group_by(DocumentChunk.file_path)
-        ).all()
+            ).group_by(DocumentChunk.file_path).execution_options(yield_per=128)
+        )
 
-        for (fp, src_type, topic, _sec_title, _heading_lv, _sec_path, cnt) in file_rows:
+        for (fp, src_type, topic, cnt) in file_rows:
             existing = db.execute(
                 select(Document).where(Document.file_path == fp).limit(1)
             ).scalars().first()
@@ -247,14 +244,17 @@ def _sync_document_records() -> None:
                 ).where(
                     DocumentChunk.file_path == fp,
                     DocumentChunk.section_title != None,
-                ).distinct().order_by(DocumentChunk.id)
+                ).group_by(DocumentChunk.section_title, DocumentChunk.heading_level).order_by(func.min(DocumentChunk.id))
             ).all()
             outline = [{"title": t, "level": lv} for t, lv in heading_rows if t] if heading_rows else None
 
             if existing:
-                existing.chunk_count = cnt
-                existing.outline = json.dumps(outline, ensure_ascii=False) if outline else None
-                existing.updated_at = datetime.now(timezone.utc)
+                values = {"chunk_count": cnt, "source_type": src_type or "other", "topics": topic or "other",
+                          "outline": json.dumps(outline, ensure_ascii=False) if outline else None}
+                if any(getattr(existing, key) != value for key, value in values.items()):
+                    for key, value in values.items():
+                        setattr(existing, key, value)
+                    existing.updated_at = datetime.now(timezone.utc)
             else:
                 db.add(Document(
                     file_path=fp,
