@@ -20,7 +20,9 @@ class ChatVo(BaseModel):
     @field_validator("message",mode="before")
     @classmethod
     def validate_message(cls, value: str) -> str:
-        if not value:
+        if not isinstance(value, str):
+            raise ValueError("输入的文本必须是字符串")
+        if not value.strip():
             raise ValueError("输入的文本不能为空")
         if len(value)>1000:
             raise ValueError("输入的文本长度不能超过1000")

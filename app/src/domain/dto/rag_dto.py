@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class IndexRequest(BaseModel):
@@ -8,4 +8,5 @@ class IndexRequest(BaseModel):
 
 class AskRequest(BaseModel):
     """知识库问答请求"""
-    question: str
+    model_config = ConfigDict(str_strip_whitespace=True)
+    question: str = Field(min_length=1, max_length=1000)
