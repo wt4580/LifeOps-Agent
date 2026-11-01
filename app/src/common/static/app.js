@@ -667,6 +667,8 @@ if (logoutBtn) {
     hideProposal();
     chatLog.innerHTML = "";
     if (indexOutput) indexOutput.textContent = "";
+    if (askAnswer) askAnswer.textContent = "";
+    renderCitations([]);
     localStorage.removeItem("lifeops_session_id");
     identityRevision++;
     sessionId = "";
@@ -1369,31 +1371,36 @@ let indexing = false;
   if (indexRun) indexRun.addEventListener("click", () => runIndex());
   if (indexReset) indexReset.addEventListener("click", () => runIndex(true));
 
-if (askSend) {
-  askSend.addEventListener("click", async () => {
-    const question = askInput.value.trim();
-    if (!question) return;
-    
-    if (askAnswer) {
-      askAnswer.classList.remove("hidden");
-      askAnswer.textContent = "查询中...";
-    }
-    
-    try {
-      const res = await fetch("/api/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question }),
-      });
-      
-      const data = await res.json();
-      if (askAnswer) askAnswer.textContent = data.answer;
-      renderCitations(data.citations);
-    } catch (error) {
-      if (askAnswer) askAnswer.textContent = `错误: ${error.message}`;
-    }
-  });
+let askSequence = 0;
+async function askKnowledge() {
+  const question = askInput.value.trim();
+  if (!question) return;
+  const sequence = ++askSequence;
+  const owner = sessionId;
+  const revision = identityRevision;
+  const current = () => sequence === askSequence && owner === sessionId && revision === identityRevision;
+  if (askAnswer) {
+    askAnswer.classList.remove("hidden");
+    askAnswer.textContent = "查询中...";
+  }
+  renderCitations([]);
+  try {
+    const res = await fetch("/api/ask", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    const data = await res.json();
+    if (!current()) return;
+    if (!res.ok || data.success === false) throw new Error("查询未完成，请检查登录状态后重试。");
+    const result = data.result;
+    if (!result || typeof result.answer !== "string") throw new Error("查询响应异常，请重试。");
+    if (askAnswer) askAnswer.textContent = result.answer;
+    renderCitations(Array.isArray(result.citations) ? result.citations : []);
+  } catch (_) {
+    if (current() && askAnswer) askAnswer.textContent = "查询未完成，请检查登录状态或网络后重试。";
+  }
 }
+if (askSend) askSend.addEventListener("click", askKnowledge);
 
 if (askInput) {
   askInput.addEventListener("keydown", (e) => {

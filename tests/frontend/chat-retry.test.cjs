@@ -41,7 +41,7 @@ class Element {
   focus() {}
 }
 
-function browser(fetchChat, storage = new Map(), fetchIndex = null) {
+function browser(fetchChat, storage = new Map(), fetchIndex = null, fetchAsk = null) {
   const elements = new Map();
   const element = id => {
     if (!elements.has(id)) elements.set(id, new Element());
@@ -65,6 +65,7 @@ function browser(fetchChat, storage = new Map(), fetchIndex = null) {
     AbortController, TextDecoder,
     alert() {}, confirm: () => true, console: { log() {}, error() {} },
     fetch: async (url, options) => {
+      if (url === '/api/ask' && fetchAsk) return fetchAsk(JSON.parse(options.body));
       if (url === '/api/index' && fetchIndex) return fetchIndex(JSON.parse(options.body));
       if (url === '/api/chat/stream') {
         const payload = JSON.parse(options.body);
@@ -396,4 +397,41 @@ test('indexing response is discarded after a login revision changes', async () =
   release();
   await pending;
   assert.equal(b.element('index-output').textContent, '');
+});
+
+
+test('knowledge question unwraps the API result and renders citations', async () => {
+  const b = browser(() => {}, new Map(), null, async () => ({ ok: true, json: async () => ({ success: true,
+    result: { answer: 'answer', citations: [{ path: 'guide.txt', snippet: 'evidence', score: 60 }] } }) }));
+  b.element('ask-input').value = 'question';
+  await b.context.askKnowledge();
+  assert.equal(b.element('ask-answer').textContent, 'answer');
+  assert.equal(b.element('ask-citations').children.length, 1);
+});
+
+test('older knowledge query cannot overwrite a newer answer', async () => {
+  const pending = [];
+  const b = browser(() => {}, new Map(), null, () => new Promise(resolve => pending.push(resolve)));
+  b.element('ask-input').value = 'first';
+  const first = b.context.askKnowledge();
+  b.element('ask-input').value = 'second';
+  const second = b.context.askKnowledge();
+  const answer = text => ({ ok: true, json: async () => ({ result: { answer: text, citations: [] } }) });
+  pending[1](answer('new'));
+  await second;
+  pending[0](answer('old'));
+  await first;
+  assert.equal(b.element('ask-answer').textContent, 'new');
+});
+
+test('late knowledge answer is discarded after identity change', async () => {
+  let release;
+  const b = browser(() => {}, new Map(), null, () => new Promise(resolve => { release = resolve; }));
+  b.element('ask-input').value = 'question';
+  const pending = b.context.askKnowledge();
+  vm.runInContext('identityRevision++', b.context);
+  b.element('ask-answer').textContent = '';
+  release({ ok: true, json: async () => ({ result: { answer: 'old private answer' } }) });
+  await pending;
+  assert.equal(b.element('ask-answer').textContent, '');
 });
