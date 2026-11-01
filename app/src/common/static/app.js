@@ -33,7 +33,17 @@ const loginBtn = document.getElementById("login-btn");
 const logoutBtn = document.getElementById("logout-btn");
 const appSection = document.getElementById("app-section");
 
-let sessionId = localStorage.getItem("lifeops_session_id") || "";
+function readIdentityHint() {
+  try { return localStorage.getItem("lifeops_session_id") || ""; }
+  catch (_) { return ""; }
+}
+function rememberIdentityHint(value) {
+  try {
+    if (value) localStorage.setItem("lifeops_session_id", value);
+    else localStorage.removeItem("lifeops_session_id");
+  } catch (_) { /* Cookie authentication works without a local identity hint. */ }
+}
+let sessionId = readIdentityHint();
 let identityRevision = 0;
 let todoLoadSequence = 0;
 const pendingChatRequests = new Map();
@@ -612,7 +622,7 @@ async function handleLogin() {
     sessionId = data.session_id;
     document.getElementById("login-password").value = "";
     document.getElementById("login-error").textContent = "";
-    localStorage.setItem("lifeops_session_id", sessionId);
+    rememberIdentityHint(sessionId);
     loginSection.style.display = "none";
     appSection.style.display = "";
     requestAnim("idle");
@@ -639,7 +649,7 @@ if (sessionId) {
     const user = response.ok ? await response.json() : null;
     if (sessionId !== verifyingSession || identityRevision !== verifyingRevision) return;
     if (!user || user.session_id !== sessionId) {
-      localStorage.removeItem("lifeops_session_id");
+      rememberIdentityHint("");
       identityRevision++;
       sessionId = "";
       appSection.style.display = "none";
@@ -693,7 +703,7 @@ if (logoutBtn) {
     if (askAnswer) askAnswer.textContent = "";
     if (todosOutput) todosOutput.innerHTML = "";
     renderCitations([]);
-    localStorage.removeItem("lifeops_session_id");
+    rememberIdentityHint("");
     identityRevision++;
     sessionId = "";
     appSection.style.display = "none";

@@ -41,7 +41,7 @@ class Element {
   focus() {}
 }
 
-function browser(fetchChat, storage = new Map(), fetchIndex = null, fetchAsk = null, fetchMe = null, fetchTodos = null) {
+function browser(fetchChat, storage = new Map(), fetchIndex = null, fetchAsk = null, fetchMe = null, fetchTodos = null, identityStorage = null) {
   const elements = new Map();
   const documentListeners = {};
   const element = id => {
@@ -54,7 +54,7 @@ function browser(fetchChat, storage = new Map(), fetchIndex = null, fetchAsk = n
     document: { getElementById: element, createElement: () => new Element(),
       querySelectorAll: () => [], querySelector: () => null, addEventListener(name, callback) { documentListeners[name] = callback; } },
     window: { addEventListener() {} },
-    localStorage: { getItem: () => fetchMe ? "alice" : null, setItem() {}, removeItem() {} },
+    localStorage: identityStorage || { getItem: () => fetchMe ? "alice" : null, setItem() {}, removeItem() {} },
     sessionStorage: {
       getItem: key => storage.get(key) ?? null,
       setItem: (key, value) => storage.set(key, value),
@@ -585,4 +585,22 @@ test('malformed login response preserves identity and permits retry', async () =
   assert.equal(vm.runInContext('sessionId', b.context), 'alice');
   assert.equal(b.element('login-btn').disabled, false);
   assert.match(b.element('login-error').textContent, /响应异常/);
+});
+
+
+test('blocked local storage does not prevent startup login or logout', async () => {
+  const blocked = () => { throw new Error('storage denied'); };
+  const b = browser(() => {}, new Map(), null, null, null, null,
+    { getItem: blocked, setItem: blocked, removeItem: blocked });
+  assert.equal(b.context.readIdentityHint(), '');
+  const original = b.context.fetch;
+  b.context.fetch = async (url, options) => url === '/api/auth/login'
+    ? { ok: true, json: async () => ({ session_id: 'alice' }) } : original(url, options);
+  b.element('login-input').value = 'alice';
+  await b.context.handleLogin();
+  assert.equal(b.element('app-section').style.display, '');
+  assert.equal(b.element('login-error').textContent, '');
+  await b.element('logout-btn').click();
+  assert.equal(vm.runInContext('sessionId', b.context), '');
+  assert.equal(b.element('login-section').style.display, '');
 });
