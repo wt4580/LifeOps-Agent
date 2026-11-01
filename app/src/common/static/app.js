@@ -1448,7 +1448,15 @@ async function askKnowledge() {
     });
     const data = await res.json();
     if (!current()) return;
-    if (!res.ok || data.success === false) throw new Error("查询未完成，请检查登录状态后重试。");
+    if (!res.ok || data.success === false) {
+      const messages = {
+        503: "知识库查询繁忙，请稍后手动重试。",
+        401: "登录已失效，请重新登录后查询。",
+        422: "问题格式或长度不符合要求，请修改后查询。",
+      };
+      if (askAnswer) askAnswer.textContent = messages[res.status] || "查询未完成，请稍后重试。";
+      return;
+    }
     const result = data.result;
     if (!result || typeof result.answer !== "string") throw new Error("查询响应异常，请重试。");
     if (askAnswer) askAnswer.textContent = result.answer;

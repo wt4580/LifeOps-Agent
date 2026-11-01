@@ -604,3 +604,19 @@ test('blocked local storage does not prevent startup login or logout', async () 
   assert.equal(vm.runInContext('sessionId', b.context), '');
   assert.equal(b.element('login-section').style.display, '');
 });
+
+
+for (const [status, expected] of [[503, /查询繁忙/], [401, /登录已失效/], [422, /格式或长度/]]) {
+  test(`knowledge HTTP ${status} shows actionable feedback without automatic retries`, async () => {
+    let calls = 0;
+    const b = browser(() => {}, new Map(), null, async () => {
+      calls++;
+      return { ok: false, status, json: async () => ({ detail: 'private internal error' }) };
+    });
+    b.element('ask-input').value = 'question';
+    await b.context.askKnowledge();
+    assert.equal(calls, 1);
+    assert.match(b.element('ask-answer').textContent, expected);
+    assert.doesNotMatch(b.element('ask-answer').textContent, /private internal error/);
+  });
+}
