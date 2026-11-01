@@ -66,6 +66,16 @@ def stream_events(response):
     return [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
 
 
+def execution_diagnostics(summaries, events):
+    """Keep termination evidence without persisting answers or provider errors."""
+    return {
+        "turn_statuses": [summary.get("status", "unknown") for summary in summaries],
+        "budget_exceeded": any(summary.get("status") == "budget_exceeded" for summary in summaries),
+        "stream_error_codes": sorted({str(event.get("code", "unknown"))
+                                      for event in events if event.get("type") == "error"}),
+    }
+
+
 def configure(directory, mode):
     root = Path(__file__).resolve().parents[2]
     os.environ.update(
@@ -205,6 +215,7 @@ def evaluate(mode, limit=0):
                             "group": case["group"],
                             "passed": error is None,
                             "error": error,
+                            "execution": execution_diagnostics(summaries, events),
                             "latency_ms": round((time.perf_counter() - started) * 1000, 2),
                             "llm_calls": sum(summary["llm_calls"] for summary in summaries),
                             "reported_tokens": sum(

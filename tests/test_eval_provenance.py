@@ -7,6 +7,18 @@ import pytest
 from app.eval import run_e2e
 
 
+def test_execution_diagnostics_preserve_budget_and_transport_evidence_only():
+    result = run_e2e.execution_diagnostics(
+        [{"status": "completed"}, {"status": "budget_exceeded", "answer": "private"}],
+        [{"type": "error", "code": "request_execution_failed", "message": "private"},
+         {"type": "error", "code": "request_execution_failed"}, {"type": "final"}],
+    )
+    assert result == {"turn_statuses": ["completed", "budget_exceeded"],
+                      "budget_exceeded": True, "stream_error_codes": ["request_execution_failed"]}
+    assert run_e2e.execution_diagnostics([], []) == {
+        "turn_statuses": [], "budget_exceeded": False, "stream_error_codes": []}
+
+
 @pytest.mark.parametrize("error", [FileNotFoundError("git"), PermissionError("git"), subprocess.TimeoutExpired("git", 5)])
 def test_revision_falls_back_when_git_is_unavailable(tmp_path, monkeypatch, error):
     (tmp_path / ".git").mkdir()
