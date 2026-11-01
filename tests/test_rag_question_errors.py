@@ -61,3 +61,32 @@ def test_question_failure_releases_capacity(monkeypatch):
         module.ask_question(AskRequest(question='question'), SimpleNamespace(state=SimpleNamespace(username='alice')))
     assert slots.acquire(blocking=False)
     slots.release()
+
+def test_http_question_overload_preserves_retry_header_and_recovers(monkeypatch):
+    import threading
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    app = FastAPI()
+    @app.middleware('http')
+    async def identity(request, call_next):
+        request.state.username = 'alice'
+        return await call_next(request)
+    app.include_router(module.router)
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(module, '_ASK_SLOTS', slots)
+    model = Mock(return_value={'answer': 'current answer', 'citations': []})
+    monkeypatch.setattr(module.rag_service, 'ask_question', model)
+    assert slots.acquire(blocking=False)
+    with TestClient(app) as client:
+        try:
+            response = client.post('/api/ask', json={'question': 'question'})
+            assert response.status_code == 503
+            assert response.headers['retry-after'] == '1'
+            model.assert_not_called()
+        finally:
+            slots.release()
+        response = client.post('/api/ask', json={'question': 'question'})
+        assert response.status_code == 200
+        assert response.json()['result']['answer'] == 'current answer'
+        assert response.json()['result']['trace']['steps'][0]['output']['status'] == 'success'
+    model.assert_called_once_with(question='question', session_id='alice')
