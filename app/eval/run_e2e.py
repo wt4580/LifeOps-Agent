@@ -249,6 +249,8 @@ def evaluate(mode, limit=0):
                 "corpus_sha256": corpus_hash,
                 "cases_sha256": case_fingerprint(selected),
                 "backend": settings.rag_backend,
+                "turn_limits": {"max_llm_calls": settings.chat_turn_max_llm_calls,
+                                "max_tokens": settings.chat_turn_max_tokens, "monetary_cap_enforced": False},
             },
             "metrics": {
                 "n_cases": len(results),
@@ -272,10 +274,14 @@ def main():
     parser.add_argument("--allow-paid-calls", action="store_true")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--plan-only", action="store_true", help="Export selected cases without initializing the application or calling a provider")
+    parser.add_argument("--turn-max-llm-calls", type=int, help="Override the per-turn logical model-call budget")
+    parser.add_argument("--turn-max-tokens", type=int, help="Override the per-turn harness token budget; not a billing cap")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.limit < 0:
         parser.error("--limit must be nonnegative")
+    if any(value is not None and value < 1 for value in (args.turn_max_llm_calls, args.turn_max_tokens)):
+        parser.error("Explicit per-turn budgets must be positive")
     if args.plan_only:
         selected = [case for case in cases() if args.mode == "contract" or not case.get("contract_only")]
         if args.limit:
@@ -286,6 +292,8 @@ def main():
         report = {"plan_only": True, "mode": args.mode, "provider_calls_executed": 0,
                   "model_quality_measured": False, "cost_estimate_available": False,
                   "execution_requires_paid_opt_in": args.mode == "real",
+                  "turn_limits": {"max_llm_calls": args.turn_max_llm_calls, "max_tokens": args.turn_max_tokens,
+                                  "unspecified_limits_use_runtime_config": True, "monetary_cap_enforced": False},
                   "n_cases": len(selected), "n_messages": sum(len(case["messages"]) for case in selected),
                   "groups": dict(groups), "cases_sha256": case_fingerprint(selected), "cases": selected}
         output = args.output or Path("artifacts/e2e-plan.json")
@@ -296,6 +304,10 @@ def main():
     args.output = args.output or Path("artifacts/e2e.json")
     if args.mode == "real" and not args.allow_paid_calls:
         parser.error("Real mode can incur API charges; explicitly pass --allow-paid-calls")
+    if args.turn_max_llm_calls is not None:
+        os.environ["CHAT_TURN_MAX_LLM_CALLS"] = str(args.turn_max_llm_calls)
+    if args.turn_max_tokens is not None:
+        os.environ["CHAT_TURN_MAX_TOKENS"] = str(args.turn_max_tokens)
     logging.basicConfig(level=logging.ERROR)
     report = evaluate(args.mode, args.limit)
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -249,7 +249,7 @@ python -m app.eval.run_reference --output artifacts/reference.json
 python -m app.eval.compare artifacts/baseline.json artifacts/candidate.json --output artifacts/comparison.json
 
 # 先预览8类场景的小规模计划，不启动应用、不调用模型
-python -m app.eval.run_e2e --mode real --plan-only --limit 8 --output artifacts/real-plan.json
+python -m app.eval.run_e2e --mode real --plan-only --limit 8 --turn-max-llm-calls 8 --turn-max-tokens 20000 --output artifacts/real-plan.json
 
 # 实际真实模型模式会产生费用，必须显式授权
 python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e-real.json
@@ -257,7 +257,7 @@ python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e
 
 [参考语料](examples/reference_eval/)含 5 份虚构资料，[开发集](app/eval/reference_cases.json)含 15 个有相关资料的问题与 2 个库外问题。已测文档 Recall@1 为 **0.90**、Recall@5 为 **1.00**，两个库外问题均无结果；门槛为 Recall@5 ≥ 0.80 且库外问题无结果。指标按文件去重，版本 2 区分 Recall 与 HitRate；合成开发集不能证明真实用户问题或生成答案质量。
 
-逐例比较要求模式、模型、语料、检索后端、案例内容指纹和案例 ID 集合一致；案例含义改变后需建立新基线。模拟 E2E 验证程序契约；真实模式运行 80 条流程用例，排除模拟故障与模拟跨用户 SQL 场景。真实模型保留集、向量/混合检索消融和生产负载验收仍待完成。
+逐例比较要求模式、模型、语料、检索后端、案例内容指纹和案例 ID 集合一致；案例含义改变后需建立新基线。模拟 E2E 验证程序契约；真实模式运行 80 条流程用例，排除模拟故障与模拟跨用户 SQL 场景。`--turn-max-llm-calls` 和 `--turn-max-tokens` 可覆盖评估中每轮的Harness预算，计划及执行报告都会记录；它们不是总token、供应商重试次数或货币账单上限。真实模型保留集、向量/混合检索消融和生产负载验收仍待完成。
 
 ## 部署与持续集成
 
