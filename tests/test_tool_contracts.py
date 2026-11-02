@@ -70,10 +70,11 @@ def test_catalog_is_the_runtime_contract_and_hides_internal_actions():
         TOOLS["untrusted"] = None
 
 
-def test_internal_confirmation_cannot_be_selected_by_model():
+@pytest.mark.parametrize('action', ['ask_user_confirm_balance', 'revise_proposal'])
+def test_internal_confirmation_cannot_be_selected_by_model(action):
     operation = Mock()
-    ctx = CallContext("tool", "tool:ask_user_confirm_balance", "alice",
-                      payload={"action": "ask_user_confirm_balance", "args": {}})
+    ctx = CallContext("tool", f"tool:{action}", "alice",
+                      payload={"action": action, "args": {}})
     with pytest.raises(PolicyViolation):
         tool_chain().invoke(ctx, operation)
     operation.assert_not_called()

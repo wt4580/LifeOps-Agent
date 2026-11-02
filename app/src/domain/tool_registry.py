@@ -169,7 +169,7 @@ _SPECS = (
     ToolSpec("query_calendar", "查询日历日程", CalendarArgs, "read"),
     ToolSpec("propose_todo", "生成待办草案，用户确认后才写入", TodoArgs, "proposal", "required"),
     ToolSpec("ask_user_confirm_proposal", "生成待办草案并等待确认", TodoArgs, "proposal", "required"),
-    ToolSpec("revise_proposal", "按修改要求重新生成待办草案", RevisionArgs, "proposal", "required"),
+    ToolSpec("revise_proposal", "按修改要求重新生成服务端已有待办草案", RevisionArgs, "proposal", "required", False),
     ToolSpec("decompose_goal", "拆解并保存长期目标及子目标，不自动创建待办", GoalArgs, "write"),
     ToolSpec("clarify", "询问缺少的关键信息，问题放在 assistant_message", EmptyArgs, "conversation"),
     ToolSpec("revive_topic", "用户主动提起旧话题时找回其记录", TopicArgs, "read"),

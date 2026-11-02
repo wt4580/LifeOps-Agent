@@ -428,7 +428,7 @@ def _node_decompose(state: ChatState, *, _repair_reason: str | None = None) -> C
         "可用工具、参数 schema、副作用与确认要求见输入 tools；只选择其中列出的动作，禁止构造确认或其他内部动作。\n"
         "参数不能包含用户身份或权限；身份由服务端提供。不要猜金额、账户名或未提供的事实，缺少关键信息时先查库再澄清。\n"
         "待办日期为 YYYY-MM-DD，时间为 HH:MM；周期为 once/daily/weekly。每天/每周的持续范围需计算结束日期并设置 repeat_until。\n"
-        "创建草案不等于创建待办；必须等用户确认。修改草案使用 revise_proposal。\n\n"
+        "创建草案不等于创建待办；必须等用户确认。已有草案的修改由服务端确认上下文处理，不要构造内部修改动作。\n\n"
         "同一消息的多条待办应放在同一份草案中统一展示并确认，不要逐条索取确认。"
         "可使用 propose_todo，text 保留用户完整请求，不填只覆盖其中一项的 title。\n"
         "## 纯闲聊判断\n"
@@ -1721,7 +1721,11 @@ def _node_run_tool(state: ChatState) -> ChatState:
         session_id=session_id,
         turn=get_turn_context(session_id),
         payload={"action": action, "args": decision.get("args") if decision.get("args") is not None else {},
-                 "internal_authorized": action == "ask_user_confirm_balance" and bool(state.get("pending_balance_update"))},
+                 "internal_authorized": (
+                     action == "ask_user_confirm_balance" and bool(state.get("pending_balance_update"))
+                 ) or (
+                     action == "revise_proposal" and bool(state.get("superseded_proposal_id") or state.get("proposal_id"))
+                 )},
     )
     try:
         from ..service.idempotency import write_scope
