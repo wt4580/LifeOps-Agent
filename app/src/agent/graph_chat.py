@@ -1328,8 +1328,10 @@ def _run_tool_impl(state: ChatState) -> ChatState:
 
     if action in ("ask_user_confirm_proposal", "propose_todo"):
         title = args.get("title")
-        pending_text = args.get("text") or state["user_message"]
         plan = state.get("plan") or []
+        # A standalone request has an authoritative source: the user's words.
+        # Router-generated text may accidentally invent extra tasks or facts.
+        pending_text = (args.get("text") or state["user_message"]) if plan else state["user_message"]
         # A planner may emit one proposal step per task. Present all of those
         # drafts together so a single confirmation applies to the displayed batch.
         batch = (len(plan) > 1 and state.get("plan_index", 0) == 0

@@ -79,6 +79,19 @@ def test_multi_clause_request_cannot_be_reduced_to_router_single_title():
     assert len(result["proposal"]["items"]) == 2
 
 
+def test_standalone_proposal_uses_user_words_instead_of_router_inventions():
+    from app.src.domain.dto.planner_dto import PlanItem, PlanProposal
+    message = '明天下午4点开会，地点A301'
+    state = {'session_id': 'source-test', 'user_message': message,
+             'decision': {'action': 'propose_todo', 'args': {'text': '修改会议时间，并更新会议地点'}}}
+    with patch.object(gc, 'propose_plan', return_value=('draft-id', PlanProposal(items=[
+        PlanItem(title='开会', due_at='2026-11-03T16:00:00')
+    ]))) as planner:
+        result = gc._run_tool_impl(state)
+    planner.assert_called_once_with(message, session_id='source-test')
+    assert len(result['proposal']['items']) == 1
+
+
 class TestBuildProposalItemDurationFallback:
     def test_week_daily_until_computed(self):
         item = _build_proposal_item(
