@@ -11,6 +11,12 @@
 /.jenkins/
 /kubeconfig
 /kubeconfig.*
+/.ssh/
+/.netrc
+/.git-credentials
+/.pypirc
+/.npmrc
+.envrc
 
 # Python environments, caches and build output.
 .venv*/
@@ -25,9 +31,18 @@ __pycache__/
 .mypy_cache/
 .tox/
 .nox/
+.cache/
+.ipynb_checkpoints/
 .coverage
 .coverage.*
 htmlcov/
+coverage/
+coverage.xml
+junit*.xml
+node_modules/
+playwright-report/
+test-results/
+blob-report/
 *.egg-info/
 /build/
 /dist/
@@ -40,6 +55,7 @@ htmlcov/
 *.sqlite3
 *.sqlite3-*
 *.log
+*.log.*
 /data/
 /app/data/
 /app/src/data/*
@@ -60,13 +76,29 @@ model*.bin
 *.pth
 *.ckpt
 *.faiss
+index.pkl
+*.gguf
+.huggingface/
 
 # Local IDE / agent state and separate projects.
 .idea/
 .vscode/
 .opencode/
 /.codex/
+/.agents/
+/gif_file/
 LifeOps-Android/
 
 # Local documentation and working notes.
-docs/*.md
+/docs/**/*.md
+
+# OS metadata and editor scratch files; retain application/showcase assets.
+.DS_Store
+Thumbs.db
+[Dd]esktop.ini
+*.swp
+*.swo
+*.tmp
+*.temp
+*.bak
+*~
