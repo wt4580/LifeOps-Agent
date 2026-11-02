@@ -1,0 +1,157 @@
+{
+  "meta": {
+    "mode": "real",
+    "simulated_provider": false,
+    "model_quality_measured": true,
+    "scope": "in-process HTTP/SSE + real graph + isolated SQLite; not network/load benchmark",
+    "timestamp": "2026-11-02T05:06:40.521326+00:00",
+    "model": "qwen3.8-flash",
+    "revision": "f63be06",
+    "source_sha256": "3b86e5dbba9d3072f9daf7235652ff764630322c65b8e483865db0aefbb72b48",
+    "python": "3.12.7",
+    "working_tree_may_be_dirty": true,
+    "corpus_sha256": "2309b5d1e0b6edf92c77f9a76586102c9a1f6b3dafb4d4fc743bf3958a42ba4f",
+    "cases_sha256": "1f675201e4e71658ff2003ac0decd574c72f42188398944349854f754c6f6cd2",
+    "backend": "bm25",
+    "model_options": {
+      "enable_thinking": false,
+      "json_mode_enabled": true,
+      "stream_include_usage": true
+    },
+    "turn_limits": {
+      "max_llm_calls": 8,
+      "max_tokens": 20000,
+      "monetary_cap_enforced": false
+    }
+  },
+  "metrics": {
+    "n_cases": 5,
+    "passed": 5,
+    "contract_pass_rate": 1.0,
+    "latency_p50_ms": 5326.36,
+    "latency_p95_ms": 11029.54
+  },
+  "groups": {
+    "account_confirmation": {
+      "n": 5,
+      "passed": 5
+    }
+  },
+  "usage": {
+    "llm_calls_observed": 20,
+    "reported_tokens_observed": 46682,
+    "budget_charged_tokens": 46682,
+    "usage_missing_calls": 0,
+    "usage_complete": true,
+    "simulated": false,
+    "monetary_cost_measured": false,
+    "scope": "harness observations; failures may lack final summaries; budget charges are not provider invoices"
+  },
+  "cases": [
+    {
+      "id": "account-1",
+      "group": "account_confirmation",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 12291.11,
+      "llm_calls": 4,
+      "reported_tokens": 9341,
+      "charged_tokens": 9341,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-5",
+      "group": "account_confirmation",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 4495.07,
+      "llm_calls": 4,
+      "reported_tokens": 9340,
+      "charged_tokens": 9340,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-6",
+      "group": "account_confirmation",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 5187.31,
+      "llm_calls": 4,
+      "reported_tokens": 9342,
+      "charged_tokens": 9342,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-7",
+      "group": "account_confirmation",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 5326.36,
+      "llm_calls": 4,
+      "reported_tokens": 9340,
+      "charged_tokens": 9340,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-9",
+      "group": "account_confirmation",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 5983.25,
+      "llm_calls": 4,
+      "reported_tokens": 9319,
+      "charged_tokens": 9319,
+      "usage_missing_calls": 0
+    }
+  ]
+}

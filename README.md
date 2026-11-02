@@ -281,6 +281,8 @@ python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e
 
 启用 JSON 约束后，[原失败子集复测](app/eval/reports/real-flash-json-failure-retest.json)为 **14/15 通过**，观察到 43 次调用、102,512 个供应商报告 token；`account-6` 仍因主规划结构校验失败而未完成余额更新。开启该配置的 100 条离线契约全部通过。本次只复测原失败子集，不能拼接旧基线中的通过案例，声称新版已通过 79/80 或完整回归；输出结构稳定性及完整真实验收仍未完成。
 
+规划失败现提供固定枚举 `validation_reason`，区分 JSON 语法、规划信封、模式、助手消息、动作、参数及策略校验，不保存原始模型输出。加入分类后的[五个账户定向样本](app/eval/reports/real-flash-account-classified-sample.json)为 5/5 通过，但未复现此前偶发失败，不能据此认定已修复。
+
 ## 部署与持续集成
 
 | 组件 | 配置入口 | 说明 |
