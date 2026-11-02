@@ -1,0 +1,66 @@
+{
+  "meta": {
+    "mode": "real",
+    "simulated_provider": false,
+    "model_quality_measured": true,
+    "scope": "in-process HTTP/SSE + real graph + isolated SQLite; not network/load benchmark",
+    "timestamp": "2026-11-02T04:31:03.844724+00:00",
+    "model": "qwen3.8-flash",
+    "revision": "c8d672b",
+    "source_sha256": "5c8ce39885d380c85548532cf5c1f99e3532989c90d2985070e49027d45f15a4",
+    "python": "3.12.7",
+    "working_tree_may_be_dirty": true,
+    "corpus_sha256": "2309b5d1e0b6edf92c77f9a76586102c9a1f6b3dafb4d4fc743bf3958a42ba4f",
+    "cases_sha256": "63d684dd9a106f1c95934e11000b7bb36103389bfc0e3dafea0acbf030898673",
+    "backend": "bm25",
+    "turn_limits": {
+      "max_llm_calls": 8,
+      "max_tokens": 20000,
+      "monetary_cap_enforced": false
+    }
+  },
+  "metrics": {
+    "n_cases": 1,
+    "passed": 0,
+    "contract_pass_rate": 0.0,
+    "latency_p50_ms": 240261.12,
+    "latency_p95_ms": 240261.12
+  },
+  "groups": {
+    "multi_date": {
+      "n": 1,
+      "passed": 0
+    }
+  },
+  "usage": {
+    "llm_calls_observed": 2,
+    "reported_tokens_observed": 0,
+    "budget_charged_tokens": 40000,
+    "usage_missing_calls": 2,
+    "usage_complete": false,
+    "simulated": false,
+    "monetary_cost_measured": false,
+    "scope": "harness observations; failures may lack final summaries; budget charges are not provider invoices"
+  },
+  "cases": [
+    {
+      "id": "multi-0",
+      "group": "multi_date",
+      "passed": false,
+      "error": "AssertionError: todo count 0",
+      "execution": {
+        "turn_statuses": [
+          "budget_exceeded",
+          "budget_exceeded"
+        ],
+        "budget_exceeded": true,
+        "stream_error_codes": []
+      },
+      "latency_ms": 240261.12,
+      "llm_calls": 2,
+      "reported_tokens": 0,
+      "charged_tokens": 40000,
+      "usage_missing_calls": 2
+    }
+  ]
+}
