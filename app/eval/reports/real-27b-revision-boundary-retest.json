@@ -1,0 +1,116 @@
+{
+  "meta": {
+    "mode": "real",
+    "simulated_provider": false,
+    "model_quality_measured": true,
+    "scope": "in-process HTTP/SSE + real graph + isolated SQLite; not network/load benchmark",
+    "timestamp": "2026-11-02T05:56:54.273753+00:00",
+    "model": "qwen3.8-27b",
+    "revision": "9bcb43e",
+    "source_sha256": "9bea5c264cfdf06e0c0e4276a2ed51ffcfbe705769104c225c1ed25e02b7fb40",
+    "python": "3.12.7",
+    "working_tree_may_be_dirty": true,
+    "corpus_sha256": "2309b5d1e0b6edf92c77f9a76586102c9a1f6b3dafb4d4fc743bf3958a42ba4f",
+    "cases_sha256": "2a01e3046419099e207f1732d199db556084c701d8d2dd5d31df749d1b0fcbc6",
+    "backend": "bm25",
+    "model_options": {
+      "enable_thinking": false,
+      "planner_format_repair_enabled": true,
+      "json_mode_enabled": true,
+      "stream_include_usage": true
+    },
+    "turn_limits": {
+      "max_llm_calls": 8,
+      "max_tokens": 20000,
+      "monetary_cap_enforced": false
+    }
+  },
+  "metrics": {
+    "n_cases": 3,
+    "passed": 3,
+    "contract_pass_rate": 1.0,
+    "latency_p50_ms": 4553.0,
+    "latency_p95_ms": 11406.93
+  },
+  "groups": {
+    "todo_revise": {
+      "n": 3,
+      "passed": 3
+    }
+  },
+  "usage": {
+    "llm_calls_observed": 9,
+    "reported_tokens_observed": 14063,
+    "budget_charged_tokens": 14063,
+    "usage_missing_calls": 0,
+    "usage_complete": true,
+    "simulated": false,
+    "monetary_cost_measured": false,
+    "scope": "harness observations; failures may lack final summaries; budget charges are not provider invoices"
+  },
+  "cases": [
+    {
+      "id": "revise-0",
+      "group": "todo_revise",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 12168.48,
+      "llm_calls": 3,
+      "reported_tokens": 4685,
+      "charged_tokens": 4685,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "revise-3",
+      "group": "todo_revise",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 4278.76,
+      "llm_calls": 3,
+      "reported_tokens": 4685,
+      "charged_tokens": 4685,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "revise-8",
+      "group": "todo_revise",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 4553.0,
+      "llm_calls": 3,
+      "reported_tokens": 4693,
+      "charged_tokens": 4693,
+      "usage_missing_calls": 0
+    }
+  ]
+}
