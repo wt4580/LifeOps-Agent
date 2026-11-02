@@ -478,7 +478,8 @@ def _node_decompose(state: ChatState, *, _repair_reason: str | None = None) -> C
     from ..common.domain.model_errors import ModelOutputIncompleteError
     try:
         raw = chat_completion(
-            [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+            [{"role": "system", "content": system},
+             {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))}],
             temperature=0.0,
             runtime_context={"scenario": "decompose", "session_id": state.get("session_id")},
             json_mode=True,

@@ -191,7 +191,8 @@ def tool_catalog():
     """Compact JSON schemas without repeated titles; generated from executable models."""
     def compact(value):
         if isinstance(value, dict):
-            return {k: compact(v) for k, v in value.items() if k != "title" or isinstance(v, dict)}
+            return {k: compact(v) for k, v in value.items()
+                    if (k != "title" or isinstance(v, dict)) and not (k == "default" and v is None)}
         if isinstance(value, list):
             return [compact(v) for v in value]
         return value
