@@ -269,6 +269,8 @@ python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e
 
 2026-11-02 的 [多日期单案例真实复测](app/eval/reports/real-flash-multi-timeout.json)未通过：两轮均达到 120 秒上限，最终零条待办；无供应商用量返回，40,000 是保守预留扣账，不是已测实际 token。该结果不能证明修复后的真实模型任务成功，模型服务延迟与配置仍需排查。
 
+支持混合思考的 Qwen 模型可显式设置 `LLM_ENABLE_THINKING=false` 评估交互延迟；省略此配置时不向供应商发送该字段。`true` 表示启用思考，仅支持思考的模型不可关闭，其他兼容服务需确认参数支持情况。流式用量可设置 `LLM_STREAM_INCLUDE_USAGE=true`。参数按[供应商文档](https://www.alibabacloud.com/help/en/model-studio/deep-thinking)通过 `extra_body` 发送；执行报告记录配置，配置或预算不一致时拒绝直接作为同条件回归比较，需另建基线。
+
 ## 部署与持续集成
 
 | 组件 | 配置入口 | 说明 |

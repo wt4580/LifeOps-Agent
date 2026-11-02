@@ -5,6 +5,9 @@ from pathlib import Path
 
 
 def compare(baseline, candidate):
+    for key in ("model_options", "turn_limits"):
+        if baseline["meta"].get(key) != candidate["meta"].get(key):
+            raise ValueError(f"Incomparable report metadata: {key}")
     for key in ("mode", "model", "corpus_sha256", "cases_sha256", "backend", "simulated_provider"):
         before, after = baseline["meta"].get(key), candidate["meta"].get(key)
         if before is None or after is None or before != after:

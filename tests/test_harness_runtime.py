@@ -32,6 +32,24 @@ def client_for(monkeypatch, response=None, error=None):
     return client, create
 
 
+@pytest.mark.parametrize("thinking", [None, False, True])
+@pytest.mark.parametrize("streaming", [False, True])
+def test_thinking_option_is_explicit_and_optional(monkeypatch, thinking, streaming):
+    response = None
+    if streaming:
+        response = iter([SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="hello"), finish_reason="stop")])])
+    _, create = client_for(monkeypatch, response=response)
+    monkeypatch.setattr(settings, "llm_enable_thinking", thinking)
+    monkeypatch.setattr(settings, "demo_mode", False)
+    llm_config.chat_completion([{"role": "user", "content": "hello"}],
+                               on_token=(lambda _: None) if streaming else None)
+    if thinking is None:
+        assert "extra_body" not in create.call_args.kwargs
+    else:
+        assert create.call_args.kwargs["extra_body"] == {"enable_thinking": thinking}
+
+
 @pytest.fixture(autouse=True)
 def audit_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "harness_trace_dir", str(tmp_path / "audit"))

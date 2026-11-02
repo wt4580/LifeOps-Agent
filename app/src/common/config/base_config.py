@@ -196,6 +196,7 @@ class Settings(BaseSettings):
     chat_turn_max_tokens: int = Field(default=120000, ge=1)
     llm_max_output_tokens: int = Field(default=4096, ge=1)
     llm_stream_include_usage: bool = False
+    llm_enable_thinking: bool | None = None
     background_max_llm_calls: int = Field(default=8, ge=0)
     background_deadline_seconds: float = Field(default=90.0, gt=0)
     background_max_tokens: int = Field(default=40000, ge=1)

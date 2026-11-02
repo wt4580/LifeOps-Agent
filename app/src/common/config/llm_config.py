@@ -157,6 +157,8 @@ def chat_completion(
             kwargs = dict(model=get_llm_model(), messages=enriched_messages, temperature=temperature,
                           max_tokens=output_limit,
                           timeout=max(0.001, min(30.0, turn.budget.remaining_seconds())) if turn else 30.0)
+            if settings.llm_enable_thinking is not None:
+                kwargs["extra_body"] = {"enable_thinking": settings.llm_enable_thinking}
             ensure_turn_active()
             if on_token:
                 if settings.llm_stream_include_usage:

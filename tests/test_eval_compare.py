@@ -5,6 +5,14 @@ import pytest
 from app.eval.compare import compare
 
 
+@pytest.mark.parametrize("key", ["model_options", "turn_limits"])
+def test_execution_configuration_changes_require_a_new_baseline(key):
+    before, after = report(), report()
+    after['meta'][key] = {'changed': True}
+    with pytest.raises(ValueError, match=key):
+        compare(before, after)
+
+
 def report():
     return {"meta": {"mode": "contract", "model": "demo", "corpus_sha256": "corpus",
                      "backend": "bm25", "simulated_provider": True, "cases_sha256": "cases"},
