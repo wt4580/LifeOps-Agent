@@ -271,6 +271,8 @@ python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e
 
 支持混合思考的 Qwen 模型可显式设置 `LLM_ENABLE_THINKING=false` 评估交互延迟；省略此配置时不向供应商发送该字段。`true` 表示启用思考，仅支持思考的模型不可关闭，其他兼容服务需确认参数支持情况。流式用量可设置 `LLM_STREAM_INCLUDE_USAGE=true`。参数按[供应商文档](https://www.alibabacloud.com/help/en/model-studio/deep-thinking)通过 `extra_body` 发送；执行报告记录配置，配置或预算不一致时拒绝直接作为同条件回归比较，需另建基线。
 
+关闭思考并启用流式用量后，[修复后首批真实回归](app/eval/reports/real-flash-no-thinking-pilot.json)为 **7/8**：多日期待办通过，账户余额变更未通过（第二轮工具失败，第三轮仍待确认）。观察到 19 次调用、48,912 个供应商报告 token；案例总耗时 P50/P95 为 4.8/11.4 秒。该配置变化和代码修复同时存在，不能据此单独归因性能改善。原文保留修复后的离线契约再次 **100/100** 通过；完整真实回归、重复采样稳定性和账户失败定位仍开放。
+
 ## 部署与持续集成
 
 | 组件 | 配置入口 | 说明 |
