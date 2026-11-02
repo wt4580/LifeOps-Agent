@@ -306,7 +306,7 @@ def _business_db_inventory_text() -> str:
     return "\n".join(lines)
 
 
-def _node_decompose(state: ChatState) -> ChatState:
+def _node_decompose(state: ChatState, *, _repair_reason: str | None = None) -> ChatState:
     if state.get("turn_aborted"):
         return state
     msg = (state.get("user_message") or "").strip()
@@ -468,6 +468,13 @@ def _node_decompose(state: ChatState) -> ChatState:
         "它不证明操作已提交，也不证明用户当前状态。涉及完成情况、金额、账户、待办状态时，"
         "先查询当前身份的业务记录；摘要截断或信息不足时查询或澄清，不要补造事实。"
     )
+    if _repair_reason is not None:
+        system += (
+            f"\n上一响应未通过服务端结构校验（{_repair_reason}）。"
+            "这次只依据原用户请求重新输出完整、严格的 JSON，遵守 tools 中的参数 schema。"
+            "不要输出解释文字，不要猜测缺失事实；缺少事实时选择只读查询或 clarify。"
+            "本次被拒绝的规划未执行任何工具，不要声称操作已经完成。"
+        )
     from ..common.domain.model_errors import ModelOutputIncompleteError
     try:
         raw = chat_completion(
@@ -558,6 +565,12 @@ def _node_decompose(state: ChatState) -> ChatState:
             )
     except Exception as exc:
         logger.warning("decompose failed error_type=%s", type(exc).__name__)
+        if (_repair_reason is None and settings.planner_format_repair_enabled
+                and validation_reason in {"json_syntax", "envelope", "mode", "assistant_message",
+                                          "plan_size", "plan_step", "arguments"}):
+            _append_trace(state, _trace_step(step_type="postprocess", name="planner_format_repair",
+                                            output={"reason": validation_reason, "attempt": 1}))
+            return _node_decompose(state, _repair_reason=validation_reason)
         from ..common.domain.model_errors import ModelOutputInvalidError
         state["tool_error"], state["answer"] = failure_result(
             ModelOutputInvalidError(), action="planner", effect="conversation", committed={})

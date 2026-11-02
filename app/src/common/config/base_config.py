@@ -198,6 +198,7 @@ class Settings(BaseSettings):
     llm_stream_include_usage: bool = False
     llm_enable_thinking: bool | None = None
     llm_json_mode_enabled: bool = False
+    planner_format_repair_enabled: bool = True
     background_max_llm_calls: int = Field(default=8, ge=0)
     background_deadline_seconds: float = Field(default=90.0, gt=0)
     background_max_tokens: int = Field(default=40000, ge=1)

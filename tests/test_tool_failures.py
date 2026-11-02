@@ -326,7 +326,7 @@ def test_invalid_planning_does_not_fallback_to_success(monkeypatch, raw):
     result = graph.run_chat_graph(compiled_graph=graph.build_chat_graph(checkpointer=MemorySaver()),
                                   session_id="invalid-plan", user_message="record an expense")
     assert result["tool_error"]["code"] == "model_output_invalid"
-    assert planner.call_count == 1
+    assert planner.call_count == (2 if raw in ('not json', '[]') else 1)
     assert result["plan"] == []
 
 
@@ -385,6 +385,7 @@ def test_late_sql_policy_violation_prevents_earlier_write(monkeypatch, sql):
                                   session_id="sql-plan", user_message="record then query")
     assert result["tool_error"]["code"] == "model_output_invalid"
     write.assert_not_called()
+    assert planner.call_count == 1
 
 
 @pytest.mark.parametrize("payload", [{}, {"action": "ask_user_confirm_balance"},
@@ -398,7 +399,57 @@ def test_single_action_planner_contract_is_explicit(monkeypatch, payload):
     result = graph.run_chat_graph(compiled_graph=graph.build_chat_graph(checkpointer=MemorySaver()),
                                   session_id="invalid-single", user_message="process a task")
     assert result["tool_error"]["code"] == "model_output_invalid"
+    assert planner.call_count == (1 if payload in ({}, {"action": "ask_user_confirm_balance"}) else 2)
+
+
+def test_planner_format_repair_precedes_any_write_and_runs_once(business, monkeypatch):
+    rejected = json.dumps({'needs_plan': True, 'steps': [
+        {'action': 'record_expense', 'args': {'amount': 999}},
+        {'action': 'record_expense', 'args': {'amount': 'bad'}}]})
+    responses = iter([rejected, json.dumps({'action': 'record_expense', 'args': {'amount': 10}, 'mode': 'quick'})])
+    def complete(*args, **kwargs):
+        if kwargs.get('runtime_context', {}).get('scenario') != 'decompose':
+            return '{"passed":true}'
+        with business() as db:
+            assert db.scalar(select(func.count()).select_from(Transaction)) == 0
+        return next(responses)
+    planner = Mock(side_effect=complete)
+    monkeypatch.setattr(graph, 'chat_completion', planner)
+    result = graph.run_chat_graph(compiled_graph=graph.build_chat_graph(checkpointer=MemorySaver()),
+                                  session_id='repair-write', user_message='记账10元')
+    assert not result.get('tool_error')
+    planning_calls = [call for call in planner.call_args_list
+                      if call.kwargs.get('runtime_context', {}).get('scenario') == 'decompose']
+    assert len(planning_calls) == 2
+    assert '原用户请求' in planning_calls[1].args[0][0]['content']
+    with business() as db:
+        rows = db.scalars(select(Transaction)).all()
+        assert len(rows) == 1 and rows[0].amount == -10
+    assert sum(step['name'] == 'planner_format_repair' for step in result['trace']['steps']) == 1
+
+
+def test_planner_format_repair_can_be_disabled(monkeypatch):
+    monkeypatch.setattr(graph.settings, 'planner_format_repair_enabled', False)
+    planner = Mock(return_value='not json')
+    monkeypatch.setattr(graph, 'chat_completion', planner)
+    result = graph.run_chat_graph(compiled_graph=graph.build_chat_graph(checkpointer=MemorySaver()),
+                                  session_id='disabled-repair', user_message='记账10元')
+    assert result['tool_error']['code'] == 'model_output_invalid'
     assert planner.call_count == 1
+
+
+def test_planner_format_repair_does_not_reset_turn_budget(monkeypatch):
+    from app.src.common.harness.context import get_turn_context
+    monkeypatch.setattr(graph.settings, 'chat_turn_max_llm_calls', 1)
+    provider = Mock(return_value='not json')
+    def complete(*args, **kwargs):
+        get_turn_context('repair-budget').budget.before_call('llm')
+        return provider()
+    monkeypatch.setattr(graph, 'chat_completion', complete)
+    result = graph.run_chat_graph(compiled_graph=graph.build_chat_graph(checkpointer=MemorySaver()),
+                                  session_id='repair-budget', user_message='记账10元')
+    assert result['turn_aborted'] is True
+    assert provider.call_count == 1
 
 
 @pytest.mark.parametrize("summary", ["old task context", "x" * 7000])
