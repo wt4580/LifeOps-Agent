@@ -283,6 +283,10 @@ python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e
 
 规划失败现提供固定枚举 `validation_reason`，区分 JSON 语法、规划信封、模式、助手消息、动作、参数及策略校验，不保存原始模型输出。加入分类后的[五个账户定向样本](app/eval/reports/real-flash-account-classified-sample.json)为 5/5 通过，但未复现此前偶发失败，不能据此认定已修复。
 
+主规划在工具执行前遇到 JSON/信封/字段结构或参数校验失败时，默认允许一次格式修正；第二次仍失败则终止。修正依据原始用户请求和工具契约，不把无效响应当作已执行操作，之后仍须通过全量计划校验。未知或内部动作、权限策略拒绝、供应商故障及业务写入不会因此自动重试。修正共用本轮模型调用、token 与时间预算，跟踪记录 `planner_format_repair`；可通过 `PLANNER_FORMAT_REPAIR_ENABLED=false` 关闭，评估报告记录开关。
+
+加入受限格式修正后，相关测试 **144 项通过**，开启 JSON 模式的离线契约 **100/100 通过**。[8 类真实小批回归](app/eval/reports/real-flash-repair-pilot.json)为 **8/8 通过**，观察到 18 次调用、40,114 个供应商报告 token，用量均有返回；案例总耗时 P50/P95 为 5.3/7.9 秒。该结果仅覆盖首批 8 类合成流程，不能代替新版完整 80 条回归、保留集或重复采样稳定性验收，也不能单独证明格式修正导致成功率提升。
+
 ## 部署与持续集成
 
 | 组件 | 配置入口 | 说明 |
