@@ -275,6 +275,10 @@ python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e
 
 补充脱敏工具失败诊断后，[账户确认定向抽样](app/eval/reports/real-flash-account-sample.json)为 3/3 通过，尚未复现此前失败；这不是账户偶发问题已解决的证据。执行诊断只保留动作名、错误码和异常类型，不保存工具参数及原始错误消息。
 
+完整 [80 条真实流程基线](app/eval/reports/real-flash-full-baseline.json)通过 **65/80（81.25%）**，观察到 207 次模型调用、504,049 个供应商报告 token；案例总耗时 P50/P95 为 5.7/14.2 秒。失败案例均有规划输出无效或 JSON 解析失败记录，尚未达到发布验收要求。该集合是公开合成流程开发集，不是保留集，也不是实际用户任务准确率。
+
+`LLM_JSON_MODE_ENABLED=true` 可为主规划、待办草案、日期解析和独立路由启用 `response_format={"type":"json_object"}`；普通回答不启用。默认关闭，以适配不同供应商；使用 Qwen 时需确认模型支持并设置非思考模式。JSON 模式只保证合法 JSON，不保证字段、权限或业务正确性，服务端校验继续执行；不支持的服务返回错误时不会悄悄降级或重试写操作。详见[结构化输出文档](https://www.alibabacloud.com/help/en/model-studio/qwen-structured-output)。
+
 ## 部署与持续集成
 
 | 组件 | 配置入口 | 说明 |
