@@ -42,6 +42,30 @@ class TestInferDurationDays:
         assert _infer_duration_days(None) is None
 
 
+def test_multi_todo_plan_is_presented_as_one_confirmation_without_writes():
+    steps = [{"action": "propose_todo", "args": {"title": title, "due_date": date}}
+             for title, date in [("开会", "2026-11-03"), ("交报告", "2026-11-04")]]
+    state = {"session_id": "batch-test", "user_message": "明天开会，后天交报告",
+             "plan": steps, "plan_index": 0, "decision": steps[0]}
+    with patch.object(gc, "propose_plan", side_effect=AssertionError("structured tasks need no new model call")):
+        out = gc._run_tool_impl(state)
+    assert [(item["title"], item["due_at"]) for item in out["proposal"]["items"]] == [
+        ("开会", "2026-11-03"), ("交报告", "2026-11-04")]
+    assert out["plan"] == []
+    assert "全部加入" in out["interrupt_message"]
+    assert "开会" in out["interrupt_message"] and "交报告" in out["interrupt_message"]
+
+
+def test_mixed_plan_keeps_separate_operations():
+    steps = [{"action": "propose_todo", "args": {"title": "开会"}},
+             {"action": "query_todos", "args": {}}]
+    state = {"session_id": "batch-test", "user_message": "开会，然后查询待办",
+             "plan": steps, "plan_index": 0, "decision": steps[0]}
+    out = gc._run_tool_impl(state)
+    assert len(out["proposal"]["items"]) == 1
+    assert out["plan"] == steps
+
+
 class TestBuildProposalItemDurationFallback:
     def test_week_daily_until_computed(self):
         item = _build_proposal_item(

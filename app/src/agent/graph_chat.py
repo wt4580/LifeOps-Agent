@@ -429,6 +429,8 @@ def _node_decompose(state: ChatState) -> ChatState:
         "参数不能包含用户身份或权限；身份由服务端提供。不要猜金额、账户名或未提供的事实，缺少关键信息时先查库再澄清。\n"
         "待办日期为 YYYY-MM-DD，时间为 HH:MM；周期为 once/daily/weekly。每天/每周的持续范围需计算结束日期并设置 repeat_until。\n"
         "创建草案不等于创建待办；必须等用户确认。修改草案使用 revise_proposal。\n\n"
+        "同一消息的多条待办应放在同一份草案中统一展示并确认，不要逐条索取确认。"
+        "可使用 propose_todo，text 保留用户完整请求，不填只覆盖其中一项的 title。\n"
         "## 纯闲聊判断\n"
         "如果用户只是打招呼、寒暄、说心情、纯聊天，没有任何查询/操作意图：\n"
         '- action 设为 "normal_chat"\n'
@@ -1300,7 +1302,26 @@ def _run_tool_impl(state: ChatState) -> ChatState:
     if action in ("ask_user_confirm_proposal", "propose_todo"):
         title = args.get("title")
         pending_text = args.get("text") or state["user_message"]
-        if title:
+        plan = state.get("plan") or []
+        # A planner may emit one proposal step per task. Present all of those
+        # drafts together so a single confirmation applies to the displayed batch.
+        batch = (len(plan) > 1 and state.get("plan_index", 0) == 0
+                 and all(step.get("action") == "propose_todo" for step in plan))
+        if batch:
+            items = []
+            for step in plan:
+                step_args = validate_tool_args("propose_todo", step.get("args") or {})
+                text = step_args.get("text") or state["user_message"]
+                if step_args.get("title"):
+                    items.append(_build_proposal_item(step_args, text))
+                else:
+                    _, proposal = propose_plan(text, session_id=state.get("session_id"))
+                    items.extend(proposal.model_dump()["items"])
+            proposal_id = str(uuid4())
+            proposal_payload = {"items": items}
+            state["plan"] = []
+            state["plan_index"] = 0
+        elif title:
             proposal_id = str(uuid4())
             proposal_payload = {"items": [_build_proposal_item(args, pending_text)]}
         else:

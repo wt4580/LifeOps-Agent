@@ -51,6 +51,32 @@ def test_read_failure_stops_dependent_write_and_is_not_a_successful_call(busines
     write.assert_not_called()
 
 
+@pytest.mark.parametrize("reply,expected", [("确认", 2), ("取消", 0)])
+def test_multi_todo_graph_uses_one_batch_confirmation(business, monkeypatch, reply, expected):
+    from app.src.domain.entity.chat_entity import TodoItem
+    steps = [{"action": "propose_todo", "args": {"title": title, "due_date": date}}
+             for title, date in [("开会", "2026-11-03"), ("交报告", "2026-11-04")]]
+    planner = Mock(return_value=json.dumps({"needs_plan": True, "mode": "quick", "steps": steps}))
+    monkeypatch.setattr(graph, "chat_completion", planner)
+    compiled = graph.build_chat_graph(checkpointer=MemorySaver())
+    async def scenario():
+        first = await graph.arun_chat_graph(compiled_graph=compiled, session_id="batch-user",
+                                           user_message="明天开会，后天交报告")
+        assert len(first["proposal"]["items"]) == 2
+        with business() as db:
+            assert db.scalar(select(func.count()).select_from(TodoItem)) == 0
+        final = await graph.arun_chat_graph(compiled_graph=compiled, session_id="batch-user", user_message=reply)
+        assert not final.get("proposal")
+        assert not final.get("__interrupt__")
+    asyncio.run(scenario())
+    with business() as db:
+        rows = db.scalars(select(TodoItem).order_by(TodoItem.id)).all()
+        assert len(rows) == expected
+        if expected:
+            assert [(row.title, row.due_at.date().isoformat()) for row in rows] == [
+                ("开会", "2026-11-03"), ("交报告", "2026-11-04")]
+
+
 def test_business_rejection_is_not_applied_and_preserves_prior_plan_evidence(business):
     state = {"session_id": "alice", "user_message": "记账10元", "plan_index": 1,
              "decision": {"action": "record_expense", "args": {"amount": 10, "account_name": "missing"}},
