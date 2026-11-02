@@ -275,6 +275,7 @@ def evaluate(mode, limit=0, case_ids=None):
                 "cases_sha256": case_fingerprint(selected),
                 "backend": settings.rag_backend,
                 "model_options": {"enable_thinking": settings.llm_enable_thinking,
+                                  "json_mode_enabled": settings.llm_json_mode_enabled,
                                   "stream_include_usage": settings.llm_stream_include_usage},
                 "turn_limits": {"max_llm_calls": settings.chat_turn_max_llm_calls,
                                 "max_tokens": settings.chat_turn_max_tokens, "monetary_cap_enforced": False},

@@ -218,6 +218,7 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
         ],
         temperature=0.0,
         runtime_context={"scenario": "router_decision", "session_id": ctx.session_id},
+        json_mode=True,
     )
 
     cleaned = raw.strip()
@@ -230,5 +231,5 @@ def route_decision(ctx: RouteContext) -> RouterDecision:
         decision = RouterDecision.model_validate(data)
         return decision
     except (json.JSONDecodeError, ValidationError) as exc:
-        logger.error("RouterDecision LLM returned invalid JSON: %s; raw=%r", exc, raw)
+        logger.error("RouterDecision validation failed error_type=%s", type(exc).__name__)
         raise

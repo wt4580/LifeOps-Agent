@@ -474,6 +474,7 @@ def _node_decompose(state: ChatState) -> ChatState:
             [{"role": "system", "content": system}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
             temperature=0.0,
             runtime_context={"scenario": "decompose", "session_id": state.get("session_id")},
+            json_mode=True,
             on_token=_make_on_token(state),
         )
     except ModelOutputIncompleteError as exc:

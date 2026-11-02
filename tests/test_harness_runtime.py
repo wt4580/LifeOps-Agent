@@ -55,6 +55,15 @@ def audit_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "harness_trace_dir", str(tmp_path / "audit"))
 
 
+@pytest.mark.parametrize("enabled,requested", [(False,False),(False,True),(True,False),(True,True)])
+def test_json_mode_requires_both_provider_support_and_structured_call(monkeypatch, enabled, requested):
+    _, create = client_for(monkeypatch)
+    monkeypatch.setattr(settings, 'demo_mode', False)
+    monkeypatch.setattr(settings, 'llm_json_mode_enabled', enabled)
+    llm_config.chat_completion([{'role':'user','content':'Return JSON'}], json_mode=requested)
+    assert create.call_args.kwargs.get('response_format') == ({'type':'json_object'} if enabled and requested else None)
+
+
 @pytest.mark.parametrize("exception, status", [
     (RuntimeError("private error text"), "error"),
     (asyncio.CancelledError(), "cancelled"),

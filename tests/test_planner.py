@@ -147,10 +147,12 @@ class TestProposePlan:
             proposal_id, proposal = propose_plan("审批还没过")
             assert len(proposal.items) == 0
 
-    def test_llm_returns_invalid_json(self):
+    def test_llm_returns_invalid_json(self, caplog):
         with patch(
             "app.src.agent.planner.planner.chat_completion",
-            return_value="not json at all",
+            return_value="private-task-not-json",
         ):
             with pytest.raises((json.JSONDecodeError, ValidationError)):
                 propose_plan("明天开会")
+        assert 'private-task-not-json' not in caplog.text
+        assert 'JSONDecodeError' in caplog.text

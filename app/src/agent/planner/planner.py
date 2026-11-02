@@ -178,12 +178,13 @@ def propose_plan(
         messages,
         temperature=0.2,
         runtime_context={"scenario": "propose_plan", "session_id": session_id},
+        json_mode=True,
     )
     try:
         data = json.loads(content)
         proposal = PlanProposal.model_validate(data)
     except (json.JSONDecodeError, ValidationError) as exc:
-        logger.error("Plan proposal LLM returned invalid JSON: %s; raw=%r", exc, content[:200])
+        logger.error("Plan proposal validation failed error_type=%s", type(exc).__name__)
         raise
 
     if fixed_date and len(proposal.items) == 1:

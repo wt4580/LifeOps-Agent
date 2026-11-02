@@ -101,6 +101,7 @@ def chat_completion(
     runtime_context: dict | None = None,
     on_token: Callable[[str], None] | None = None,
     max_tokens: int | None = None,
+    json_mode: bool = False,
 ) -> str:
     start = time.monotonic()
 
@@ -159,6 +160,8 @@ def chat_completion(
                           timeout=max(0.001, min(30.0, turn.budget.remaining_seconds())) if turn else 30.0)
             if settings.llm_enable_thinking is not None:
                 kwargs["extra_body"] = {"enable_thinking": settings.llm_enable_thinking}
+            if json_mode and settings.llm_json_mode_enabled:
+                kwargs["response_format"] = {"type": "json_object"}
             ensure_turn_active()
             if on_token:
                 if settings.llm_stream_include_usage:

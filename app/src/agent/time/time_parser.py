@@ -57,13 +57,14 @@ def normalize_date_hint(user_text: str, *, session_id: str | None = None) -> str
         ],
         temperature=0.0,
         runtime_context={"scenario": "normalize_date_hint", "session_id": session_id},
+        json_mode=True,
     )
 
     try:
         data = json.loads(raw)
         hint = DateHint.model_validate(data)
     except (json.JSONDecodeError, ValidationError) as exc:
-        logger.warning("normalize_date_hint parse failed: %s; raw=%r", exc, raw)
+        logger.warning("normalize_date_hint parse failed error_type=%s", type(exc).__name__)
         return None
 
     if not hint.date:
@@ -72,7 +73,7 @@ def normalize_date_hint(user_text: str, *, session_id: str | None = None) -> str
     try:
         datetime.fromisoformat(hint.date)
     except ValueError:
-        logger.warning("normalize_date_hint invalid date: %r", hint.date)
+        logger.warning("normalize_date_hint invalid date")
         return None
 
     if hint.confidence < 0.4:
