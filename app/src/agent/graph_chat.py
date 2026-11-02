@@ -487,28 +487,37 @@ def _node_decompose(state: ChatState) -> ChatState:
         return state
     cleaned = re.sub(r"^```(?:json)?\s*", "", raw.strip())
     cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    validation_reason = "json_syntax"
     try:
         data = json.loads(cleaned)
+        validation_reason = "envelope"
         if not isinstance(data, dict) or type(data.get("needs_plan", False)) is not bool:
             raise ValueError("Invalid planner envelope")
+        validation_reason = "mode"
         if data.get("mode", "normal") not in {"normal", "quick"}:
             raise ValueError("Invalid planner mode")
+        validation_reason = "assistant_message"
         if not isinstance(data.get("assistant_message", ""), str):
             raise ValueError("Invalid planner message")
         state["mode"] = data.get("mode", "normal")
         if data.get("needs_plan"):
+            validation_reason = "plan_size"
             steps = data.get("steps")
             if not isinstance(steps, list) or not 1 <= len(steps) <= 10:
                 raise ValueError("Invalid plan size")
             # Validate the entire plan before the first step can commit effects.
             # Runtime checks still apply after revisions and checkpoint resumes.
             for step in steps:
+                validation_reason = "plan_step"
                 if not isinstance(step, dict):
                     raise ValueError("Invalid plan step")
                 action = step.get("action")
+                validation_reason = "action"
                 if action not in TOOLS or not TOOLS[action].model_visible:
                     raise ValueError("Invalid plan action")
+                validation_reason = "arguments"
                 step["args"] = validate_tool_args(action, step.get("args", {}))
+                validation_reason = "policy"
                 from ..common.harness.interceptors import ToolPolicyInterceptor, SessionScopeInterceptor, Decision
                 preflight = CallContext(kind="tool", name=f"preflight:{action}", session_id=session_id,
                                         payload={"action": action, "args": step["args"]})
@@ -531,8 +540,10 @@ def _node_decompose(state: ChatState) -> ChatState:
             )
         else:
             action = data.get("action")
+            validation_reason = "action"
             if not isinstance(action, str) or action not in TOOLS or not TOOLS[action].model_visible:
                 raise ValueError("Invalid planner action")
+            validation_reason = "arguments"
             arguments = validate_tool_args(action, data.get("args", {}))
             state["plan"] = []
             state["plan_index"] = 0
@@ -550,6 +561,7 @@ def _node_decompose(state: ChatState) -> ChatState:
         from ..common.domain.model_errors import ModelOutputInvalidError
         state["tool_error"], state["answer"] = failure_result(
             ModelOutputInvalidError(), action="planner", effect="conversation", committed={})
+        state["tool_error"]["validation_reason"] = validation_reason
         state["plan"] = []
         state["plan_index"] = 0
         state["mode"] = "normal"

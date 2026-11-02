@@ -330,6 +330,22 @@ def test_invalid_planning_does_not_fallback_to_success(monkeypatch, raw):
     assert result["plan"] == []
 
 
+@pytest.mark.parametrize("raw,reason", [
+    ('not json private text', 'json_syntax'),
+    ('[]', 'envelope'),
+    ('{"action":"normal_chat","mode":"private"}', 'mode'),
+    ('{"action":"normal_chat","assistant_message":null}', 'assistant_message'),
+    ('{"action":"private"}', 'action'),
+    ('{"action":"create_account","args":{"name":"x","balance":"private"}}', 'arguments'),
+])
+def test_planning_failure_has_safe_validation_reason(monkeypatch, raw, reason):
+    monkeypatch.setattr(graph, 'chat_completion', Mock(return_value=raw))
+    result = graph.run_chat_graph(compiled_graph=graph.build_chat_graph(checkpointer=MemorySaver()),
+                                  session_id='safe-diagnostic', user_message='process a task')
+    assert result['tool_error']['validation_reason'] == reason
+    assert 'private' not in json.dumps(result['tool_error'])
+
+
 @pytest.mark.parametrize("tail", [
     {"action": "record_expense", "args": {"amount": "invalid"}},
     {"action": "unknown_action", "args": {}},

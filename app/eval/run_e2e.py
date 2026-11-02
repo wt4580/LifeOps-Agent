@@ -74,7 +74,7 @@ def execution_diagnostics(summaries, events):
         "stream_error_codes": sorted({str(event.get("code", "unknown"))
                                       for event in events if event.get("type") == "error"}),
         "tool_failures": [
-            {key: error[key] for key in ("code", "action", "error_type") if key in error}
+            {key: error[key] for key in ("code", "action", "error_type", "validation_reason") if key in error}
             for event in events if event.get("type") == "final"
             for error in [event.get("result", {}).get("tool_error")]
             if isinstance(error, dict)
