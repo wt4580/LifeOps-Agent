@@ -289,6 +289,8 @@ python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e
 
 当前完整后端测试为 **703 项通过、1 项跳过**。随后 [Flash 新版完整回归](app/eval/reports/real-flash-repair-full-quota-limited.json)记录 47/80 通过，但运行期间账号额度耗尽：32 个失败案例含服务调用错误，另 1 个触发单轮预算。该轮未完成健康依赖条件下的验收，不以 47/80 作为模型准确率，也不将错误响应压低后的耗时指标作为性能结论。后续模型切换需建立独立基线。
 
+切换至 `qwen3.8-27b` 并保持非思考、JSON 模式、单次格式修正及原预算后，[首批 8 类真实流程](app/eval/reports/real-27b-repair-pilot.json)为 **8/8 通过**，案例总耗时 P50/P95 为 5.6/8.9 秒。不同模型不作同条件回归比较；新版完整真实验收仍待完成。
+
 ## 部署与持续集成
 
 | 组件 | 配置入口 | 说明 |
