@@ -279,6 +279,8 @@ python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e
 
 `LLM_JSON_MODE_ENABLED=true` 可为主规划、待办草案、日期解析和独立路由启用 `response_format={"type":"json_object"}`；普通回答不启用。默认关闭，以适配不同供应商；使用 Qwen 时需确认模型支持并设置非思考模式。JSON 模式只保证合法 JSON，不保证字段、权限或业务正确性，服务端校验继续执行；不支持的服务返回错误时不会悄悄降级或重试写操作。详见[结构化输出文档](https://www.alibabacloud.com/help/en/model-studio/qwen-structured-output)。
 
+启用 JSON 约束后，[原失败子集复测](app/eval/reports/real-flash-json-failure-retest.json)为 **14/15 通过**，观察到 43 次调用、102,512 个供应商报告 token；`account-6` 仍因主规划结构校验失败而未完成余额更新。开启该配置的 100 条离线契约全部通过。本次只复测原失败子集，不能拼接旧基线中的通过案例，声称新版已通过 79/80 或完整回归；输出结构稳定性及完整真实验收仍未完成。
+
 ## 部署与持续集成
 
 | 组件 | 配置入口 | 说明 |
