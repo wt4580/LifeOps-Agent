@@ -54,10 +54,13 @@ def test_read_failure_stops_dependent_write_and_is_not_a_successful_call(busines
 @pytest.mark.parametrize("reply,expected", [("确认", 2), ("取消", 0)])
 def test_multi_todo_graph_uses_one_batch_confirmation(business, monkeypatch, reply, expected):
     from app.src.domain.entity.chat_entity import TodoItem
+    from app.src.domain.dto.planner_dto import PlanItem, PlanProposal
     steps = [{"action": "propose_todo", "args": {"title": title, "due_date": date}}
              for title, date in [("开会", "2026-11-03"), ("交报告", "2026-11-04")]]
     planner = Mock(return_value=json.dumps({"needs_plan": True, "mode": "quick", "steps": steps}))
     monkeypatch.setattr(graph, "chat_completion", planner)
+    monkeypatch.setattr(graph, 'propose_plan', Mock(return_value=('batch', PlanProposal(items=[
+        PlanItem(title='开会', due_at='2026-11-03'), PlanItem(title='交报告', due_at='2026-11-04')]))))
     compiled = graph.build_chat_graph(checkpointer=MemorySaver())
     async def scenario():
         first = await graph.arun_chat_graph(compiled_graph=compiled, session_id="batch-user",

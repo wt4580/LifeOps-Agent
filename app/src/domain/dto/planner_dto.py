@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from typing import Literal
 
 
 class PlanItem(BaseModel):
@@ -6,6 +7,10 @@ class PlanItem(BaseModel):
 
     title: str
     due_at: str | None = None
+    repeat: Literal['once', 'daily', 'weekly'] | None = None
+    repeat_until: str | None = None
+    duration_min: int | None = Field(default=None, ge=1, le=1440)
+    description: str | None = None
 
 
 class PlanProposal(BaseModel):

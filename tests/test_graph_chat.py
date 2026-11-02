@@ -43,12 +43,16 @@ class TestInferDurationDays:
 
 
 def test_multi_todo_plan_is_presented_as_one_confirmation_without_writes():
+    from app.src.domain.dto.planner_dto import PlanItem, PlanProposal
     steps = [{"action": "propose_todo", "args": {"title": title, "due_date": date}}
              for title, date in [("开会", "2026-11-03"), ("交报告", "2026-11-04")]]
     state = {"session_id": "batch-test", "user_message": "明天开会，后天交报告",
              "plan": steps, "plan_index": 0, "decision": steps[0]}
-    with patch.object(gc, "propose_plan", side_effect=AssertionError("structured tasks need no new model call")):
+    with patch.object(gc, "propose_plan", return_value=('batch', PlanProposal(items=[
+        PlanItem(title='开会', due_at='2026-11-03'), PlanItem(title='交报告', due_at='2026-11-04')
+    ]))) as planner:
         out = gc._run_tool_impl(state)
+    planner.assert_called_once_with(state['user_message'], session_id='batch-test')
     assert [(item["title"], item["due_at"]) for item in out["proposal"]["items"]] == [
         ("开会", "2026-11-03"), ("交报告", "2026-11-04")]
     assert out["plan"] == []
@@ -90,6 +94,19 @@ def test_standalone_proposal_uses_user_words_instead_of_router_inventions():
         result = gc._run_tool_impl(state)
     planner.assert_called_once_with(message, session_id='source-test')
     assert len(result['proposal']['items']) == 1
+
+
+def test_pure_todo_plan_does_not_promote_location_metadata_to_extra_task():
+    from app.src.domain.dto.planner_dto import PlanItem, PlanProposal
+    steps = [{'action': 'propose_todo', 'args': {'title': '开会'}},
+             {'action': 'propose_todo', 'args': {'title': '更新会议地点'}}]
+    message = '明天下午4点开会，地点A301'
+    state = {'session_id': 'source-test', 'user_message': message,
+             'plan': steps, 'plan_index': 0, 'decision': steps[0]}
+    with patch.object(gc, 'propose_plan', return_value=('draft', PlanProposal(items=[PlanItem(title='开会')]))):
+        result = gc._run_tool_impl(state)
+    assert len(result['proposal']['items']) == 1
+    assert result['plan'] == []
 
 
 class TestBuildProposalItemDurationFallback:

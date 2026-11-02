@@ -1337,17 +1337,8 @@ def _run_tool_impl(state: ChatState) -> ChatState:
         batch = (len(plan) > 1 and state.get("plan_index", 0) == 0
                  and all(step.get("action") == "propose_todo" for step in plan))
         if batch:
-            items = []
-            for step in plan:
-                step_args = validate_tool_args("propose_todo", step.get("args") or {})
-                text = step_args.get("text") or state["user_message"]
-                if step_args.get("title"):
-                    items.append(_build_proposal_item(step_args, text))
-                else:
-                    _, proposal = propose_plan(text, session_id=state.get("session_id"))
-                    items.extend(proposal.model_dump()["items"])
-            proposal_id = str(uuid4())
-            proposal_payload = {"items": items}
+            proposal_id, proposal = propose_plan(state["user_message"], session_id=state.get("session_id"))
+            proposal_payload = proposal.model_dump()
             state["plan"] = []
             state["plan_index"] = 0
         elif title and (plan or not re.search(r"[，,；;\n]|然后|以及|另外|并且", state["user_message"])):

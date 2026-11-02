@@ -139,7 +139,7 @@ def _dedupe_plan_items(items: list[PlanItem]) -> list[PlanItem]:
         if key in seen:
             continue
         seen.add(key)
-        deduped.append(PlanItem(title=normalized_title, due_at=due))
+        deduped.append(item.model_copy(update={"title": normalized_title, "due_at": due}))
     return deduped
 
 
@@ -162,6 +162,8 @@ def propose_plan(
         "你是待办规划器。把用户输入改写成可执行待办清单。"
         "只输出 JSON，不要解释。"
         'schema: {"items":[{"title":"...","due_at":"ISO或null"}]}.\n\n'
+        "若用户明确要求周期或时长，可附 repeat（once/daily/weekly）、repeat_until（ISO或null）、"
+        "duration_min（1-1440）、description；未提供则省略，不要猜测。\n"
         "## 格式要求\n"
         "1) title 是动作导向短句（5-22字），不要复述原话，不含'待办/提醒'字样；\n"
         "2) 用户可能在一条消息里提到多件事，每件事输出一条 items；\n"
@@ -192,20 +194,15 @@ def propose_plan(
     if fixed_date and len(proposal.items) == 1:
         proposal = PlanProposal(
             items=[
-                PlanItem(
-                    title=_normalize_title(item.title),
-                    due_at=_apply_fixed_date(fixed_date, item.due_at),
-                )
+                item.model_copy(update={"title": _normalize_title(item.title),
+                                        "due_at": _apply_fixed_date(fixed_date, item.due_at)})
                 for item in proposal.items
             ]
         )
     else:
         proposal = PlanProposal(
             items=[
-                PlanItem(
-                    title=_normalize_title(item.title),
-                    due_at=item.due_at,
-                )
+                item.model_copy(update={"title": _normalize_title(item.title)})
                 for item in proposal.items
             ]
         )

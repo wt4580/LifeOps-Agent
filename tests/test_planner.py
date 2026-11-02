@@ -89,6 +89,16 @@ class TestNormalizeTitle:
 
 
 class TestDedupePlanItems:
+    def test_normalization_preserves_explicit_recurrence_and_duration(self):
+        item = PlanItem(title='提醒晨跑', due_at='2026-11-03T07:00:00', repeat='daily',
+                        repeat_until='2026-11-09', duration_min=30, description='公园')
+        with patch('app.src.agent.planner.planner.normalize_date_hint', return_value='2026-11-03'), \
+             patch('app.src.agent.planner.planner.chat_completion', return_value=json.dumps({'items':[item.model_dump()]})):
+            _, proposal = propose_plan('明天起每天晨跑30分钟，到下周一结束')
+        result = proposal.items[0]
+        assert result.repeat == 'daily' and result.repeat_until == '2026-11-09'
+        assert result.duration_min == 30 and result.description == '公园'
+
     def test_exact_duplicates(self):
         items = [
             PlanItem(title="买牛奶", due_at="2026-06-18"),
