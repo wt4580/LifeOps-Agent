@@ -1,0 +1,1648 @@
+{
+  "meta": {
+    "mode": "real",
+    "simulated_provider": false,
+    "model_quality_measured": true,
+    "scope": "in-process HTTP/SSE + real graph + isolated SQLite; not network/load benchmark",
+    "timestamp": "2026-11-02T05:21:12.457337+00:00",
+    "model": "qwen3.8-flash",
+    "revision": "efe3ebd",
+    "source_sha256": "48c6cd2ea9d876b2cf4d2567b9387296c6f4aeed0a8167d0a74c550656fb00be",
+    "python": "3.12.7",
+    "working_tree_may_be_dirty": true,
+    "corpus_sha256": "2309b5d1e0b6edf92c77f9a76586102c9a1f6b3dafb4d4fc743bf3958a42ba4f",
+    "cases_sha256": "1e1123803307e490cf95b8dc1bcb765163533bb5dda21e35d67513987bff1ccc",
+    "backend": "bm25",
+    "model_options": {
+      "enable_thinking": false,
+      "planner_format_repair_enabled": true,
+      "json_mode_enabled": true,
+      "stream_include_usage": true
+    },
+    "turn_limits": {
+      "max_llm_calls": 8,
+      "max_tokens": 20000,
+      "monetary_cap_enforced": false
+    }
+  },
+  "metrics": {
+    "n_cases": 80,
+    "passed": 47,
+    "contract_pass_rate": 0.5875,
+    "latency_p50_ms": 165.0,
+    "latency_p95_ms": 6629.31
+  },
+  "groups": {
+    "todo_confirm": {
+      "n": 10,
+      "passed": 6
+    },
+    "todo_cancel": {
+      "n": 10,
+      "passed": 6
+    },
+    "todo_revise": {
+      "n": 10,
+      "passed": 6
+    },
+    "multi_date": {
+      "n": 10,
+      "passed": 4
+    },
+    "expense_date": {
+      "n": 10,
+      "passed": 5
+    },
+    "account_confirmation": {
+      "n": 10,
+      "passed": 5
+    },
+    "rag_evidence": {
+      "n": 10,
+      "passed": 5
+    },
+    "budget_boundary": {
+      "n": 10,
+      "passed": 10
+    }
+  },
+  "usage": {
+    "llm_calls_observed": 96,
+    "reported_tokens_observed": 223782,
+    "budget_charged_tokens": 223782,
+    "usage_missing_calls": 0,
+    "usage_complete": false,
+    "simulated": false,
+    "monetary_cost_measured": false,
+    "scope": "harness observations; failures may lack final summaries; budget charges are not provider invoices"
+  },
+  "cases": [
+    {
+      "id": "confirm-0",
+      "group": "todo_confirm",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 7818.06,
+      "llm_calls": 1,
+      "reported_tokens": 4335,
+      "charged_tokens": 4335,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "cancel-0",
+      "group": "todo_cancel",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 3684.82,
+      "llm_calls": 1,
+      "reported_tokens": 4449,
+      "charged_tokens": 4449,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "revise-0",
+      "group": "todo_revise",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 4932.46,
+      "llm_calls": 3,
+      "reported_tokens": 5578,
+      "charged_tokens": 5578,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "multi-0",
+      "group": "multi_date",
+      "passed": false,
+      "error": "AssertionError: todo count 0",
+      "execution": {
+        "turn_statuses": [
+          "budget_exceeded",
+          "waiting_for_input"
+        ],
+        "budget_exceeded": true,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 6442.79,
+      "llm_calls": 3,
+      "reported_tokens": 8794,
+      "charged_tokens": 8794,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "expense-0",
+      "group": "expense_date",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 2422.74,
+      "llm_calls": 2,
+      "reported_tokens": 4644,
+      "charged_tokens": 4644,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-0",
+      "group": "account_confirmation",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 5340.97,
+      "llm_calls": 4,
+      "reported_tokens": 9341,
+      "charged_tokens": 9341,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "rag-0",
+      "group": "rag_evidence",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 6452.32,
+      "llm_calls": 4,
+      "reported_tokens": 6287,
+      "charged_tokens": 6287,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "limit-0",
+      "group": "budget_boundary",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "budget_exceeded"
+        ],
+        "budget_exceeded": true,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 81.65,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "confirm-1",
+      "group": "todo_confirm",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 6598.56,
+      "llm_calls": 1,
+      "reported_tokens": 4335,
+      "charged_tokens": 4335,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "cancel-1",
+      "group": "todo_cancel",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 3537.66,
+      "llm_calls": 1,
+      "reported_tokens": 4428,
+      "charged_tokens": 4428,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "revise-1",
+      "group": "todo_revise",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 5483.29,
+      "llm_calls": 3,
+      "reported_tokens": 5596,
+      "charged_tokens": 5596,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "multi-1",
+      "group": "multi_date",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 6554.29,
+      "llm_calls": 3,
+      "reported_tokens": 5622,
+      "charged_tokens": 5622,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "expense-1",
+      "group": "expense_date",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 3153.32,
+      "llm_calls": 2,
+      "reported_tokens": 4676,
+      "charged_tokens": 4676,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-1",
+      "group": "account_confirmation",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 4692.09,
+      "llm_calls": 4,
+      "reported_tokens": 9340,
+      "charged_tokens": 9340,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "rag-1",
+      "group": "rag_evidence",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 7287.07,
+      "llm_calls": 4,
+      "reported_tokens": 6346,
+      "charged_tokens": 6346,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "limit-1",
+      "group": "budget_boundary",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "budget_exceeded"
+        ],
+        "budget_exceeded": true,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 99.89,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "confirm-2",
+      "group": "todo_confirm",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 2922.41,
+      "llm_calls": 1,
+      "reported_tokens": 4416,
+      "charged_tokens": 4416,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "cancel-2",
+      "group": "todo_cancel",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 2852.83,
+      "llm_calls": 1,
+      "reported_tokens": 4431,
+      "charged_tokens": 4431,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "revise-2",
+      "group": "todo_revise",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 7213.57,
+      "llm_calls": 3,
+      "reported_tokens": 5590,
+      "charged_tokens": 5590,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "multi-2",
+      "group": "multi_date",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 8364.27,
+      "llm_calls": 3,
+      "reported_tokens": 5666,
+      "charged_tokens": 5666,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "expense-2",
+      "group": "expense_date",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 2327.09,
+      "llm_calls": 2,
+      "reported_tokens": 4643,
+      "charged_tokens": 4643,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-2",
+      "group": "account_confirmation",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 4253.54,
+      "llm_calls": 4,
+      "reported_tokens": 9332,
+      "charged_tokens": 9332,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "rag-2",
+      "group": "rag_evidence",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 5243.21,
+      "llm_calls": 4,
+      "reported_tokens": 6310,
+      "charged_tokens": 6310,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "limit-2",
+      "group": "budget_boundary",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "budget_exceeded"
+        ],
+        "budget_exceeded": true,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 106.9,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "confirm-3",
+      "group": "todo_confirm",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 4013.84,
+      "llm_calls": 1,
+      "reported_tokens": 4416,
+      "charged_tokens": 4416,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "cancel-3",
+      "group": "todo_cancel",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 3070.9,
+      "llm_calls": 1,
+      "reported_tokens": 4431,
+      "charged_tokens": 4431,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "revise-3",
+      "group": "todo_revise",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 5668.67,
+      "llm_calls": 3,
+      "reported_tokens": 5590,
+      "charged_tokens": 5590,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "multi-3",
+      "group": "multi_date",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 6212.72,
+      "llm_calls": 3,
+      "reported_tokens": 5475,
+      "charged_tokens": 5475,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "expense-3",
+      "group": "expense_date",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 3250.36,
+      "llm_calls": 2,
+      "reported_tokens": 4686,
+      "charged_tokens": 4686,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-3",
+      "group": "account_confirmation",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 4327.47,
+      "llm_calls": 4,
+      "reported_tokens": 9319,
+      "charged_tokens": 9319,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "rag-3",
+      "group": "rag_evidence",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 4655.85,
+      "llm_calls": 4,
+      "reported_tokens": 6225,
+      "charged_tokens": 6225,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "limit-3",
+      "group": "budget_boundary",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "budget_exceeded"
+        ],
+        "budget_exceeded": true,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 103.47,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "confirm-4",
+      "group": "todo_confirm",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 2607.61,
+      "llm_calls": 1,
+      "reported_tokens": 4443,
+      "charged_tokens": 4443,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "cancel-4",
+      "group": "todo_cancel",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 2722.69,
+      "llm_calls": 1,
+      "reported_tokens": 4431,
+      "charged_tokens": 4431,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "revise-4",
+      "group": "todo_revise",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 5548.94,
+      "llm_calls": 3,
+      "reported_tokens": 5604,
+      "charged_tokens": 5604,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "multi-4",
+      "group": "multi_date",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 5899.73,
+      "llm_calls": 3,
+      "reported_tokens": 5538,
+      "charged_tokens": 5538,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "expense-4",
+      "group": "expense_date",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 2519.91,
+      "llm_calls": 2,
+      "reported_tokens": 4628,
+      "charged_tokens": 4628,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-4",
+      "group": "account_confirmation",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 5065.04,
+      "llm_calls": 4,
+      "reported_tokens": 9361,
+      "charged_tokens": 9361,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "rag-4",
+      "group": "rag_evidence",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 4712.44,
+      "llm_calls": 4,
+      "reported_tokens": 6300,
+      "charged_tokens": 6300,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "limit-4",
+      "group": "budget_boundary",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "budget_exceeded"
+        ],
+        "budget_exceeded": true,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 83.62,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "confirm-5",
+      "group": "todo_confirm",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 2995.69,
+      "llm_calls": 1,
+      "reported_tokens": 4443,
+      "charged_tokens": 4443,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "cancel-5",
+      "group": "todo_cancel",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 2070.11,
+      "llm_calls": 1,
+      "reported_tokens": 4416,
+      "charged_tokens": 4416,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "revise-5",
+      "group": "todo_revise",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 4961.15,
+      "llm_calls": 3,
+      "reported_tokens": 5647,
+      "charged_tokens": 5647,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "multi-5",
+      "group": "multi_date",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': 'd7251463007142d0b1d3cc7dbbe1aea2', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [
+          "tool_failed"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": [
+          {
+            "code": "tool_execution_failed",
+            "action": "query_database",
+            "error_type": "RuntimeError"
+          }
+        ]
+      },
+      "latency_ms": 5625.3,
+      "llm_calls": 1,
+      "reported_tokens": 4670,
+      "charged_tokens": 4670,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "expense-5",
+      "group": "expense_date",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': 'c88e098be165442e94bddcbef22450f3', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 112.52,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-5",
+      "group": "account_confirmation",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '01f9062f69944b9ea75d1e08c35a0aaf', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 133.43,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "rag-5",
+      "group": "rag_evidence",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': 'e84c01420a1a40dd82c8ad9b85a82e8b', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 136.02,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "limit-5",
+      "group": "budget_boundary",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "budget_exceeded"
+        ],
+        "budget_exceeded": true,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 119.57,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "confirm-6",
+      "group": "todo_confirm",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '151ce14858be4ede9d8fa94bab56871c', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 146.68,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "cancel-6",
+      "group": "todo_cancel",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': 'af53d302b7554628ab3ab75c22fa2f1b', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 155.39,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "revise-6",
+      "group": "todo_revise",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '47411c0f98114242a1a54b0d4354ec46', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 144.32,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "multi-6",
+      "group": "multi_date",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': 'd0037ccbe0454b50b8d86c815fccf5fb', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 138.51,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "expense-6",
+      "group": "expense_date",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '9a3e3b76ebd1435e8dffdbb0e7b49441', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 109.86,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-6",
+      "group": "account_confirmation",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': 'f3a1f410751f43e1a24bde0ea48503b0', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 136.08,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "rag-6",
+      "group": "rag_evidence",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '4b43eed792364df49ff19ad92214be2b', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 154.88,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "limit-6",
+      "group": "budget_boundary",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "budget_exceeded"
+        ],
+        "budget_exceeded": true,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 87.01,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "confirm-7",
+      "group": "todo_confirm",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': 'd1c359fe61b04d78851f2eecaaef550f', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 140.32,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "cancel-7",
+      "group": "todo_cancel",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': 'cde7bd5cf9b640f9bf33c0af86345456', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 156.32,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "revise-7",
+      "group": "todo_revise",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': 'b7c7777f655e4e6cb52f14f040ca8c6f', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 160.13,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "multi-7",
+      "group": "multi_date",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '731f40faa76e4c76bbd5be47d668369f', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 128.1,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "expense-7",
+      "group": "expense_date",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '0a4d245131c54ce19f854bf3a2a0a4b3', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 127.32,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-7",
+      "group": "account_confirmation",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': 'c9c498f9a966477fa6560f6337bf2473', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 132.5,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "rag-7",
+      "group": "rag_evidence",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '6ec3b6c535c94e588c3e5c8e3ebb15c5', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 127.44,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "limit-7",
+      "group": "budget_boundary",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "budget_exceeded"
+        ],
+        "budget_exceeded": true,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 97.71,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "confirm-8",
+      "group": "todo_confirm",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '5fdeed08e52e4bf0981a1de710152d1b', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 158.5,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "cancel-8",
+      "group": "todo_cancel",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '578964606e4c46d3972630f296588b6c', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 138.35,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "revise-8",
+      "group": "todo_revise",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '4a40e88b96554e6fb18348fe057e5254', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 169.87,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "multi-8",
+      "group": "multi_date",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': 'cf786968423d4d628b969930f122ad4c', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 122.38,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "expense-8",
+      "group": "expense_date",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': 'ecb84f0b285e4ea986ca3d9f9753537e', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 146.53,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-8",
+      "group": "account_confirmation",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': 'cf1249eadd2d4c9f9625c43d80e44aa8', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 127.38,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "rag-8",
+      "group": "rag_evidence",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '60d33f038a8247e7b4ea61a1104b2956', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 125.7,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "limit-8",
+      "group": "budget_boundary",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "budget_exceeded"
+        ],
+        "budget_exceeded": true,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 95.54,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "confirm-9",
+      "group": "todo_confirm",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': 'e2b3d6f91edd4344a6ceb242415384c9', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 110.49,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "cancel-9",
+      "group": "todo_cancel",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '4b85d55943b54d8ab54d535f23bad30b', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 129.12,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "revise-9",
+      "group": "todo_revise",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '760fb97b0119468e80182bba7a5d5437', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 138.92,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "multi-9",
+      "group": "multi_date",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '7dc7c6ee24de4bf9b05e9b22a1f4e31c', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 137.12,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "expense-9",
+      "group": "expense_date",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '31c2b3852003424198d30e18bc9d508e', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 145.69,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-9",
+      "group": "account_confirmation",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '87aae74435e8490ebe101b2fc699e2b3', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 135.93,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "rag-9",
+      "group": "rag_evidence",
+      "passed": false,
+      "error": "AssertionError: No final response: [{'type': 'status', 'message': '正在保存消息...'}, {'type': 'status', 'message': '正在加载上下文...'}, {'type': 'status', 'message': '正在进入思考流程...'}, {'type': 'step', 'message': '正在加载上下文...', 'detail': {}}, {'type': 'step', 'message': '正在分析意图...', 'detail': {}}, {'type': 'error', 'code': 'request_execution_failed', 'trace_id': '25d493896e6141ecaf2a877c501cf403', 'retryable': True, 'outcome': 'unconfirmed', 'message': '请求未能完成，可重试原请求以确认结果；涉及写入时请先核对实际记录。'}]",
+      "execution": {
+        "turn_statuses": [],
+        "budget_exceeded": false,
+        "stream_error_codes": [
+          "request_execution_failed"
+        ],
+        "tool_failures": []
+      },
+      "latency_ms": 112.38,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "limit-9",
+      "group": "budget_boundary",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "budget_exceeded"
+        ],
+        "budget_exceeded": true,
+        "stream_error_codes": [],
+        "tool_failures": []
+      },
+      "latency_ms": 110.16,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    }
+  ]
+}
