@@ -4,6 +4,16 @@ from unittest.mock import Mock
 from app.eval import run_e2e
 
 
+def test_targeted_case_selection_rejects_unknown_or_simulator_only_cases():
+    import pytest
+    assert [case['id'] for case in run_e2e.select_cases('real', case_ids=['multi-0'])] == ['multi-0']
+    with pytest.raises(ValueError):
+        run_e2e.select_cases('real', case_ids=['typo'])
+    simulated = next(case['id'] for case in run_e2e.cases() if case.get('contract_only'))
+    with pytest.raises(ValueError):
+        run_e2e.select_cases('real', case_ids=[simulated])
+
+
 def test_real_evaluation_plan_never_executes_provider(monkeypatch, tmp_path):
     output = tmp_path / 'plan.json'
     execute = Mock(side_effect=AssertionError('plan must not execute evaluation'))

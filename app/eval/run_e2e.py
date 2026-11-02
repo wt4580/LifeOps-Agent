@@ -98,7 +98,17 @@ def configure(directory, mode):
     return root
 
 
-def evaluate(mode, limit=0):
+def select_cases(mode, limit=0, case_ids=None):
+    selected = [case for case in cases() if mode == "contract" or not case.get("contract_only")]
+    if case_ids:
+        unknown = set(case_ids) - {case["id"] for case in selected}
+        if unknown:
+            raise ValueError("Unknown or unavailable case IDs: " + ", ".join(sorted(unknown)))
+        selected = [case for case in selected if case["id"] in case_ids]
+    return selected[:limit] if limit else selected
+
+
+def evaluate(mode, limit=0, case_ids=None):
     with tempfile.TemporaryDirectory(prefix="lifeops-e2e-") as temporary:
         directory = Path(temporary)
         root = configure(directory, mode)
@@ -115,9 +125,7 @@ def evaluate(mode, limit=0):
         from app.src.service.auth_service import COOKIE_NAME, login_user
         from app.src.util.retrieval.retrieval import _index_documents_sqlite, _sync_document_records
 
-        selected = [case for case in cases() if mode == "contract" or not case.get("contract_only")]
-        if limit:
-            selected = selected[:limit]
+        selected = select_cases(mode, limit, case_ids)
         results = []
         try:
             with TestClient(create_app(), base_url="http://localhost") as client:
@@ -288,15 +296,17 @@ def main():
     parser.add_argument("--turn-max-llm-calls", type=int, help="Override the per-turn logical model-call budget")
     parser.add_argument("--turn-max-tokens", type=int, help="Override the per-turn harness token budget; not a billing cap")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--case-id", action="append", help="Run only this case ID; repeat to select several")
     args = parser.parse_args()
     if args.limit < 0:
         parser.error("--limit must be nonnegative")
     if any(value is not None and value < 1 for value in (args.turn_max_llm_calls, args.turn_max_tokens)):
         parser.error("Explicit per-turn budgets must be positive")
+    try:
+        selected = select_cases(args.mode, args.limit, args.case_id)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.plan_only:
-        selected = [case for case in cases() if args.mode == "contract" or not case.get("contract_only")]
-        if args.limit:
-            selected = selected[:args.limit]
         groups = defaultdict(int)
         for case in selected:
             groups[case["group"]] += 1
@@ -320,7 +330,7 @@ def main():
     if args.turn_max_tokens is not None:
         os.environ["CHAT_TURN_MAX_TOKENS"] = str(args.turn_max_tokens)
     logging.basicConfig(level=logging.ERROR)
-    report = evaluate(args.mode, args.limit)
+    report = evaluate(args.mode, args.limit, args.case_id)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     metrics = report["metrics"]
