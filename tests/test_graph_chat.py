@@ -66,6 +66,19 @@ def test_mixed_plan_keeps_separate_operations():
     assert out["plan"] == steps
 
 
+def test_multi_clause_request_cannot_be_reduced_to_router_single_title():
+    from app.src.domain.dto.planner_dto import PlanItem, PlanProposal
+    message = "明天开会，后天交报告"
+    state = {"session_id": "batch-test", "user_message": message,
+             "decision": {"action": "propose_todo", "args": {"title": "开会", "text": "明天开会"}}}
+    with patch.object(gc, "propose_plan", return_value=("batch-id", PlanProposal(items=[
+        PlanItem(title="开会", due_at="2026-11-03"), PlanItem(title="交报告", due_at="2026-11-04")
+    ]))) as planner:
+        result = gc._run_tool_impl(state)
+    planner.assert_called_once_with(message, session_id="batch-test")
+    assert len(result["proposal"]["items"]) == 2
+
+
 class TestBuildProposalItemDurationFallback:
     def test_week_daily_until_computed(self):
         item = _build_proposal_item(

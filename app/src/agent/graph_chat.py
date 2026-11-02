@@ -1321,12 +1321,12 @@ def _run_tool_impl(state: ChatState) -> ChatState:
             proposal_payload = {"items": items}
             state["plan"] = []
             state["plan_index"] = 0
-        elif title:
+        elif title and (plan or not re.search(r"[，,；;\n]|然后|以及|另外|并且", state["user_message"])):
             proposal_id = str(uuid4())
             proposal_payload = {"items": [_build_proposal_item(args, pending_text)]}
         else:
             proposal_id, proposal = propose_plan(
-                pending_text, session_id=state.get("session_id")
+                state["user_message"] if title else pending_text, session_id=state.get("session_id")
             )
             proposal_payload = proposal.model_dump()
 
