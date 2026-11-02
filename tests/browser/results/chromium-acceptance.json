@@ -1,0 +1,78 @@
+{
+  "run_id": "2d640f",
+  "browser": "156.0.8078.4",
+  "engine": "Chromium",
+  "started_at": "2026-11-02T08:37:24.373626+00:00",
+  "finished_at": "2026-11-02T08:39:03.578909+00:00",
+  "scope": "Linux headless; isolated offline fixture",
+  "paid_model_calls": 0,
+  "complete": true,
+  "cases": [
+    {
+      "id": "B01",
+      "status": "passed"
+    },
+    {
+      "id": "B02",
+      "status": "passed"
+    },
+    {
+      "id": "B03",
+      "status": "passed"
+    },
+    {
+      "id": "B04",
+      "status": "passed"
+    },
+    {
+      "id": "B05",
+      "status": "passed"
+    },
+    {
+      "id": "B06",
+      "status": "passed"
+    },
+    {
+      "id": "B07",
+      "status": "passed"
+    },
+    {
+      "id": "B08",
+      "status": "passed"
+    },
+    {
+      "id": "B09",
+      "status": "passed"
+    },
+    {
+      "id": "B10",
+      "status": "passed"
+    },
+    {
+      "id": "B11",
+      "status": "passed"
+    },
+    {
+      "id": "B12",
+      "status": "passed"
+    },
+    {
+      "id": "B13",
+      "status": "passed"
+    },
+    {
+      "id": "B14",
+      "status": "passed"
+    }
+  ],
+  "fixture": {
+    "fixture": "lifeops-offline-browser",
+    "demo_mode": true,
+    "source_sha256": "d7be38c33a26b48571c2184fa19fcb6df1b0c5a5772f6e115cd52590ef4d9cc3"
+  },
+  "not_yet_covered": [],
+  "limitations": [
+    "IME uses browser composition events, not a native Windows input method",
+    "Linux Chromium headless; no physical screen-reader or other-browser claim"
+  ]
+}
