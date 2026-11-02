@@ -291,6 +291,8 @@ python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e
 
 切换至 `qwen3.8-27b` 并保持非思考、JSON 模式、单次格式修正及原预算后，[首批 8 类真实流程](app/eval/reports/real-27b-repair-pilot.json)为 **8/8 通过**，案例总耗时 P50/P95 为 5.6/8.9 秒。不同模型不作同条件回归比较；新版完整真实验收仍待完成。
 
+该模型在版本 `44f7454` 的[完整 80 条基线](app/eval/reports/real-27b-full-baseline.json)为 **77/80（96.25%）**，观察到 200 次调用、347,473 个供应商报告 token；案例总耗时 P50/P95 为 4.7/9.7 秒。三条失败均为修改待办场景的数量断言失败；后续诊断发现首次草案可能已包含额外事项，不能仅归因于修改步骤。该结果仍不是完整通过或保留集质量证明。
+
 ## 部署与持续集成
 
 | 组件 | 配置入口 | 说明 |
