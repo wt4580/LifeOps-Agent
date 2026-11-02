@@ -1,0 +1,226 @@
+{
+  "meta": {
+    "mode": "real",
+    "simulated_provider": false,
+    "model_quality_measured": true,
+    "scope": "in-process HTTP/SSE + real graph + isolated SQLite; not network/load benchmark",
+    "timestamp": "2026-11-01T08:38:32.081730+00:00",
+    "model": "qwen3.8-flash",
+    "revision": "ed2f1cb",
+    "source_sha256": "baa0f23cf916533b7a7ad89c30adc49d8028e27d5bdf55fd4dcbf77d49180a1a",
+    "python": "3.12.7",
+    "working_tree_may_be_dirty": true,
+    "corpus_sha256": "2309b5d1e0b6edf92c77f9a76586102c9a1f6b3dafb4d4fc743bf3958a42ba4f",
+    "cases_sha256": "29d20e478dd194c86bbcf0872807129a2c38640c21a31bba8a56b0d5c42ec93a",
+    "backend": "bm25",
+    "turn_limits": {
+      "max_llm_calls": 8,
+      "max_tokens": 20000,
+      "monetary_cap_enforced": false
+    }
+  },
+  "metrics": {
+    "n_cases": 8,
+    "passed": 7,
+    "contract_pass_rate": 0.875,
+    "latency_p50_ms": 52721.93,
+    "latency_p95_ms": 113153.26
+  },
+  "groups": {
+    "todo_confirm": {
+      "n": 1,
+      "passed": 1
+    },
+    "todo_cancel": {
+      "n": 1,
+      "passed": 1
+    },
+    "todo_revise": {
+      "n": 1,
+      "passed": 1
+    },
+    "multi_date": {
+      "n": 1,
+      "passed": 0
+    },
+    "expense_date": {
+      "n": 1,
+      "passed": 1
+    },
+    "account_confirmation": {
+      "n": 1,
+      "passed": 1
+    },
+    "rag_evidence": {
+      "n": 1,
+      "passed": 1
+    },
+    "budget_boundary": {
+      "n": 1,
+      "passed": 1
+    }
+  },
+  "usage": {
+    "llm_calls_observed": 17,
+    "reported_tokens_observed": 66190,
+    "budget_charged_tokens": 66190,
+    "usage_missing_calls": 0,
+    "usage_complete": false,
+    "simulated": false,
+    "monetary_cost_measured": false,
+    "scope": "harness observations; failures may lack final summaries; budget charges are not provider invoices"
+  },
+  "cases": [
+    {
+      "id": "confirm-0",
+      "group": "todo_confirm",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": []
+      },
+      "latency_ms": 18708.66,
+      "llm_calls": 1,
+      "reported_tokens": 4874,
+      "charged_tokens": 4874,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "cancel-0",
+      "group": "todo_cancel",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": []
+      },
+      "latency_ms": 124663.24,
+      "llm_calls": 2,
+      "reported_tokens": 13289,
+      "charged_tokens": 13289,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "revise-0",
+      "group": "todo_revise",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": []
+      },
+      "latency_ms": 64839.98,
+      "llm_calls": 3,
+      "reported_tokens": 9318,
+      "charged_tokens": 9318,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "multi-0",
+      "group": "multi_date",
+      "passed": false,
+      "error": "AssertionError: todo count 1",
+      "execution": {
+        "turn_statuses": [
+          "waiting_for_input",
+          "waiting_for_input"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": []
+      },
+      "latency_ms": 84560.8,
+      "llm_calls": 1,
+      "reported_tokens": 9743,
+      "charged_tokens": 9743,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "expense-0",
+      "group": "expense_date",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": []
+      },
+      "latency_ms": 17008.23,
+      "llm_calls": 2,
+      "reported_tokens": 5544,
+      "charged_tokens": 5544,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "account-0",
+      "group": "account_confirmation",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success",
+          "waiting_for_input",
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": []
+      },
+      "latency_ms": 91777.58,
+      "llm_calls": 4,
+      "reported_tokens": 14617,
+      "charged_tokens": 14617,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "rag-0",
+      "group": "rag_evidence",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "success"
+        ],
+        "budget_exceeded": false,
+        "stream_error_codes": []
+      },
+      "latency_ms": 40603.87,
+      "llm_calls": 4,
+      "reported_tokens": 8805,
+      "charged_tokens": 8805,
+      "usage_missing_calls": 0
+    },
+    {
+      "id": "limit-0",
+      "group": "budget_boundary",
+      "passed": true,
+      "error": null,
+      "execution": {
+        "turn_statuses": [
+          "budget_exceeded"
+        ],
+        "budget_exceeded": true,
+        "stream_error_codes": []
+      },
+      "latency_ms": 108.52,
+      "llm_calls": 0,
+      "reported_tokens": 0,
+      "charged_tokens": 0,
+      "usage_missing_calls": 0
+    }
+  ]
+}
