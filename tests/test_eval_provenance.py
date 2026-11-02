@@ -14,9 +14,18 @@ def test_execution_diagnostics_preserve_budget_and_transport_evidence_only():
          {"type": "error", "code": "request_execution_failed"}, {"type": "final"}],
     )
     assert result == {"turn_statuses": ["completed", "budget_exceeded"],
-                      "budget_exceeded": True, "stream_error_codes": ["request_execution_failed"]}
+                      "budget_exceeded": True, "stream_error_codes": ["request_execution_failed"], "tool_failures": []}
     assert run_e2e.execution_diagnostics([], []) == {
-        "turn_statuses": [], "budget_exceeded": False, "stream_error_codes": []}
+        "turn_statuses": [], "budget_exceeded": False, "stream_error_codes": [], "tool_failures": []}
+
+
+def test_execution_diagnostics_keep_safe_tool_failure_fields_only():
+    result = run_e2e.execution_diagnostics([], [{"type": "final", "result": {"tool_error": {
+        "code": "tool_execution_failed", "action": "create_account", "error_type": "RuntimeError",
+        "message": "private", "args": {"secret": "private"}}}}])
+    assert result['tool_failures'] == [{"code": "tool_execution_failed", "action": "create_account",
+                                      "error_type": "RuntimeError"}]
+    assert 'private' not in str(result)
 
 
 @pytest.mark.parametrize("error", [FileNotFoundError("git"), PermissionError("git"), subprocess.TimeoutExpired("git", 5)])

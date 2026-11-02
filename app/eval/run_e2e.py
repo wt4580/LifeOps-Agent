@@ -73,6 +73,12 @@ def execution_diagnostics(summaries, events):
         "budget_exceeded": any(summary.get("status") == "budget_exceeded" for summary in summaries),
         "stream_error_codes": sorted({str(event.get("code", "unknown"))
                                       for event in events if event.get("type") == "error"}),
+        "tool_failures": [
+            {key: error[key] for key in ("code", "action", "error_type") if key in error}
+            for event in events if event.get("type") == "final"
+            for error in [event.get("result", {}).get("tool_error")]
+            if isinstance(error, dict)
+        ],
     }
 
 
