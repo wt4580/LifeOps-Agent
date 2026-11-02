@@ -1,0 +1,16 @@
+{
+  "scope": "matched E2E case outcomes; no statistical quality or latency claim",
+  "mode": "real",
+  "model": "qwen3.8-27b",
+  "baseline_revision": "44f7454",
+  "candidate_revision": "03a61a0",
+  "n_cases": 80,
+  "regressions": [],
+  "improvements": [
+    "revise-0",
+    "revise-3",
+    "revise-8"
+  ],
+  "remaining_failures": [],
+  "regression_gate_passed": true
+}

@@ -295,6 +295,8 @@ python -m app.eval.run_e2e --mode real --allow-paid-calls --output artifacts/e2e
 
 后续修复将独立及纯待办批量草案统一到用户原话，保留显式周期、结束日期和时长，避免把路由改写的地点或编号当作额外任务。`revise_proposal` 改为仅服务端已有草案上下文可调用的内部动作。版本 `9bcb43e` 的[原失败三场景复测](app/eval/reports/real-27b-revision-boundary-retest.json)为 **3/3 通过**，相关测试 **187 项通过**、离线契约 **100/100 通过**；仍不能拼接旧基线宣称新版完整 80/80。来源修复阶段版本 `1637750` 的完整后端测试为 **706 项通过、1 项跳过**。
 
+修复后的 [qwen3.8-27b 完整真实回归](app/eval/reports/real-27b-grounded-full.json)在相同模型、案例、语料、配置和每轮预算下达到 **80/80 通过**；案例总耗时 P50/P95 为 4.6/9.4 秒。[逐例比较](app/eval/reports/real-27b-grounded-comparison.json)记录三个改善、零回退、零剩余失败。该结果来自单次公开合成开发集评估，不能证明保留集准确率、长期稳定性或生产 SLO；浏览器验收另行记录。
+
 ## 部署与持续集成
 
 | 组件 | 配置入口 | 说明 |
