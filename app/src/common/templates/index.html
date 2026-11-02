@@ -8,10 +8,10 @@
   <meta http-equiv="Expires" content="0" />
   <meta name="theme-color" content="#FAF5EC" />
   <title>LifeOps</title>
-  <link rel="stylesheet" href="/static/style.css?v=6" />
+  <link rel="stylesheet" href="/static/style.css?v=7" />
 </head>
 <body>
-  {% if demo_mode %}<div role="status" style="padding:10px;text-align:center;background:#fff0bd;color:#513d00">演示模式：使用规则模拟模型和虚构资料，无 API 费用；演示结果不代表真实模型质量。</div>{% endif %}
+  {% if demo_mode %}<div role="status" style="flex-shrink:0;padding:10px;text-align:center;background:#fff0bd;color:#513d00">演示模式：使用规则模拟模型和虚构资料，无 API 费用；演示结果不代表真实模型质量。</div>{% endif %}
   <div id="login-section" class="login-section">
     <div class="login-card">
       <div class="login-icon">
@@ -59,7 +59,7 @@
               <line x1="8" y1="11" x2="13" y2="11"/>
             </svg>
           </button>
-          <button id="mobile-menu-toggle" class="btn-icon btn-mobile-menu" title="待办与知识库" aria-label="打开侧边面板">
+          <button id="mobile-menu-toggle" class="btn-icon btn-mobile-menu" title="待办与知识库" aria-label="打开侧边面板" aria-controls="side-panel" aria-expanded="false">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <line x1="3" y1="12" x2="21" y2="12"/>
               <line x1="3" y1="6" x2="21" y2="6"/>
@@ -124,6 +124,9 @@
 
     <!-- 右侧：待办 + RAG -->
     <aside class="side-panel" id="side-panel">
+      <div class="side-panel-toolbar">
+        <button id="close-side-panel" class="btn-secondary" aria-label="关闭侧边面板">返回聊天</button>
+      </div>
       <!-- 待办区域（常驻） -->
       <section class="todos-section">
         <div class="section-title">
@@ -193,19 +196,32 @@
       var panel = document.getElementById('side-panel');
       var overlay = document.getElementById('side-panel-overlay');
       var toggleRag = document.getElementById('toggle-rag');
+      var closeButton = document.getElementById('close-side-panel');
 
       function openPanel() {
         if (panel) panel.classList.add('open');
         if (overlay) overlay.classList.add('visible');
+        if (toggle) toggle.setAttribute('aria-expanded', 'true');
       }
 
       function closePanel() {
         if (panel) panel.classList.remove('open');
         if (overlay) overlay.classList.remove('visible');
+        if (toggle) {
+          toggle.setAttribute('aria-expanded', 'false');
+          if (window.innerWidth <= 768) toggle.focus();
+        }
       }
 
       if (toggle) toggle.addEventListener('click', openPanel);
       if (overlay) overlay.addEventListener('click', closePanel);
+      if (closeButton) closeButton.addEventListener('click', closePanel);
+      document.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape' && panel && panel.classList.contains('open')) closePanel();
+      });
+      if (toggleRag) toggleRag.addEventListener('click', function() {
+        if (toggle && window.innerWidth <= 768) toggle.setAttribute('aria-expanded', 'true');
+      });
 
       // 点击知识库按钮时也关闭移动侧边面板（桌面端无影响）
       // toggle-rag 的原有逻辑在 app.js 中处理

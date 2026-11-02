@@ -1,0 +1,41 @@
+services:
+  app:
+    build:
+      context: .
+      target: production
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:rw,size=64m
+      - /data:rw,size=128m,uid=10001,gid=10001
+    volumes:
+      - ./tests/browser:/checks:ro
+    environment:
+      PYTHONPATH: /opt/lifeops
+      DEMO_MODE: "true"
+      DEMO_SEED: "true"
+      BACKGROUND_LEARNING_ENABLED: "false"
+      SCHEDULER_ENABLED: "false"
+    entrypoint: [python, /checks/serve.py]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health/ready', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      start_period: 30s
+      retries: 30
+  browser:
+    build:
+      context: .
+      dockerfile: tests/browser/Dockerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    network_mode: service:app
+    depends_on:
+      app:
+        condition: service_healthy
+    init: true
+    shm_size: 256mb
+    volumes:
+      - ./artifacts/browser-acceptance:/artifacts/browser-acceptance
